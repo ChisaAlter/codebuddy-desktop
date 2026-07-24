@@ -1,0 +1,379 @@
+/**
+ * E2EE + relay-auth primitives (NaCl / tweetnacl).
+ * Bundle: [nonce 24][ciphertext] — nonce = 16-byte salt + 8-byte LE seq.
+ * Wire: base64 text over WebSocket.
+ */
+
+import nacl from 'tweetnacl';
+import { fromByteArray, toByteArray } from 'base64-js';
+
+export const SALT_LENGTH = 16;
+export const SEQ_LENGTH = 8;
+const NONCE_LENGTH = nacl.box.nonceLength; // 24
+
+/** @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} KeyPair */
+/** @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} RelayAuthKeyPair */
+
+let prngReady = false;
+
+export function ensurePrng() {
+  if (prngReady) return;
+  try {
+    nacl.randomBytes(1);
+    prngReady = true;
+    return;
+  } catch {
+    /* fallthrough */
+  }
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj?.getRandomValues) {
+    nacl.setPRNG((x, n) => {
+      const buf = new Uint8Array(n);
+      cryptoObj.getRandomValues(buf);
+      x.set(buf, 0);
+    });
+    prngReady = true;
+    return;
+  }
+  throw new Error('No secure PRNG available for tweetnacl');
+}
+
+function encodeBase64(bytes) {
+  return fromByteArray(bytes);
+}
+
+function decodeBase64(base64) {
+  return toByteArray(base64);
+}
+
+/**
+ * @returns {KeyPair}
+ */
+export function generateKeyPair() {
+  ensurePrng();
+  const { publicKey, secretKey } = nacl.box.keyPair();
+  return { publicKey, secretKey };
+}
+
+/**
+ * @param {Uint8Array} publicKey
+ */
+export function exportPublicKey(publicKey) {
+  if (!(publicKey instanceof Uint8Array) || publicKey.byteLength !== nacl.box.publicKeyLength) {
+    throw new Error(`Invalid public key length (expected ${nacl.box.publicKeyLength})`);
+  }
+  return encodeBase64(publicKey);
+}
+
+/**
+ * @param {string} base64
+ */
+export function importPublicKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.box.publicKeyLength) {
+    throw new Error(`Invalid public key length (expected ${nacl.box.publicKeyLength})`);
+  }
+  return bytes;
+}
+
+/**
+ * @param {Uint8Array} secretKey
+ */
+export function exportSecretKey(secretKey) {
+  if (!(secretKey instanceof Uint8Array) || secretKey.byteLength !== nacl.box.secretKeyLength) {
+    throw new Error(`Invalid secret key length (expected ${nacl.box.secretKeyLength})`);
+  }
+  return encodeBase64(secretKey);
+}
+
+/**
+ * @param {string} base64
+ */
+export function importSecretKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.box.secretKeyLength) {
+    throw new Error(`Invalid secret key length (expected ${nacl.box.secretKeyLength})`);
+  }
+  return bytes;
+}
+
+/**
+ * @param {Uint8Array} theirPublicKey
+ * @param {Uint8Array} mySecretKey
+ * @returns {Uint8Array}
+ */
+export function deriveSharedKey(theirPublicKey, mySecretKey) {
+  return nacl.box.before(theirPublicKey, mySecretKey);
+}
+
+/**
+ * @returns {RelayAuthKeyPair}
+ */
+export function generateRelayAuthKeyPair() {
+  ensurePrng();
+  const { publicKey, secretKey } = nacl.sign.keyPair();
+  return { publicKey, secretKey };
+}
+
+/**
+ * @param {Uint8Array} publicKey
+ */
+export function exportRelayAuthPublicKey(publicKey) {
+  if (!(publicKey instanceof Uint8Array) || publicKey.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error(`Invalid relay-auth public key length`);
+  }
+  return encodeBase64(publicKey);
+}
+
+/**
+ * @param {string} base64
+ */
+export function importRelayAuthPublicKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error(`Invalid relay-auth public key length`);
+  }
+  return bytes;
+}
+
+/**
+ * @param {Uint8Array} secretKey
+ */
+export function exportRelayAuthSecretKey(secretKey) {
+  if (!(secretKey instanceof Uint8Array) || secretKey.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error(`Invalid relay-auth secret key length`);
+  }
+  return encodeBase64(secretKey);
+}
+
+/**
+ * @param {string} base64
+ */
+export function importRelayAuthSecretKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error(`Invalid relay-auth secret key length`);
+  }
+  return bytes;
+}
+
+/**
+ * Canonical message for relay server socket auth.
+ * @param {{ serverId: string, role: string, connectionId?: string, nonce: string, issuedAt: number }} fields
+ */
+export function buildRelayAuthMessage(fields) {
+  const connectionId = fields.connectionId || '';
+  return [
+    'cb-mobile-remote-relay-auth-v1',
+    fields.serverId,
+    fields.role,
+    connectionId,
+    fields.nonce,
+    String(fields.issuedAt),
+  ].join('\n');
+}
+
+/**
+ * @param {{ serverId: string, role: string, connectionId?: string, nonce: string, issuedAt: number }} fields
+ * @param {Uint8Array} secretKey
+ * @returns {string} base64 signature
+ */
+export function signRelayServerAuth(fields, secretKey) {
+  ensurePrng();
+  const msg = new TextEncoder().encode(buildRelayAuthMessage(fields));
+  const sig = nacl.sign.detached(msg, secretKey);
+  return encodeBase64(sig);
+}
+
+/**
+ * @param {{ serverId: string, role: string, connectionId?: string, nonce: string, issuedAt: number }} fields
+ * @param {string} signatureB64
+ * @param {Uint8Array} publicKey
+ */
+export function verifyRelayServerAuth(fields, signatureB64, publicKey) {
+  const msg = new TextEncoder().encode(buildRelayAuthMessage(fields));
+  const sig = decodeBase64(signatureB64);
+  return nacl.sign.detached.verify(msg, sig, publicKey);
+}
+
+/**
+ * Directional encrypt/decrypt with monotonic sequence.
+ */
+export function createEncryptedChannel(sharedKey) {
+  if (!(sharedKey instanceof Uint8Array) || sharedKey.byteLength !== nacl.box.sharedKeyLength) {
+    throw new Error('Invalid shared key');
+  }
+  ensurePrng();
+  const sendSalt = nacl.randomBytes(SALT_LENGTH);
+  let sendSeq = 0n;
+  let recvSalt = null;
+  let recvSeq = -1n;
+
+  function writeSeq(seq) {
+    const buf = new Uint8Array(SEQ_LENGTH);
+    let n = seq;
+    for (let i = 0; i < SEQ_LENGTH; i += 1) {
+      buf[i] = Number(n & 0xffn);
+      n >>= 8n;
+    }
+    return buf;
+  }
+
+  function readSeq(bytes) {
+    let n = 0n;
+    for (let i = SEQ_LENGTH - 1; i >= 0; i -= 1) {
+      n = (n << 8n) | BigInt(bytes[i]);
+    }
+    return n;
+  }
+
+  return {
+    /**
+     * @param {string | Uint8Array} plaintext
+     * @returns {string} base64 bundle
+     */
+    encrypt(plaintext) {
+      const plain =
+        typeof plaintext === 'string' ? new TextEncoder().encode(plaintext) : plaintext;
+      const nonce = new Uint8Array(NONCE_LENGTH);
+      nonce.set(sendSalt, 0);
+      nonce.set(writeSeq(sendSeq), SALT_LENGTH);
+      sendSeq += 1n;
+      const cipher = nacl.box.after(plain, nonce, sharedKey);
+      if (!cipher) throw new Error('encrypt failed');
+      const bundle = new Uint8Array(NONCE_LENGTH + cipher.byteLength);
+      bundle.set(nonce, 0);
+      bundle.set(cipher, NONCE_LENGTH);
+      return encodeBase64(bundle);
+    },
+
+    /**
+     * @param {string} bundleB64
+     * @returns {Uint8Array}
+     */
+    decrypt(bundleB64) {
+      const bundle = decodeBase64(bundleB64);
+      if (bundle.byteLength <= NONCE_LENGTH) throw new Error('bundle too short');
+      const nonce = bundle.subarray(0, NONCE_LENGTH);
+      const cipher = bundle.subarray(NONCE_LENGTH);
+      const salt = nonce.subarray(0, SALT_LENGTH);
+      const seq = readSeq(nonce.subarray(SALT_LENGTH, NONCE_LENGTH));
+      if (recvSalt == null) {
+        recvSalt = new Uint8Array(salt);
+      } else {
+        for (let i = 0; i < SALT_LENGTH; i += 1) {
+          if (recvSalt[i] !== salt[i]) throw new Error('salt mismatch');
+        }
+      }
+      if (seq <= recvSeq) throw new Error('replay or out-of-order sequence');
+      const plain = nacl.box.open.after(cipher, nonce, sharedKey);
+      if (!plain) throw new Error('decrypt failed');
+      recvSeq = seq;
+      return plain;
+    },
+
+    /**
+     * @param {string} bundleB64
+     * @returns {string}
+     */
+    decryptUtf8(bundleB64) {
+      return new TextDecoder().decode(this.decrypt(bundleB64));
+    },
+  };
+}
+
+/**
+ * Host side: wait for e2ee_hello, reply e2ee_ready, return channel.
+ * Client side helpers for the same handshake JSON.
+ */
+
+/**
+ * @param {string} ephemeralPublicKeyB64
+ */
+export function buildE2eeHelloMessage(ephemeralPublicKeyB64) {
+  return JSON.stringify({ type: 'e2ee_hello', publicKeyB64: ephemeralPublicKeyB64 });
+}
+
+export function buildE2eeReadyMessage() {
+  return JSON.stringify({ type: 'e2ee_ready' });
+}
+
+/**
+ * @param {string} text
+ * @returns {{ type: string, publicKeyB64?: string } | null}
+ */
+export function parseHandshakeMessage(text) {
+  try {
+    const o = JSON.parse(text);
+    if (!o || typeof o !== 'object') return null;
+    if (o.type !== 'e2ee_hello' && o.type !== 'e2ee_ready') return null;
+    return o;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Client creates ephemeral key, encrypt channel with host long-term public key.
+ * @param {Uint8Array} hostPublicKey
+ */
+export function createClientChannel(hostPublicKey) {
+  const ephemeral = generateKeyPair();
+  const shared = deriveSharedKey(hostPublicKey, ephemeral.secretKey);
+  return {
+    ephemeralPublicKeyB64: exportPublicKey(ephemeral.publicKey),
+    channel: createEncryptedChannel(shared),
+  };
+}
+
+/**
+ * Host accepts client hello public key.
+ * @param {KeyPair} hostKeyPair
+ * @param {string} clientPublicKeyB64
+ */
+export function createHostChannelFromHello(hostKeyPair, clientPublicKeyB64) {
+  const clientPub = importPublicKey(clientPublicKeyB64);
+  const shared = deriveSharedKey(clientPub, hostKeyPair.secretKey);
+  return createEncryptedChannel(shared);
+}
+
+/**
+ * Persistable key material for Desktop Host.
+ * @returns {{ e2ee: { publicKeyB64: string, secretKeyB64: string }, relayAuth: { publicKeyB64: string, secretKeyB64: string } }}
+ */
+export function generateHostKeyMaterial() {
+  const e2ee = generateKeyPair();
+  const relayAuth = generateRelayAuthKeyPair();
+  return {
+    e2ee: {
+      publicKeyB64: exportPublicKey(e2ee.publicKey),
+      secretKeyB64: exportSecretKey(e2ee.secretKey),
+    },
+    relayAuth: {
+      publicKeyB64: exportRelayAuthPublicKey(relayAuth.publicKey),
+      secretKeyB64: exportRelayAuthSecretKey(relayAuth.secretKey),
+    },
+  };
+}
+
+/**
+ * @param {{ e2ee: { publicKeyB64: string, secretKeyB64: string } }} material
+ * @returns {KeyPair}
+ */
+export function loadHostE2eeKeyPair(material) {
+  return {
+    publicKey: importPublicKey(material.e2ee.publicKeyB64),
+    secretKey: importSecretKey(material.e2ee.secretKeyB64),
+  };
+}
+
+/**
+ * @param {{ relayAuth: { publicKeyB64: string, secretKeyB64: string } }} material
+ * @returns {RelayAuthKeyPair}
+ */
+export function loadHostRelayAuthKeyPair(material) {
+  return {
+    publicKey: importRelayAuthPublicKey(material.relayAuth.publicKeyB64),
+    secretKey: importRelayAuthSecretKey(material.relayAuth.secretKeyB64),
+  };
+}

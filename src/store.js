@@ -84,6 +84,7 @@ import { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
 import {
   ACTIVE_THREAD_RUNTIME_KEYS,
   emptyThreadRuntime,
+  resolveThreadTimeline,
 } from './store/helpers/thread-runtime';
 import { createQueueHelpers } from './store/helpers/queues';
 import {
@@ -123,6 +124,8 @@ let conversationEventsBound = false;
 let runtimeListenerBound = false;
 let authFailureListenerBound = false;
 const threadTimelinePersistTimers = new Map();
+/** Pending coalesced stream chunks per thread (timer + reduced timeline). */
+const threadTimelineCoalesce = new Map();
 const threadDraftPersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
 const workspaceStatePersistTimers = new Map();
@@ -538,6 +541,7 @@ function resetFileWorkspace(path) {
 export const useStore = create((set, get) => {
   const productPersist = createProductPersistSlice(set, get, {
     threadTimelinePersistTimers,
+    threadTimelineCoalesce,
     threadDraftPersistTimers,
     terminalStatePersistTimers,
     workspaceStatePersistTimers,
@@ -720,6 +724,13 @@ export const useStore = create((set, get) => {
 
   patchThreadRuntime(threadId, patch) {
     if (!threadId) return;
+    // External timeline writes must not race pending coalesced stream chunks.
+    // If the patch includes timeline, drop coalesce; otherwise leave it pending.
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'timeline')) {
+      const pending = threadTimelineCoalesce.get(threadId);
+      if (pending?.timer) clearTimeout(pending.timer);
+      threadTimelineCoalesce.delete(threadId);
+    }
     set((state) => {
       const nextRuntime = {
         ...emptyThreadRuntime(),
@@ -737,12 +748,33 @@ export const useStore = create((set, get) => {
   },
 
   activateThreadRuntime(threadId) {
-    const runtime = { ...emptyThreadRuntime(), ...(get().threadRuntimeById[threadId] || {}) };
+    const prior = get().threadRuntimeById[threadId] || {};
+    const runtime = { ...emptyThreadRuntime(), ...prior };
+    const thread = get().threadsById[threadId];
+    // Empty / user-less runtime.timeline must not hide persisted thread history.
+    const priorTimeline = Array.isArray(prior.timeline) ? prior.timeline : [];
+    const resolvedTimeline = resolveThreadTimeline(runtime.timeline, thread?.timeline);
+    runtime.timeline = resolvedTimeline;
     const patch = {};
     for (const key of ACTIVE_THREAD_RUNTIME_KEYS) patch[key] = runtime[key];
     const client = conversations.peek(threadId);
     patch.sessionToken = client?.sessionToken || null;
     setAcpSessionToken(patch.sessionToken);
+    // Keep threadRuntimeById in sync when we healed timeline from disk
+    // (empty live, or live missing user bubbles).
+    const healed =
+      threadId &&
+      resolvedTimeline.length > 0 &&
+      (resolvedTimeline !== priorTimeline &&
+        (priorTimeline.length === 0 ||
+          resolvedTimeline.length !== priorTimeline.length ||
+          resolvedTimeline[0]?.id !== priorTimeline[0]?.id));
+    if (healed) {
+      patch.threadRuntimeById = {
+        ...get().threadRuntimeById,
+        [threadId]: { ...runtime },
+      };
+    }
     set(patch);
   },
 
@@ -1395,6 +1427,7 @@ export const useStore = create((set, get) => {
 
   closeAssistantStream() {
     const threadId = get().activeThreadId;
+    get().flushThreadTimelineCoalesce?.(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     get().patchThreadRuntime(threadId, { timeline: closeAssistantStream(runtime.timeline) });
   },

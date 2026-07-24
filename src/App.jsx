@@ -5,7 +5,9 @@ import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon-mark.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
-import { applyDocumentLocale, resolveLocaleMode } from './lib/i18n';
+import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
+import { requestSettingsSection } from './lib/settings-nav';
+import CliSetupDialog from './components/CliSetupDialog';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
@@ -494,6 +496,9 @@ function MainContent() {
   const productStateLoaded = useStore((s) => s.productStateLoaded);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const chooseWorkspace = useStore((s) => s.chooseWorkspace);
+  const setRoute = useStore((s) => s.setRoute);
+  const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
+  const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
 
   if (!productStateLoaded) {
     return (
@@ -503,17 +508,39 @@ function MainContent() {
     );
   }
 
+  // 无项目时也允许进入设置（CLI 检测 / 首次安装引导 / 桌面偏好），避免新用户装不了 CLI。
+  if (!activeProjectId && route === 'settings') {
+    return (
+      <Suspense fallback={<div className="flex min-h-0 flex-1 items-center justify-center text-sm text-[var(--color-text-muted)]">Loading...</div>}>
+        <ReplicaSettingsView />
+      </Suspense>
+    );
+  }
+
   if (!activeProjectId) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] px-6">
         <div className="w-full max-w-md text-center">
-          <div className="mb-2 text-xl font-semibold text-[var(--color-text-primary)]">打开一个代码项目</div>
-          <div className="mb-5 text-sm leading-6 text-[var(--color-text-secondary)]">
-            选择本地文件夹后，CodeBuddy 会为它保存独立的对话、草稿和工作区状态。
+          <div className="mb-2 text-xl font-semibold text-[var(--color-text-primary)]">{t('emptyProject.title')}</div>
+          <div className="mb-3 text-sm leading-6 text-[var(--color-text-secondary)]">{t('emptyProject.desc')}</div>
+          <div className="mb-5 text-xs leading-5 text-[var(--color-text-muted)]">{t('emptyProject.setupCliHint')}</div>
+          <div className="flex flex-col items-center justify-center gap-2 sm:flex-row">
+            <button className="btn-primary px-4 py-2 text-sm" onClick={() => chooseWorkspace()}>
+              {t('emptyProject.openFolder')}
+            </button>
+            {typeof window !== 'undefined' && window.electronAPI ? (
+              <button
+                type="button"
+                className="btn-ghost px-4 py-2 text-sm"
+                onClick={() => {
+                  requestSettingsSection('settings-section-cli');
+                  setRoute('settings');
+                }}
+              >
+                {t('emptyProject.setupCli')}
+              </button>
+            ) : null}
           </div>
-          <button className="btn-primary px-4 py-2 text-sm" onClick={() => chooseWorkspace()}>
-            打开文件夹
-          </button>
         </div>
       </div>
     );
@@ -705,6 +732,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Flush coalesced stream tokens as soon as the window is visible again so
+    // the chat UI does not apply a multi-second backlog in one paint.
+    const flushStreamOnVisible = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      useStore.getState().flushThreadTimelineCoalesce?.();
+    };
+    document.addEventListener('visibilitychange', flushStreamOnVisible);
+    window.addEventListener('focus', flushStreamOnVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', flushStreamOnVisible);
+      window.removeEventListener('focus', flushStreamOnVisible);
+    };
+  }, []);
+
+  useEffect(() => {
     let opening = false;
     let pendingTarget = null;
     let retryTimer = null;
@@ -884,6 +926,8 @@ export default function App() {
           </div>
           <GlobalErrorNotice />
           <ToastStack />
+          {/* 启动检测 CodeBuddy CLI（对齐 pi-desktop onboarding step1） */}
+          <CliSetupDialog />
         </>
       )}
       <DirtyFileConfirmDialog />

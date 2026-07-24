@@ -24,3 +24,8 @@ export async function installCodeBuddyCli(target) {
   }
   return requireCliMaintenanceApi('installCodeBuddyCli')(normalized);
 }
+
+/** 一键安装/修复到 GUI 推荐版本（missing 走 npm，outdated 走 codebuddy install） */
+export async function ensureRecommendedCodeBuddyCli() {
+  return requireCliMaintenanceApi('ensureRecommendedCodeBuddyCli')();
+}

@@ -12,6 +12,17 @@ import { reduceAcpEvent } from '../../lib/timeline';
 import { emptyThreadRuntime } from '../helpers/thread-runtime';
 import { terminalStateFromProject } from '../helpers/terminal-workspace-state';
 
+/** High-frequency ACP stream chunks — coalesce before React store commits. */
+const COALESCED_TIMELINE_EVENTS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
+/** Hidden only: batch stream reduces so focus-return is one paint, not a multi-second backlog. */
+const TIMELINE_COALESCE_MS_HIDDEN = 200;
+const TIMELINE_PERSIST_MS_VISIBLE = 900;
+const TIMELINE_PERSIST_MS_HIDDEN = 2000;
+
+function documentIsHidden() {
+  return typeof document !== 'undefined' && Boolean(document.hidden);
+}
+
 /**
  * Product-state persistence and thread timeline/draft scheduling.
  * Module-level timer maps and productStateSaveChain are injected via ctx.
@@ -22,10 +33,81 @@ export function createProductPersistSlice(set, get, ctx) {
     threadDraftPersistTimers,
     terminalStatePersistTimers,
     workspaceStatePersistTimers,
+    threadTimelineCoalesce,
     getProductStateSaveChain,
     setProductStateSaveChain,
     serializePromptQueue,
   } = ctx;
+
+  const takeTimelineCoalesce = (threadId) => {
+    if (!threadId || !threadTimelineCoalesce) return null;
+    const entry = threadTimelineCoalesce.get(threadId);
+    if (!entry) return null;
+    if (entry.timer) clearTimeout(entry.timer);
+    threadTimelineCoalesce.delete(threadId);
+    return entry;
+  };
+
+  const flushTimelineCoalesce = (threadId) => {
+    const entry = takeTimelineCoalesce(threadId);
+    if (!entry) return false;
+    get().patchThreadRuntime(threadId, {
+      timeline: entry.timeline,
+      isAwaitingResponse: entry.isAwaitingResponse,
+    });
+    get().scheduleThreadTimelinePersist(threadId);
+    return true;
+  };
+
+  const applyTimelineEventNow = (threadId, eventType, payload, baseTimeline, baseAwaiting) => {
+    get().patchThreadRuntime(threadId, {
+      timeline: reduceAcpEvent(baseTimeline, eventType, payload, threadId),
+      isAwaitingResponse:
+        eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
+          ? false
+          : baseAwaiting,
+    });
+    get().scheduleThreadTimelinePersist(threadId);
+  };
+
+  const queueCoalescedTimelineEvent = (threadId, eventType, payload) => {
+    if (!threadId) return;
+
+    // Foreground: keep live streaming immediate (and unit tests deterministic).
+    // Background / unfocused: reduce offline so focus-return is one paint, not a multi-second backlog.
+    if (!documentIsHidden() || !threadTimelineCoalesce) {
+      // If a hidden-window batch was mid-flight and the window became visible, fold it first.
+      const pending = takeTimelineCoalesce(threadId);
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const baseTimeline = pending?.timeline ?? runtime.timeline;
+      const baseAwaiting = pending ? pending.isAwaitingResponse : runtime.isAwaitingResponse;
+      applyTimelineEventNow(threadId, eventType, payload, baseTimeline, baseAwaiting);
+      return;
+    }
+
+    let entry = threadTimelineCoalesce.get(threadId);
+    if (!entry) {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      entry = {
+        timeline: runtime.timeline,
+        isAwaitingResponse: runtime.isAwaitingResponse,
+        timer: null,
+      };
+      threadTimelineCoalesce.set(threadId, entry);
+      entry.timer = setTimeout(() => {
+        flushTimelineCoalesce(threadId);
+      }, TIMELINE_COALESCE_MS_HIDDEN);
+    }
+
+    entry.timeline = reduceAcpEvent(entry.timeline, eventType, payload, threadId);
+    if (
+      eventType === 'agent_message_chunk' ||
+      eventType === 'agent_thought_chunk' ||
+      eventType === 'tool_call'
+    ) {
+      entry.isAwaitingResponse = false;
+    }
+  };
 
   return {
   async updateThreadRecord(threadId, patch) {
@@ -48,16 +130,55 @@ export function createProductPersistSlice(set, get, ctx) {
     await get().persistProductState();
   },
 
+  /**
+   * Fold any pending coalesced stream chunks into the live runtime.
+   * Call before terminal timeline operations that read runtime.timeline.
+   */
+  flushThreadTimelineCoalesce(threadId) {
+    if (!threadId) {
+      if (!threadTimelineCoalesce?.size) return;
+      for (const id of [...threadTimelineCoalesce.keys()]) flushTimelineCoalesce(id);
+      return;
+    }
+    flushTimelineCoalesce(threadId);
+  },
+
+  /**
+   * Merge pending coalesced timeline into a patch (used by patchThreadRuntime).
+   * Returns the patch to apply; may include timeline from coalesce.
+   */
+  consumeThreadTimelineCoalesce(threadId, patch = {}) {
+    const entry = takeTimelineCoalesce(threadId);
+    if (!entry) return patch;
+    return {
+      timeline: entry.timeline,
+      isAwaitingResponse: entry.isAwaitingResponse,
+      ...patch,
+    };
+  },
+
   appendThreadTimelineEvent(threadId, eventType, payload) {
+    if (!threadId) return;
+
+    // Stream tokens: reduce offline and commit on a short timer so focus-return
+    // does not replay hundreds of React+markdown updates at once.
+    if (COALESCED_TIMELINE_EVENTS.has(eventType)) {
+      queueCoalescedTimelineEvent(threadId, eventType, payload);
+      return;
+    }
+
+    const pending = takeTimelineCoalesce(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const baseTimeline = pending?.timeline ?? runtime.timeline;
+    const baseAwaiting = pending ? pending.isAwaitingResponse : runtime.isAwaitingResponse;
     // Thinking duration anchors at first thought chunk (WebUI LIVE); promptStartedAt
     // remains for response-activity chrome only — do not pass it as thinkingStartedAt.
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId),
+      timeline: reduceAcpEvent(baseTimeline, eventType, payload, threadId),
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false
-          : runtime.isAwaitingResponse,
+          : baseAwaiting,
     });
     get().scheduleThreadTimelinePersist(threadId);
   },
@@ -66,8 +187,11 @@ export function createProductPersistSlice(set, get, ctx) {
     if (!threadId) return;
     const existing = threadTimelinePersistTimers.get(threadId);
     if (existing) clearTimeout(existing);
+    const delay = documentIsHidden() ? TIMELINE_PERSIST_MS_HIDDEN : TIMELINE_PERSIST_MS_VISIBLE;
     const timer = setTimeout(async () => {
       threadTimelinePersistTimers.delete(threadId);
+      // Fold any stream chunks that have not been committed yet.
+      get().flushThreadTimelineCoalesce?.(threadId);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const thread = get().threadsById[threadId];
       if (!thread) return;
@@ -82,7 +206,7 @@ export function createProductPersistSlice(set, get, ctx) {
         },
       }));
       await get().persistProductState();
-    }, 600);
+    }, delay);
     threadTimelinePersistTimers.set(threadId, timer);
   },
 
@@ -128,6 +252,9 @@ export function createProductPersistSlice(set, get, ctx) {
     const saveSync = window.electronAPI?.saveProductStateSync;
     if (!saveSync) return false;
     if (!get().productStateLoaded) return false;
+
+    // Commit coalesced stream chunks before snapshotting timelines to disk.
+    get().flushThreadTimelineCoalesce?.();
 
     const pendingThreadIds = Array.from(threadTimelinePersistTimers.keys());
     for (const timer of threadTimelinePersistTimers.values()) clearTimeout(timer);
@@ -274,6 +401,12 @@ export function createProductPersistSlice(set, get, ctx) {
       ]),
     );
     const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], true);
+    // Root `timeline` must mirror the active thread immediately on hydrate.
+    // Leaving it as the initial `[]` hides user bubbles until initializeActiveThread
+    // finishes (and stays empty if connect fails).
+    const activeRuntimeTimeline = thread
+      ? restoredThreadRuntime[thread.id]?.timeline || thread.timeline || []
+      : [];
     set({
       projectsById: restoredProjects,
       projectOrder: loaded.projectOrder,
@@ -288,6 +421,7 @@ export function createProductPersistSlice(set, get, ctx) {
       fileCwd: project?.workspacePath || '.',
       sessionId: thread?.sessionId || null,
       sessionTitle: thread?.title || null,
+      timeline: Array.isArray(activeRuntimeTimeline) ? activeRuntimeTimeline : [],
       guiSettings: normalizeGuiSettings(loaded.guiSettings || get().guiSettings),
       currentModel: thread?.modelId || null,
       currentMode: thread?.modeId || 'default',

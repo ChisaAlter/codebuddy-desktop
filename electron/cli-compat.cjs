@@ -27,7 +27,7 @@ function buildCompatStatus(version, { missing = false, unknown = false } = {}) {
       status: 'missing',
       minVersion,
       recommendedVersion,
-      message: `未找到 CodeBuddy CLI。请先安装 CLI，再在设置中安装推荐版本 v${recommendedVersion}。`,
+      message: `未找到 CodeBuddy CLI。请打开「设置 → CodeBuddy CLI 维护」按引导安装，或在终端执行 npm install -g @tencent-ai/codebuddy-code 后点刷新检测。推荐版本 v${recommendedVersion}。`,
     };
   }
   if (unknown || !version) {
@@ -35,7 +35,7 @@ function buildCompatStatus(version, { missing = false, unknown = false } = {}) {
       status: 'unknown',
       minVersion,
       recommendedVersion,
-      message: '无法识别 CodeBuddy CLI 版本，项目运行时启动前需要可读的版本号。',
+      message: '无法识别 CodeBuddy CLI 版本。请打开「设置 → CodeBuddy CLI 维护」刷新检测，或确认 PATH 中的 codebuddy 可正常输出 --version。',
     };
   }
   if (compareVersions(version, minVersion) < 0) {
@@ -43,7 +43,7 @@ function buildCompatStatus(version, { missing = false, unknown = false } = {}) {
       status: 'outdated',
       minVersion,
       recommendedVersion,
-      message: `当前 CodeBuddy CLI v${version} 低于 GUI 最低支持版本 v${minVersion}。请在设置中安装推荐版本 v${recommendedVersion} 后再启动项目运行时。`,
+      message: `当前 CodeBuddy CLI v${version} 低于 GUI 最低支持版本 v${minVersion}。请打开「设置 → CodeBuddy CLI 维护」安装推荐版本 v${recommendedVersion} 后再启动项目运行时。`,
     };
   }
   if (compareVersions(version, recommendedVersion) > 0) {

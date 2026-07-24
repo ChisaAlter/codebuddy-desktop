@@ -3,7 +3,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { Globe, Languages, Moon, Sun, SunMoon } from 'lucide-react';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { getCliMaintenanceInfo, installCodeBuddyCli, runCliDoctor, updateCodeBuddyCli } from '../lib/cli-maintenance';
+import {
+  ensureRecommendedCodeBuddyCli,
+  getCliMaintenanceInfo,
+  installCodeBuddyCli,
+  runCliDoctor,
+  updateCodeBuddyCli,
+} from '../lib/cli-maintenance';
 import { getSessionModeLabel } from '../lib/session-mode-labels';
 import {
   nextLocaleMode,
@@ -11,8 +17,13 @@ import {
   resolveLocaleMode,
   translate,
 } from '../lib/i18n';
+import {
+  CODEBUDDY_CLI_BOOTSTRAP_COMMAND,
+  consumePendingSettingsSection,
+} from '../lib/settings-nav';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import CustomModelsModal from './CustomModelsModal';
+import MobileRemoteSettingsCard from './MobileRemoteSettingsCard';
 
 /**
  * WebUI 2.124 lucide SlidersHorizontal uses path geometry (not lucide-react 0.468 line
@@ -101,6 +112,7 @@ function buildSettingsTocSections(t, { isDesktop = true } = {}) {
   if (isDesktop) {
     sections.push(
       { id: 'settings-section-desktop', label: t('settings.desktop'), desktopOnly: true },
+      { id: 'settings-section-mobile-remote', label: t('settings.mobileRemote'), desktopOnly: true },
       { id: 'settings-section-cli', label: t('settings.cliMaintenance'), desktopOnly: true },
       { id: 'settings-section-desktop-app', label: t('settings.desktopApp'), desktopOnly: true },
     );
@@ -542,6 +554,14 @@ export default function ReplicaSettingsView() {
 
   const reload = useCallback(async () => {
     const projectId = activeProjectId;
+    // 无项目时不打 serve API，避免 401/网络错误把用户踢回登录，并保持 CLI/桌面段可用。
+    if (!projectId) {
+      if (mountedRef.current) {
+        setLoadError('');
+        setRefreshing(false);
+      }
+      return true;
+    }
     const requestId = ++reloadRequestIdRef.current;
     setRefreshing(true);
     setLoadError('');
@@ -567,7 +587,8 @@ export default function ReplicaSettingsView() {
     }
   }, [activeProjectId, refreshInfo, refreshSettings]);
 
-  const isLoading = !loadError && (!infoLoaded || !settingsLoaded);
+  // 无项目时不要求 serve 的 info/settings 已加载，否则整页骨架屏会挡住 CLI 安装引导。
+  const isLoading = Boolean(activeProjectId) && !loadError && (!infoLoaded || !settingsLoaded);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -583,6 +604,26 @@ export default function ReplicaSettingsView() {
   useEffect(() => {
     loadCliInfo();
   }, [loadCliInfo]);
+
+  // 用户从终端装完 CLI 切回窗口时自动重探（节流）。仅在 CLI 仍不可用时触发，
+  // 避免生成中切回前台时 spawn `codebuddy --version` 抢主进程/渲染线程。
+  useEffect(() => {
+    if (!isDesktopRuntime()) return undefined;
+    let lastFocusProbeAt = 0;
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (cliOperationRef.current) return;
+      const status = cliInfo?.compat?.status;
+      const needsProbe = !cliInfo || ['missing', 'outdated', 'unknown'].includes(status);
+      if (!needsProbe) return;
+      const now = Date.now();
+      if (now - lastFocusProbeAt < 2000) return;
+      lastFocusProbeAt = now;
+      loadCliInfo({ showLoading: false });
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadCliInfo, cliInfo]);
 
   useEffect(() => {
     reloadRequestIdRef.current += 1;
@@ -868,8 +909,49 @@ export default function ReplicaSettingsView() {
   };
 
   const installRecommendedCli = async () => {
+    // 一键修复：missing 走 npm，outdated/unknown 走 codebuddy install（失败再 npm）
+    if (cliOperationRef.current) return;
     const target = cliInfo?.compat?.recommendedVersion || '2.125.0';
-    await confirmCliInstall(target);
+    cliOperationRef.current = 'install';
+    setCliOperation('install');
+    setCliInstallError('');
+    setCliNotice({ type: 'busy', message: t('cli.installingRecommended', { version: target }) });
+    setCliOutput(null);
+    try {
+      const result = await ensureRecommendedCodeBuddyCli();
+      if (!mountedRef.current) return;
+      setCliInfo((current) => ({
+        ...(current || {}),
+        version: result.afterVersion,
+        output: result.afterVersion,
+        compat: result.compat || current?.compat,
+      }));
+      setCliOutput({
+        title: result.method === 'npm' ? t('cli.installOutputNpm') : t('cli.installOutput'),
+        content: result.output,
+        truncated: result.truncated,
+      });
+      if (result.method !== 'noop') setCliRestartNeeded(true);
+      setCliNotice({
+        type: 'success',
+        message: result.changed
+          ? t('cli.installSuccessChanged', {
+              before: result.beforeVersion || t('cli.unavailable'),
+              after: result.afterVersion,
+            })
+          : t('cli.installSuccessSame', { version: result.afterVersion || target }),
+      });
+      await loadCliInfo({ showLoading: false });
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const message = error?.message || t('cli.installFailed');
+      setCliInstallError(message);
+      setCliNotice({ type: 'error', message });
+      await loadCliInfo({ showLoading: false });
+    } finally {
+      if (cliOperationRef.current === 'install') cliOperationRef.current = '';
+      if (mountedRef.current) setCliOperation('');
+    }
   };
 
   const cliCompat = cliInfo?.compat || null;
@@ -972,6 +1054,24 @@ export default function ReplicaSettingsView() {
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
+  // 从空状态 / 聊天恢复区跳转时滚到 CLI 段
+  useEffect(() => {
+    if (isLoading) return undefined;
+    const sectionId = consumePendingSettingsSection();
+    if (!sectionId) return undefined;
+    const timer = window.setTimeout(() => scrollToSettingsSection(sectionId), 80);
+    return () => window.clearTimeout(timer);
+  }, [isLoading, scrollToSettingsSection]);
+
+  const copyBootstrapCommand = async () => {
+    try {
+      await copyTextToClipboard(CODEBUDDY_CLI_BOOTSTRAP_COMMAND);
+      if (mountedRef.current) setCliNotice({ type: 'success', message: t('cli.commandCopied') });
+    } catch (error) {
+      if (mountedRef.current) setCliNotice({ type: 'error', message: error?.message || t('cli.copyCommandFailed') });
+    }
+  };
+
   useEffect(() => {
     const root = settingsContentRef.current;
     if (!root || isLoading) return undefined;
@@ -1023,6 +1123,11 @@ export default function ReplicaSettingsView() {
           <div className="flex items-center justify-between rounded-xl border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-[var(--color-accent-red)]">
             <span>{saveError}</span>
             <button className="btn-ghost px-3 py-1 text-xs" onClick={() => setSaveError('')}>×</button>
+          </div>
+        ) : null}
+        {!activeProjectId ? (
+          <div className="rounded-xl border border-[rgba(96,165,250,0.35)] bg-[rgba(96,165,250,0.08)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+            {t('settings.projectRequired')}
           </div>
         ) : null}
         {isLoading ? (
@@ -1429,6 +1534,14 @@ export default function ReplicaSettingsView() {
           </div>
         ) : null}
 
+        {/* Electron-only: 手机远程（非微信/企微 channel 远程控制） */}
+        {isDesktop ? (
+          <div id="settings-section-mobile-remote" className="settings-group" data-desktop-only="true">
+            <h2 className="settings-group-title">{t('settings.mobileRemote')}</h2>
+            <MobileRemoteSettingsCard t={t} />
+          </div>
+        ) : null}
+
         {/* Electron-only: CLI maintenance */}
         {isDesktop ? (
           <div id="settings-section-cli" className="settings-group" data-desktop-only="true">
@@ -1458,22 +1571,48 @@ export default function ReplicaSettingsView() {
                 control={<span className={`text-xs font-medium ${cliCompatTone}`}>{cliCompatLabel}</span>}
               />
               {cliBlocked ? (
-                <SettingRow
-                  t={t}
-                  label={t('cli.fixCompat')}
-                  desc={t('cli.fixCompat.desc')}
-                  control={
+                <div className="border-t border-[var(--color-border-default)] px-4 py-3">
+                  <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                    {cliCompat?.status === 'missing' ? t('cli.bootstrapTitle') : t('cli.fixCompat')}
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)]">
+                    {cliCompat?.status === 'missing' ? t('cli.bootstrapDesc') : t('cli.fixCompat.desc')}
+                  </div>
+                  {cliCompat?.status === 'missing' ? (
+                    <div className="mt-3 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-code)] px-3 py-2">
+                      <div className="mb-1 text-[11px] text-[var(--color-text-muted)]">{t('cli.bootstrapCommand')}</div>
+                      <code className="block break-all font-mono text-[12px] text-[var(--color-text-primary)]">
+                        {CODEBUDDY_CLI_BOOTSTRAP_COMMAND}
+                      </code>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
                     <button
-                      className="btn-primary shrink-0 px-2 py-1 text-[11px]"
+                      type="button"
+                      className="btn-primary px-2 py-1 text-[11px]"
                       disabled={Boolean(cliOperation)}
                       onClick={installRecommendedCli}
                     >
                       {cliOperation === 'install'
                         ? t('cli.installing')
-                        : t('cli.installRecommended', { version: cliCompat?.recommendedVersion || '2.125.0' })}
+                        : t('cli.oneClickInstall', { version: cliCompat?.recommendedVersion || '2.125.0' })}
                     </button>
-                  }
-                />
+                    {cliCompat?.status === 'missing' ? (
+                      <button type="button" className="btn-ghost px-2 py-1 text-[11px]" onClick={copyBootstrapCommand}>
+                        {t('cli.copyCommand')}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn-ghost px-2 py-1 text-[11px]"
+                      disabled={cliInfoLoading || Boolean(cliOperation)}
+                      onClick={() => loadCliInfo()}
+                    >
+                      {t('cli.refresh')}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] leading-5 text-[var(--color-text-muted)]">{t('cli.afterInstallHint')}</div>
+                </div>
               ) : null}
               <SettingRow
                 t={t}

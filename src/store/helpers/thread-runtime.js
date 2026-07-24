@@ -27,6 +27,90 @@ export function emptyThreadRuntime() {
   };
 }
 
+function isUserTimelineMessage(item) {
+  return item?.type === 'message' && item?.role === 'user';
+}
+
+function countUserTimelineMessages(timeline) {
+  if (!Array.isArray(timeline) || timeline.length === 0) return 0;
+  let count = 0;
+  for (const item of timeline) {
+    if (isUserTimelineMessage(item)) count += 1;
+  }
+  return count;
+}
+
+function timelineEntryIdentity(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (item.id) return `id:${item.id}`;
+  if (item.messageId) return `mid:${item.role || ''}:${item.messageId}`;
+  if (isUserTimelineMessage(item)) {
+    return `user:${Number(item.createdAt) || 0}:${String(item.content || '')}`;
+  }
+  return null;
+}
+
+function mergeMissingUserMessages(runtime, thread) {
+  const seen = new Set();
+  for (const item of runtime) {
+    const key = timelineEntryIdentity(item);
+    if (key) seen.add(key);
+    if (isUserTimelineMessage(item)) {
+      seen.add(`user-content:${String(item.content || '')}`);
+    }
+  }
+
+  const missing = [];
+  for (const item of thread) {
+    if (!isUserTimelineMessage(item)) continue;
+    const key = timelineEntryIdentity(item);
+    if (key && seen.has(key)) continue;
+    const contentKey = `user-content:${String(item.content || '')}`;
+    if (seen.has(contentKey)) continue;
+    missing.push(item);
+    if (key) seen.add(key);
+    seen.add(contentKey);
+  }
+  if (!missing.length) return runtime;
+
+  return [...runtime, ...missing].sort(
+    (a, b) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0),
+  );
+}
+
+/**
+ * Pick the timeline to show for a thread.
+ * Runtime `timeline: []` is truthy in JS, so `runtime.timeline || thread.timeline`
+ * incorrectly prefers an empty live array over the persisted thread history and
+ * hides user (and all other) messages after reconnect / re-init.
+ *
+ * Also: a non-empty runtime that lost user bubbles (reconnect / partial history
+ * replay / assistant-only stream) must not hide disk user messages.
+ */
+export function resolveThreadTimeline(runtimeTimeline, threadTimeline) {
+  const runtime = Array.isArray(runtimeTimeline) ? runtimeTimeline : [];
+  const thread = Array.isArray(threadTimeline) ? threadTimeline : [];
+  if (!runtime.length) return thread;
+  if (!thread.length) return runtime;
+
+  const runtimeUsers = countUserTimelineMessages(runtime);
+  const threadUsers = countUserTimelineMessages(thread);
+
+  // Degraded live timeline: tools/thinking/assistant only — prefer disk history.
+  if (runtimeUsers === 0 && threadUsers > 0) return thread;
+
+  // Always re-inject any disk user turns the live timeline lost (reconnect / partial
+  // history / slice). Cheap no-op when both sides already share the same users.
+  if (threadUsers > 0) {
+    const merged = mergeMissingUserMessages(runtime, thread);
+    if (merged !== runtime) return merged;
+  }
+
+  // Both healthy: prefer the longer sequence (usually the live runtime).
+  if (thread.length > runtime.length && threadUsers >= runtimeUsers) return thread;
+  return runtime;
+}
+
 export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'connectionState',
   'timeline',

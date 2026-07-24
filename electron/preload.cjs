@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runCliDoctor: () => ipcRenderer.invoke('cliMaintenance:doctor'),
   updateCodeBuddyCli: () => ipcRenderer.invoke('cliMaintenance:update'),
   installCodeBuddyCli: (target) => ipcRenderer.invoke('cliMaintenance:install', target),
+  ensureRecommendedCodeBuddyCli: () => ipcRenderer.invoke('cliMaintenance:ensureRecommended'),
   updateInstalledPlugin: (payload) => ipcRenderer.invoke('pluginMaintenance:update', payload),
   previewPluginDependencyPrune: (payload) => ipcRenderer.invoke('pluginMaintenance:previewPrune', payload),
   prunePluginDependencies: (payload) => ipcRenderer.invoke('pluginMaintenance:prune', payload),
@@ -82,6 +83,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('runtime:status', listener);
     return () => ipcRenderer.removeListener('runtime:status', listener);
   },
+  // 手机远程（与 channel「远程控制」分离）
+  mobileRemoteGetStatus: () => ipcRenderer.invoke('mobileRemote:getStatus'),
+  mobileRemoteGetConfig: () => ipcRenderer.invoke('mobileRemote:getConfig'),
+  mobileRemoteSetConfig: (config) => ipcRenderer.invoke('mobileRemote:setConfig', config),
+  mobileRemoteGetPairingOffer: () => ipcRenderer.invoke('mobileRemote:getPairingOffer'),
+  mobileRemoteStart: () => ipcRenderer.invoke('mobileRemote:start'),
+  mobileRemoteStop: () => ipcRenderer.invoke('mobileRemote:stop'),
   requestCodeBuddy: (request) => ipcRenderer.invoke('codebuddy:request', request),
   openCodeBuddyStream: (request, handlers = {}) => {
     const streamId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;

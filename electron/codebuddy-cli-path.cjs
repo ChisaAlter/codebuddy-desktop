@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 function pathEntries(env = process.env) {
   return String(env.Path || env.PATH || '')
@@ -50,14 +51,61 @@ function windowsNpmGlobalDirs(env = process.env) {
 }
 
 /**
- * GUI 从快捷方式启动时，偶发拿不到最新用户 PATH。
- * 在 Windows 上把常见 npm 全局目录补进 PATH，便于找到 codebuddy.cmd。
+ * 读取 Windows 注册表中的用户/系统 Path。
+ * GUI 从快捷方式启动时 process.env.PATH 常是登录时快照；用户随后安装 CLI 后，
+ * 只有重新读注册表才能在不重启应用的情况下看到新 PATH。
+ *
+ * deps.execReg 便于单测注入；默认用 reg query。
  */
-function withAugmentedPath(env = process.env) {
+function readWindowsRegistryPathEntries(deps = {}) {
+  if (process.platform !== 'win32') return [];
+  const execReg =
+    deps.execReg ||
+    ((args) =>
+      execFileSync('reg', args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 3000,
+        maxBuffer: 256 * 1024,
+      }));
+
+  const keys = [
+    ['query', 'HKCU\\Environment', '/v', 'Path'],
+    ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', '/v', 'Path'],
+  ];
+  const entries = [];
+  for (const args of keys) {
+    try {
+      const output = String(execReg(args) || '');
+      // REG_EXPAND_SZ / REG_SZ  路径值
+      const match = output.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+      if (!match) continue;
+      const raw = match[1].trim();
+      if (!raw) continue;
+      for (const part of raw.split(';')) {
+        const item = String(part || '').trim();
+        if (item) entries.push(item);
+      }
+    } catch (_) {
+      // 注册表不可读时静默回退，不影响现有 PATH 逻辑
+    }
+  }
+  return entries;
+}
+
+/**
+ * GUI 从快捷方式启动时，偶发拿不到最新用户 PATH。
+ * 在 Windows 上：
+ * 1) 合并注册表用户/系统 Path（覆盖进程启动后新装的 CLI）
+ * 2) 把常见 npm 全局目录补进 PATH，便于找到 codebuddy.cmd
+ */
+function withAugmentedPath(env = process.env, deps = {}) {
   if (process.platform !== 'win32') return { ...env };
   const current = pathEntries(env);
+  const registryEntries = readWindowsRegistryPathEntries(deps);
   const extras = windowsNpmGlobalDirs(env).filter((dir) => dirExists(dir));
-  const next = uniquePaths([...extras, ...current]);
+  // 优先级：npm 全局目录 > 注册表最新 Path > 进程启动时 Path
+  const next = uniquePaths([...extras, ...registryEntries, ...current]);
   if (next.length === current.length && next.every((item, index) => item === current[index])) {
     return { ...env };
   }
@@ -122,9 +170,9 @@ function quoteForCmd(value) {
  * Windows 上 npm 全局命令是 .cmd 包装；CreateProcess 无法直接执行 .cmd，
  * 因此优先解析到 node + 真实 JS 入口，避免再走 cmd 二次分词。
  */
-function resolveCodeBuddySpawnSpec(args = [], env = process.env) {
+function resolveCodeBuddySpawnSpec(args = [], env = process.env, deps = {}) {
   const argv = Array.isArray(args) ? args.map((item) => String(item)) : [];
-  const effectiveEnv = withAugmentedPath(env);
+  const effectiveEnv = withAugmentedPath(env, deps);
   const found = findOnPath('codebuddy', effectiveEnv);
 
   if (!found) {
@@ -174,11 +222,54 @@ function resolveCodeBuddySpawnSpec(args = [], env = process.env) {
   };
 }
 
+/**
+ * 解析 npm 调用方式（用于零安装时 npm install -g @tencent-ai/codebuddy-code）。
+ * Windows 上 npm 通常是 .cmd，与 codebuddy 一样走 cmd /d /s /c。
+ */
+function resolveNpmSpawnSpec(args = [], env = process.env, deps = {}) {
+  const argv = Array.isArray(args) ? args.map((item) => String(item)) : [];
+  const effectiveEnv = withAugmentedPath(env, deps);
+  const found = findOnPath('npm', effectiveEnv);
+
+  if (!found) {
+    return {
+      command: 'npm',
+      args: argv,
+      env: effectiveEnv,
+      resolved: false,
+      source: null,
+    };
+  }
+
+  const isWindowsShim = process.platform === 'win32' && (/\.(cmd|bat)$/i.test(found) || !path.extname(found));
+  if (isWindowsShim) {
+    const comspec = effectiveEnv.ComSpec || process.env.ComSpec || 'cmd.exe';
+    const commandLine = [quoteForCmd(found), ...argv.map(quoteForCmd)].join(' ');
+    return {
+      command: comspec,
+      args: ['/d', '/s', '/c', commandLine],
+      env: effectiveEnv,
+      resolved: true,
+      source: found,
+    };
+  }
+
+  return {
+    command: found,
+    args: argv,
+    env: effectiveEnv,
+    resolved: true,
+    source: found,
+  };
+}
+
 module.exports = {
   pathEntries,
   withAugmentedPath,
   findOnPath,
   resolveCodeBuddyJsEntry,
   resolveCodeBuddySpawnSpec,
+  resolveNpmSpawnSpec,
   quoteForCmd,
+  readWindowsRegistryPathEntries,
 };

@@ -20,6 +20,7 @@ import {
 } from '../helpers/prompt-completion';
 import {
   emptyThreadRuntime,
+  resolveThreadTimeline,
   responseTerminalRuntimePatch,
   sessionActionItemMatches,
   ACTIVE_THREAD_RUNTIME_KEYS,
@@ -303,9 +304,11 @@ export function createSessionsChatSlice(set, get, ctx) {
           latestRuntime.activePromptRunId && client?.hasActivePrompt?.(sessionId),
         );
         if (!requestStillActive) {
+          get().flushThreadTimelineCoalesce?.(threadId);
+          const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
           get().patchThreadRuntime(
             threadId,
-            responseTerminalRuntimePatch({ timeline: closeAssistantStream(latestRuntime.timeline) }),
+            responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedRuntime.timeline) }),
           );
         }
       }
@@ -345,6 +348,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       return;
     }
     if (type === 'reconnect_failed') {
+      get().flushThreadTimelineCoalesce?.(threadId);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       get().patchThreadRuntime(
         threadId,
@@ -522,6 +526,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       // 复用已连接 client 时若没有进行中的 prompt，清掉磁盘/异常残留的 busy 态
       const sessionStillBusy = Boolean(existingClient.hasActivePrompt?.(thread.sessionId));
       if (!sessionStillBusy) {
+        get().flushThreadTimelineCoalesce?.(thread.id);
         const latestRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
         get().patchThreadRuntime(
           thread.id,
@@ -590,9 +595,13 @@ export function createSessionsChatSlice(set, get, ctx) {
 
     resetSeenContent(thread.id);
     const requestedSessionId = sessionIdOverride === undefined ? thread.sessionId : sessionIdOverride;
+    const preservedRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
+    // Prefer non-empty runtime timeline; empty [] must not hide persisted thread history
+    // (user bubbles vanish if we keep runtime.timeline || thread.timeline).
+    const restoredTimeline = resolveThreadTimeline(preservedRuntime.timeline, thread.timeline);
     set({
       sessionId: requestedSessionId || null,
-      timeline: closeAssistantStream(Array.isArray(thread.timeline) ? thread.timeline : []),
+      timeline: closeAssistantStream(restoredTimeline),
       permissionRequests: [],
       questions: [],
       sessionTitle: thread.title || null,
@@ -601,13 +610,12 @@ export function createSessionsChatSlice(set, get, ctx) {
       workspacePath: project.workspacePath,
       connectionState: 'connecting',
     });
-    const preservedRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
     const preservedPromptQueue = preservedRuntime.promptQueue?.length
       ? preservedRuntime.promptQueue
       : serializePromptQueue(thread.metadata?.promptQueue);
     get().patchThreadRuntime(thread.id, {
       ...emptyThreadRuntime(),
-      timeline: closeAssistantStream((preservedRuntime.timeline || thread.timeline || []).slice(-300)),
+      timeline: closeAssistantStream(restoredTimeline.slice(-300)),
       promptQueue: preservedPromptQueue,
       pendingAttachments: preservedRuntime.pendingAttachments || [],
       promptSuggestion: preservedRuntime.promptSuggestion || null,
@@ -752,7 +760,13 @@ export function createSessionsChatSlice(set, get, ctx) {
             : {}),
         });
       }
-      const completedTimeline = closeAssistantStream(threadRuntime.timeline);
+      // Keep disk history if live runtime was emptied mid-connect (e.g. [] truthy overwrite).
+      get().flushThreadTimelineCoalesce?.(thread.id);
+      const latestThread = get().threadsById[thread.id] || thread;
+      const flushedRuntime = get().threadRuntimeById[thread.id] || threadRuntime;
+      const completedTimeline = closeAssistantStream(
+        resolveThreadTimeline(flushedRuntime.timeline, latestThread.timeline),
+      );
       get().patchThreadRuntime(thread.id, {
         sessionId: resolvedSessionId,
         connectionState: 'connected',
@@ -1670,6 +1684,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
 
       client.invalidateInteractiveRequests?.('session-cancelled');
+      get().flushThreadTimelineCoalesce?.(threadId);
       const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const cancelledTimeline = cancelPendingTimelineActions(closeAssistantStream(latestRuntime.timeline));
       const timeline = reduceAcpEvent(cancelledTimeline, 'status_change', {
@@ -1749,7 +1764,11 @@ export function createSessionsChatSlice(set, get, ctx) {
     ) {
       get().patchThreadRuntime(
         threadId,
-        responseTerminalRuntimePatch({ timeline: closeAssistantStream(runtime.timeline) }),
+        (() => {
+          get().flushThreadTimelineCoalesce?.(threadId);
+          const flushed = get().threadRuntimeById[threadId] || runtime;
+          return responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushed.timeline) });
+        })(),
       );
       await get().updateThreadRecord(threadId, { status: 'idle' });
       runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -1936,6 +1955,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (!runIsCurrent()) return false;
 
       if (result?.stopReason === 'cancelled') {
+        get().flushThreadTimelineCoalesce?.(threadId);
         const cancelledRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
         const cancelledTimeline = closeAssistantStream(cancelledRuntime.timeline);
         get().patchThreadRuntime(
@@ -2045,6 +2065,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         throw incompleteError;
       }
 
+      get().flushThreadTimelineCoalesce?.(threadId);
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const completedTimeline = closeAssistantStream(completedRuntime.timeline);
       get().patchThreadRuntime(
@@ -2071,9 +2092,11 @@ export function createSessionsChatSlice(set, get, ctx) {
         /cancelled|canceled|aborted by user|用户取消|已取消/i.test(error.message || '');
       if (userCancelled) {
         if (failedRuntime.activePromptRunId === activePromptRunId) {
+          get().flushThreadTimelineCoalesce?.(threadId);
+          const flushedFailed = get().threadRuntimeById[threadId] || failedRuntime;
           get().patchThreadRuntime(
             threadId,
-            responseTerminalRuntimePatch({ timeline: closeAssistantStream(failedRuntime.timeline) }),
+            responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedFailed.timeline) }),
           );
         }
         return false;
@@ -2084,17 +2107,19 @@ export function createSessionsChatSlice(set, get, ctx) {
       const failedDraft = restoreInput ? String(draftText || '').trim() : '';
       const currentDraft = String(currentThread.draft || '').trim();
       const restoredDraft = failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
+      get().flushThreadTimelineCoalesce?.(threadId);
+      const flushedFailedRuntime = get().threadRuntimeById[threadId] || failedRuntime;
       const restoredAttachments = restoreInput
-        ? [...attachments, ...(failedRuntime.pendingAttachments || [])].filter(
+        ? [...attachments, ...(flushedFailedRuntime.pendingAttachments || [])].filter(
             (item, index, items) =>
               items.findIndex(
                 (candidate) =>
                   candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind,
               ) === index,
           )
-        : failedRuntime.pendingAttachments || [];
+        : flushedFailedRuntime.pendingAttachments || [];
       const failedTimeline = closeAssistantStream(
-        reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
+        reduceAcpEvent(flushedFailedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
       );
       get().patchThreadRuntime(
         threadId,

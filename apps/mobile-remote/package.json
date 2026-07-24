@@ -1,0 +1,9 @@
+{
+  "name": "@codebuddy/mobile-remote-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeBuddy mobile-remote Android client (Expo). Scaffold — run create-expo-app into this folder or replace with full app.",
+  "scripts": {
+    "start": "echo \"Initialize Expo app first: see apps/mobile-remote/README.md\""
+  }
+}

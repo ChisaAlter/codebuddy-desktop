@@ -24,6 +24,8 @@ import {
 } from '../lib/chat-scroll';
 import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
+import { requestSettingsSection } from '../lib/settings-nav';
+import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -1698,11 +1700,39 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     const attachments = Array.isArray(item.attachments) ? item.attachments : [];
     const images = attachments.filter((attachment) => attachment?.kind === 'image');
     const files = attachments.filter((attachment) => attachment?.kind !== 'image');
-    const text = typeof item.content === 'string' ? item.content : '';
+    // getText-compatible: content may be a ContentBlock / array after imperfect rehydrate
+    const text =
+      typeof item.content === 'string'
+        ? item.content
+        : item.content == null
+          ? ''
+          : Array.isArray(item.content)
+            ? item.content
+                .map((block) =>
+                  typeof block === 'string'
+                    ? block
+                    : block && typeof block === 'object'
+                      ? block.text || block.content || ''
+                      : '',
+                )
+                .join('')
+            : typeof item.content === 'object'
+              ? item.content.text || item.content.content || ''
+              : String(item.content);
     if (!text && images.length === 0 && files.length === 0) return null;
+    // Effort picker injects `/effort …` as a real prompt so CLI switches mode, but it is not
+    // a human chat turn. Showing it at the bottom makes it look like "only system messages exist".
+    const trimmed = String(text || '').trim();
+    if (
+      !images.length &&
+      !files.length &&
+      /^\/effort(?:\s+\S+)?$/i.test(trimmed)
+    ) {
+      return null;
+    }
     return (
-      <div className="mb-6 flex justify-end" data-chat-role="user">
-        <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-sm border border-transparent bg-[var(--color-bg-user)] px-5 py-3">
+      <div className="mb-6 flex justify-end" data-chat-role="user" data-testid="chat-user-message">
+        <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-sm border border-[color-mix(in_srgb,var(--color-accent-blue)_28%,var(--color-border-muted))] bg-[var(--color-bg-user)] px-5 py-3 shadow-sm text-[var(--color-text-user)]">
           {images.length > 0 ? (
             <div className="mb-2 flex flex-wrap gap-2">
               {images.map((attachment, index) => {
@@ -1744,7 +1774,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
             </div>
           ) : null}
           {text ? (
-            <p className="whitespace-pre-wrap break-words text-chat text-[var(--color-text-primary)]">{text}</p>
+            <p className="whitespace-pre-wrap break-words text-chat text-[var(--color-text-user)]">{text}</p>
           ) : null}
         </div>
       </div>
@@ -1793,7 +1823,16 @@ export default function ReplicaChatView() {
   const textareaRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
-  const timeline = useStore((s) => s.timeline);
+  // Prefer live runtime timeline, but heal missing user bubbles from disk history.
+  // Root `timeline`, per-thread runtime, and persisted thread.timeline can diverge after
+  // reconnect; always resolve across all three so user bubbles never disappear.
+  const timeline = useStore((s) => {
+    const threadId = s.activeThreadId;
+    const thread = s.threadsById[threadId];
+    const runtimeTimeline = s.threadRuntimeById?.[threadId]?.timeline;
+    const live = resolveThreadTimeline(s.timeline, runtimeTimeline);
+    return resolveThreadTimeline(live, thread?.timeline);
+  });
   const connectionState = useStore((s) => s.connectionState);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const activeProject = useStore((s) => s.projectsById[s.activeProjectId] || null);
@@ -1985,6 +2024,13 @@ export default function ReplicaChatView() {
           : activeProject?.runtimeError ||
             recoveryError ||
             (runtimeStatus === 'stopped' ? t('recovery.runtimeStopped') : t('recovery.sessionDisconnected'));
+  const runtimeErrorText = String(activeProject?.runtimeError || recoveryError || recoveryMessage || '');
+  const cliSetupLikelyNeeded =
+    runtimeUnavailable &&
+    !accountLoginNeeded &&
+    /CodeBuddy CLI|CLI_INCOMPATIBLE|未找到|过低|无法识别|not found|ENOENT|最低支持|推荐版本|npm install -g/i.test(
+      runtimeErrorText,
+    );
 
   const changeSessionSetting = useCallback(
     async (kind, value) => {
@@ -2657,10 +2703,23 @@ export default function ReplicaChatView() {
             : t('recovery.connectionFailed')}
       </div>
       <div className="mt-2 break-words text-xs leading-5 text-[var(--color-text-secondary)]">{recoveryMessage}</div>
-      <div className="mt-4 flex items-center justify-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        {cliSetupLikelyNeeded ? (
+          <button
+            type="button"
+            className="btn-primary px-4 py-2 text-xs"
+            onClick={() => {
+              requestSettingsSection('settings-section-cli');
+              useStore.getState().setRoute('settings');
+            }}
+            data-testid="chat-open-cli-settings"
+          >
+            {t('recovery.openCliSettings')}
+          </button>
+        ) : null}
         <button
           type="button"
-          className="btn-primary px-4 py-2 text-xs"
+          className={`${cliSetupLikelyNeeded ? 'btn-ghost' : 'btn-primary'} px-4 py-2 text-xs`}
           disabled={recovering || codeBuddyAccountAuthState === 'authenticating'}
           onClick={recoverConnection}
         >

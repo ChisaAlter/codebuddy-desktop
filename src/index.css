@@ -46,9 +46,10 @@
     --color-accent-orange: #f97316;
     --color-accent-purple: #8b7dff;
 
-    --color-bg-user: #1e293b;
+    /* Distinct slate bubble so user turns stay visible on pure-black chat canvas */
+    --color-bg-user: #243044;
     --color-bg-code: #161616;
-    --color-text-user: #bfdbfe;
+    --color-text-user: #e2e8f0;
 
     --color-success: #4ade80;
     --color-success-dim: rgba(74,222,128,0.1);
@@ -124,7 +125,8 @@
     --color-accent-yellow: #faad14;
     --color-accent-purple: #6c4dff;
 
-    --color-bg-user: #eef2ff;
+    /* Indigo-tint bubble with clear contrast on light canvas */
+    --color-bg-user: #e0e7ff;
     --color-bg-code: #f8f9fa;
     --color-text-user: #1e3a8a;
 
@@ -215,9 +217,9 @@ body,
     --color-inline-code: #e879a5;
     --color-scrollbar: rgba(255,255,255,0.12);
     --color-scrollbar-hover: rgba(255,255,255,0.2);
-    --color-bg-user: #1e293b;
+    --color-bg-user: #243044;
     --color-bg-code: #161616;
-    --color-text-user: #bfdbfe;
+    --color-text-user: #e2e8f0;
     --color-disabled-text: #555558;
     --color-disabled-bg: #1e1e20;
     --color-channel-accent: #60a5fa;

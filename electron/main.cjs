@@ -27,9 +27,54 @@ const {
   buildCompatStatus,
   assertCliCompatibleForRuntime,
 } = require('./cli-compat.cjs');
-const { resolveCodeBuddySpawnSpec } = require('./codebuddy-cli-path.cjs');
+const { resolveCodeBuddySpawnSpec, resolveNpmSpawnSpec } = require('./codebuddy-cli-path.cjs');
+
+const CODEBUDDY_CLI_NPM_PACKAGE = '@tencent-ai/codebuddy-code';
+const { MobileRemoteHost, defaultConfig: defaultMobileRemoteConfig } = require('./mobile-remote/host.cjs');
 
 const isDev = !app.isPackaged;
+
+/** @type {import('./mobile-remote/host.cjs').MobileRemoteHost | null} */
+let mobileRemoteHost = null;
+
+function mobileRemoteConfigPath() {
+  return path.join(app.getPath('userData'), 'mobile-remote-config.json');
+}
+
+function readMobileRemoteConfig() {
+  try {
+    const raw = fs.readFileSync(mobileRemoteConfigPath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultMobileRemoteConfig(),
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+    };
+  } catch {
+    return defaultMobileRemoteConfig();
+  }
+}
+
+function writeMobileRemoteConfig(config) {
+  const next = {
+    ...defaultMobileRemoteConfig(),
+    ...(config && typeof config === 'object' ? config : {}),
+  };
+  const file = mobileRemoteConfigPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
+function getMobileRemoteHost() {
+  if (!mobileRemoteHost) {
+    mobileRemoteHost = new MobileRemoteHost({
+      userDataPath: app.getPath('userData'),
+      getConfig: readMobileRemoteConfig,
+      setConfig: writeMobileRemoteConfig,
+    });
+  }
+  return mobileRemoteHost;
+}
 
 // 生产构建本地 HTTP 服务器端口（动态分配）
 let prodServerPort = null;
@@ -953,6 +998,21 @@ function parseCodeBuddyCliVersion(value) {
 }
 
 async function getCodeBuddyCliInfo() {
+  // 先解析 spawn spec：PATH/注册表里完全找不到时直接 missing，避免无效 spawn。
+  const probeSpec = resolveCodeBuddySpawnSpec(['--version'], process.env);
+  if (!probeSpec.resolved) {
+    const compat = buildCompatStatus(null, { missing: true });
+    return {
+      version: null,
+      output: '',
+      truncated: false,
+      compat,
+      error: compat.message,
+      resolved: false,
+      source: null,
+    };
+  }
+
   try {
     const result = await runCodeBuddyCli(['--version'], {
       timeoutMs: 10000,
@@ -974,6 +1034,8 @@ async function getCodeBuddyCliInfo() {
         truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
         compat: buildCompatStatus(null, { unknown: true }),
         error: parseError?.message || '无法识别 CodeBuddy CLI 版本',
+        resolved: true,
+        source: probeSpec.source || null,
       };
     }
     return {
@@ -981,6 +1043,8 @@ async function getCodeBuddyCliInfo() {
       output,
       truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
       compat: buildCompatStatus(version),
+      resolved: true,
+      source: probeSpec.source || null,
     };
   } catch (error) {
     const message = String(error?.message || error || '');
@@ -991,6 +1055,8 @@ async function getCodeBuddyCliInfo() {
       truncated: false,
       compat: buildCompatStatus(null, missing ? { missing: true } : { unknown: true }),
       error: message || '读取 CodeBuddy CLI 版本失败',
+      resolved: Boolean(probeSpec.resolved),
+      source: probeSpec.source || null,
     };
   }
 }
@@ -1047,9 +1113,63 @@ function validateCodeBuddyInstallTarget(value) {
   return version;
 }
 
+function runNpmCli(args, options = {}) {
+  const argv = Array.isArray(args) ? args.map((arg) => String(arg)) : [];
+  const spec = resolveNpmSpawnSpec(argv, options.env || process.env);
+  if (!spec.resolved) {
+    const error = new Error(
+      '未找到 npm 命令。请先安装 Node.js（含 npm），或在终端执行 npm install -g @tencent-ai/codebuddy-code 后点刷新检测。',
+    );
+    error.code = 'NPM_NOT_FOUND';
+    throw error;
+  }
+  return runCapturedProcess(spec.command, spec.args, {
+    ...options,
+    env: spec.env,
+  });
+}
+
+/**
+ * 通过 npm 全局安装/对齐 CodeBuddy CLI（零安装或强制覆盖推荐版）。
+ * package 固定为 @tencent-ai/codebuddy-code[@version]
+ */
+async function bootstrapCodeBuddyCliViaNpm(targetValue = RECOMMENDED_VERSION) {
+  const target = validateCodeBuddyInstallTarget(targetValue);
+  const pkg = target === 'latest' ? CODEBUDDY_CLI_NPM_PACKAGE : `${CODEBUDDY_CLI_NPM_PACKAGE}@${target}`;
+  const before = await getCodeBuddyCliInfo();
+  const result = await runNpmCli(['install', '-g', pkg], {
+    timeoutMs: 10 * 60 * 1000,
+    maxOutputBytes: 2 * 1024 * 1024,
+    timeoutMessage: 'npm 安装 CodeBuddy CLI 超过 10 分钟，已停止命令。请检查网络或在终端手动安装。',
+  });
+  const after = await getCodeBuddyCliInfo();
+  if (!after.version) {
+    throw new Error(
+      after.error ||
+        `npm 安装已完成，但仍无法读取 CodeBuddy CLI 版本。请确认 PATH 中存在 codebuddy（常见于 %APPDATA%\\npm），必要时重启桌面端。推荐版本 v${RECOMMENDED_VERSION}。`,
+    );
+  }
+  return {
+    method: 'npm',
+    package: pkg,
+    target,
+    beforeVersion: before.version || null,
+    afterVersion: after.version,
+    changed: before.version !== after.version,
+    compat: after.compat,
+    output: stripTerminalFormatting(result.output).trim() || 'npm 安装已完成。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
 async function installCodeBuddyCli(targetValue) {
   const target = validateCodeBuddyInstallTarget(targetValue);
   const before = await getCodeBuddyCliInfo();
+  // 尚无 codebuddy 时走 npm 全局安装；已有 CLI 则优先 codebuddy install。
+  if (!before.version || before.compat?.status === 'missing') {
+    return bootstrapCodeBuddyCliViaNpm(target);
+  }
+
   let result;
   try {
     result = await runCodeBuddyCli(['install', target], {
@@ -1060,9 +1180,8 @@ async function installCodeBuddyCli(targetValue) {
   } catch (error) {
     const message = String(error?.message || error || '');
     if (/not found|ENOENT|不是内部或外部命令|未找到 CodeBuddy CLI/i.test(message)) {
-      throw new Error(
-        `未找到 codebuddy 命令，无法执行安装。请先按官方文档安装 CodeBuddy CLI，再回到设置安装推荐版本 v${RECOMMENDED_VERSION}。原始错误: ${message}`,
-      );
+      // codebuddy 半残时回退 npm
+      return bootstrapCodeBuddyCliViaNpm(target);
     }
     throw error;
   }
@@ -1074,6 +1193,7 @@ async function installCodeBuddyCli(targetValue) {
     );
   }
   return {
+    method: 'codebuddy',
     target,
     beforeVersion: before.version || null,
     afterVersion: after.version,
@@ -1082,6 +1202,39 @@ async function installCodeBuddyCli(targetValue) {
     output: stripTerminalFormatting(result.output).trim() || '安装命令已完成，CodeBuddy CLI 未返回文本输出。',
     truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
   };
+}
+
+/**
+ * 一键修复：missing/unknown → npm 装推荐版；outdated → codebuddy install 推荐版（失败再 npm）。
+ */
+async function ensureRecommendedCodeBuddyCli() {
+  const before = await getCodeBuddyCliInfo();
+  const status = before.compat?.status;
+  if (status === 'ok' || status === 'newer') {
+    return {
+      method: 'noop',
+      target: RECOMMENDED_VERSION,
+      beforeVersion: before.version || null,
+      afterVersion: before.version || null,
+      changed: false,
+      compat: before.compat,
+      output: before.compat?.message || '当前 CodeBuddy CLI 已满足要求。',
+      truncated: false,
+    };
+  }
+  if (status === 'outdated' && before.version) {
+    try {
+      return await installCodeBuddyCli(RECOMMENDED_VERSION);
+    } catch (error) {
+      // install 失败时再尝试 npm 强制覆盖
+      const npmResult = await bootstrapCodeBuddyCliViaNpm(RECOMMENDED_VERSION);
+      return {
+        ...npmResult,
+        output: `${String(error?.message || error || '')}\n\n已回退 npm 安装：\n${npmResult.output}`.trim(),
+      };
+    }
+  }
+  return bootstrapCodeBuddyCliViaNpm(RECOMMENDED_VERSION);
 }
 
 let cliMaintenanceOperation = null;
@@ -1366,6 +1519,35 @@ ipcMain.handle('app:getInfo', () => ({
   userDataPath: app.getPath('userData'),
 }));
 
+// 手机远程（mobile-remote）：与微信/企微「远程控制」channel 分离
+ipcMain.handle('mobileRemote:getStatus', async () => getMobileRemoteHost().getStatus());
+ipcMain.handle('mobileRemote:getConfig', () => readMobileRemoteConfig());
+ipcMain.handle('mobileRemote:setConfig', async (_event, config = {}) => {
+  const next = writeMobileRemoteConfig(config);
+  const host = getMobileRemoteHost();
+  if (next.enabled) {
+    try {
+      await host.start();
+    } catch (error) {
+      logStartup(`mobileRemote start failed: ${error?.message || error}`);
+    }
+  } else {
+    await host.stop();
+  }
+  return { config: next, status: host.getStatus() };
+});
+ipcMain.handle('mobileRemote:getPairingOffer', async () => getMobileRemoteHost().getPairingOffer());
+ipcMain.handle('mobileRemote:start', async () => {
+  const config = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: true });
+  const status = await getMobileRemoteHost().start();
+  return { config, status };
+});
+ipcMain.handle('mobileRemote:stop', async () => {
+  const config = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: false });
+  const status = await getMobileRemoteHost().stop();
+  return { config, status };
+});
+
 ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
 ipcMain.handle('sandbox:kill', (_event, sandboxId) =>
@@ -1392,6 +1574,9 @@ ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperatio
 ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
 ipcMain.handle('cliMaintenance:install', (_event, target) =>
   runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target)),
+);
+ipcMain.handle('cliMaintenance:ensureRecommended', () =>
+  runExclusiveCliMaintenanceOperation(() => ensureRecommendedCodeBuddyCli()),
 );
 ipcMain.handle('pluginMaintenance:update', (_event, payload) =>
   runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)),
@@ -1580,6 +1765,9 @@ async function createWindow() {
       sandbox: true,
       webSecurity: true,
       devTools: true,
+      // Keep timers/stream paint alive while the window is unfocused so returning
+      // from another app does not dump multi-second backlog and freeze the UI.
+      backgroundThrottling: false,
     },
   };
   if (savedBounds?.x != null && savedBounds?.y != null) {
@@ -2583,6 +2771,9 @@ app.on('before-quit', () => {
     } catch (_) {}
   }
   codebuddyStreams.clear();
+  if (mobileRemoteHost) {
+    mobileRemoteHost.stop().catch((error) => logStartup(`mobileRemote stop failed: ${error.message}`));
+  }
   runtimeManager.stopAll().catch((error) => logStartup(`Runtime shutdown failed: ${error.message}`));
   destroyTrayIcon('before-quit');
 });
