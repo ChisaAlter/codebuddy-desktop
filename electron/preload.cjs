@@ -90,6 +90,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mobileRemoteGetPairingOffer: () => ipcRenderer.invoke('mobileRemote:getPairingOffer'),
   mobileRemoteStart: () => ipcRenderer.invoke('mobileRemote:start'),
   mobileRemoteStop: () => ipcRenderer.invoke('mobileRemote:stop'),
+  mobileRemoteListDevices: () => ipcRenderer.invoke('mobileRemote:listDevices'),
+  mobileRemoteRevokeDevice: (deviceId) => ipcRenderer.invoke('mobileRemote:revokeDevice', deviceId),
   requestCodeBuddy: (request) => ipcRenderer.invoke('codebuddy:request', request),
   openCodeBuddyStream: (request, handlers = {}) => {
     const streamId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;

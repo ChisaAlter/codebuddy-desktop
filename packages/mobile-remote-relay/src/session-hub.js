@@ -130,6 +130,9 @@ export class SessionHub {
     }
 
     if (role === 'server') {
+      const connectionId = (query.get('connectionId') || '').trim();
+      const isData = connectionId.length > 0;
+
       const auth = this.verifyServerAuth(query);
       if (!auth.ok) {
         this.log('server auth failed', serverId, auth.reason);
@@ -137,6 +140,66 @@ export class SessionHub {
         return;
       }
       const session = this.getOrCreate(serverId);
+
+      if (isData) {
+        // Data socket: a per-client outbound socket opened by the host when a
+        // client joins. It must NOT replace the control socket. Find the client
+        // this data socket serves and bridge frames directly with that client.
+        const clientState = session.clients.get(connectionId);
+        const client = clientState?.ws;
+        ws._mr = { serverId, role, connectionId, isData: true };
+        this.log('server data online', serverId, connectionId, client ? 'client-present' : 'no-client');
+
+        if (client && client.readyState === 1) {
+          // Rewire client -> this data socket (raw payload, no client_frame wrap).
+          client.removeAllListeners('message');
+          client.on('message', (data, isBinary) => {
+            if (isBinary) {
+              this.#safeSend(ws, data, true);
+              return;
+            }
+            const text = typeof data === 'string' ? data : data.toString('utf8');
+            this.#safeSend(ws, text, false);
+          });
+          // Flush any frames buffered before the data socket attached.
+          if (clientState.pending.length) {
+            for (const pending of clientState.pending) this.#safeSend(ws, pending, false);
+            clientState.pending = [];
+          }
+        }
+
+        ws.on('message', (data, isBinary) => {
+          if (isBinary) return;
+          const text = typeof data === 'string' ? data : data.toString('utf8');
+          // Host data socket sends { type:'server_frame', connectionId, payload }.
+          // Forward payload to the client as raw text.
+          let payload = null;
+          try {
+            const wrapped = JSON.parse(text);
+            if (
+              wrapped &&
+              wrapped.type === 'server_frame' &&
+              wrapped.connectionId === connectionId &&
+              typeof wrapped.payload === 'string'
+            ) {
+              payload = wrapped.payload;
+            }
+          } catch {
+            payload = text; // raw fallback
+          }
+          if (payload == null) return;
+          const s = this.sessions.get(serverId);
+          const c = s?.clients.get(connectionId);
+          if (c?.ws && c.ws.readyState === 1) this.#safeSend(c.ws, payload, false);
+        });
+
+        ws.on('close', () => {
+          this.log('server data offline', serverId, connectionId);
+        });
+        return;
+      }
+
+      // Control socket (no connectionId)
       if (session.server && session.server.readyState === 1) {
         try {
           session.server.close(4000, 'replaced by new server');
@@ -145,7 +208,7 @@ export class SessionHub {
         }
       }
       session.server = ws;
-      ws._mr = { serverId, role, connectionId: null };
+      ws._mr = { serverId, role, connectionId: null, isData: false };
       this.log('server online', serverId);
 
       ws.on('message', (data, isBinary) => {
@@ -156,9 +219,9 @@ export class SessionHub {
         if (s && s.server === ws) {
           s.server = null;
           this.log('server offline', serverId);
-          for (const [, client] of s.clients) {
+          for (const [, clientState] of s.clients) {
             try {
-              client.close(4001, 'server offline');
+              clientState.ws.close(4001, 'server offline');
             } catch {
               /* ignore */
             }
@@ -176,14 +239,13 @@ export class SessionHub {
       return;
     }
     const connectionId = (query.get('connectionId') || '').trim() || randomUUID();
-    if (session.clients.has(connectionId)) {
-      try {
-        session.clients.get(connectionId)?.close(4000, 'replaced');
-      } catch {
-        /* ignore */
-      }
+    const existing = session.clients.get(connectionId);
+    if (existing) {
+      try { existing.ws.close(4000, 'replaced'); } catch { /* ignore */ }
     }
-    session.clients.set(connectionId, ws);
+    /** @type {{ ws: WebSocket, pending: string[] }} */
+    const clientState = { ws, pending: [] };
+    session.clients.set(connectionId, clientState);
     ws._mr = { serverId, role, connectionId };
     this.log('client connected', serverId, connectionId);
 
@@ -196,13 +258,10 @@ export class SessionHub {
     ws.on('message', (data, isBinary) => {
       const s = this.sessions.get(serverId);
       if (!s?.server || s.server.readyState !== 1) return;
-      // Prefix client frames so host can demux (phase-1 single socket)
-      if (isBinary) {
-        // binary: leave as-is only if host expects; phase-1 uses text
-        this.#safeSend(s.server, data, true);
-        return;
-      }
       const text = typeof data === 'string' ? data : data.toString('utf8');
+      clientState.pending.push(text);
+      // Also forward to control as client_frame (host ignores on control, but
+      // keeps the option open for single-socket hosts).
       this.#safeSend(
         s.server,
         JSON.stringify({ type: 'client_frame', connectionId, payload: text }),
@@ -212,7 +271,7 @@ export class SessionHub {
     ws.on('close', () => {
       const s = this.sessions.get(serverId);
       if (!s) return;
-      if (s.clients.get(connectionId) === ws) s.clients.delete(connectionId);
+      if (s.clients.get(connectionId)?.ws === ws) s.clients.delete(connectionId);
       if (s.server && s.server.readyState === 1) {
         this.#safeSend(
           s.server,
@@ -240,19 +299,19 @@ export class SessionHub {
     const s = this.sessions.get(serverId);
     if (!s) return;
 
-    // Host → specific client
+    // Host → specific client (legacy control-socket path; data sockets preferred)
     if (msg && msg.type === 'server_frame' && typeof msg.connectionId === 'string') {
-      const client = s.clients.get(msg.connectionId);
-      if (client && client.readyState === 1 && typeof msg.payload === 'string') {
-        this.#safeSend(client, msg.payload);
+      const c = s.clients.get(msg.connectionId);
+      if (c?.ws && c.ws.readyState === 1 && typeof msg.payload === 'string') {
+        this.#safeSend(c.ws, msg.payload);
       }
       return;
     }
 
     // Host broadcast (optional)
     if (msg && msg.type === 'broadcast' && typeof msg.payload === 'string') {
-      for (const [, client] of s.clients) {
-        if (client.readyState === 1) this.#safeSend(client, msg.payload);
+      for (const [, clientState] of s.clients) {
+        if (clientState.ws.readyState === 1) this.#safeSend(clientState.ws, msg.payload);
       }
     }
   }

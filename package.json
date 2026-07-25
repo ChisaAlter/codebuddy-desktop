@@ -12,6 +12,12 @@
   "main": "electron/main.cjs",
   "license": "MIT",
   "type": "module",
+  "workspaces": [
+    "packages/mobile-remote-protocol",
+    "packages/mobile-remote-crypto",
+    "packages/mobile-remote-relay",
+    "apps/mobile-remote"
+  ],
   "scripts": {
     "dev": "vite --port 5173",
     "dev:vite": "vite --port 5173",
@@ -21,6 +27,8 @@
     "release:prepare": "node scripts/run-release.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:mobile-remote": "npm run test -w @codebuddy/mobile-remote-protocol && npm run test -w @codebuddy/mobile-remote-crypto && npm run test -w @codebuddy/mobile-remote-relay && node --test --test-timeout=20000 electron/mobile-remote/tests/*.test.cjs",
+    "mobile-remote:relay": "npm run start -w @codebuddy/mobile-remote-relay",
     "test:e2e:baseline": "node scripts/test/e2e-baseline.cjs",
     "test:e2e:launch": "vite build && node scripts/test/e2e-launch.cjs",
     "test:e2e:renderer": "vite build && node scripts/test/e2e-renderer.cjs",

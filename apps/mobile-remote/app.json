@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "CodeBuddy Remote",
+    "slug": "codebuddy-mobile-remote",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0d1117",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.codebuddy.mobileremote"
+    },
+    "android": {
+      "package": "com.codebuddy.mobileremote",
+      "adaptiveIcon": {
+        "backgroundColor": "#0d1117"
+      },
+      "permissions": ["CAMERA"]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "CodeBuddy Remote 使用相机扫描配对二维码。"
+        }
+      ]
+    ]
+  }
+}

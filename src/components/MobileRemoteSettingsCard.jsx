@@ -12,6 +12,7 @@ export default function MobileRemoteSettingsCard({ t }) {
   const [config, setConfig] = useState(null);
   const [offerUrl, setOfferUrl] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState('');
+  const [devices, setDevices] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -19,12 +20,14 @@ export default function MobileRemoteSettingsCard({ t }) {
   const refresh = useCallback(async () => {
     if (!available) return;
     try {
-      const [st, cfg] = await Promise.all([
+      const [st, cfg, devs] = await Promise.all([
         api.mobileRemoteGetStatus(),
         api.mobileRemoteGetConfig(),
+        api.mobileRemoteListDevices ? api.mobileRemoteListDevices() : Promise.resolve([]),
       ]);
       setStatus(st);
       setConfig(cfg);
+      setDevices(Array.isArray(devs) ? devs : []);
       setError('');
     } catch (e) {
       setError(e?.message || String(e));
@@ -246,6 +249,48 @@ export default function MobileRemoteSettingsCard({ t }) {
       ) : null}
 
       {error ? <div className="text-xs text-[var(--color-accent-red)]">{error}</div> : null}
+
+      {devices.length > 0 ? (
+        <div className="rounded-md border border-[var(--color-border-default)] p-3">
+          <div className="mb-2 text-xs font-medium text-[var(--color-text-primary)]">
+            {t('mobileRemote.devices')}
+          </div>
+          <ul className="space-y-1">
+            {devices.map((d) => (
+              <li
+                key={d.deviceId}
+                className="flex items-center justify-between gap-2 text-[11px]"
+              >
+                <span className="min-w-0 truncate text-[var(--color-text-secondary)]">
+                  {d.label || d.deviceId.slice(0, 12)}
+                  <span className="ml-1 text-[var(--color-text-tertiary)]">
+                    {d.deviceId.slice(0, 8)}
+                  </span>
+                </span>
+                <button
+                  className="btn-ghost shrink-0 px-2 py-1 text-[11px] text-[var(--color-accent-red)]"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (!api.mobileRemoteRevokeDevice) return;
+                    if (!window.confirm(t('mobileRemote.revokeConfirm'))) return;
+                    setBusy(true);
+                    try {
+                      await api.mobileRemoteRevokeDevice(d.deviceId);
+                      await refresh();
+                    } catch (e) {
+                      setError(e?.message || String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  {t('mobileRemote.revoke')}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }

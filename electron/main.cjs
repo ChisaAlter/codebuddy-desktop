@@ -71,6 +71,13 @@ function getMobileRemoteHost() {
       userDataPath: app.getPath('userData'),
       getConfig: readMobileRemoteConfig,
       setConfig: writeMobileRemoteConfig,
+      net,
+      runtimeManager,
+      getProductState: () => productStateStore.load(),
+      listBackgroundTasks: () => {
+        try { return listBackgroundSessions(); } catch { return []; }
+      },
+      log: (...args) => logStartup(`mobileRemote: ${args.map(String).join(' ')}`),
     });
   }
   return mobileRemoteHost;
@@ -1432,6 +1439,20 @@ ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
       if (windowResult && typeof windowResult.then === 'function') await windowResult;
     });
     notification.show();
+    // Mirror task notifications to paired mobile-remote clients (in-connection).
+    if (mobileRemoteHost) {
+      try {
+        mobileRemoteHost.broadcast({
+          type: 'notify',
+          title,
+          body,
+          projectId: target.projectId,
+          threadId: target.threadId,
+        });
+      } catch (_) {
+        /* non-blocking */
+      }
+    }
     return { shown: true };
   } catch (error) {
     logStartup(`Task notification failed: ${error?.message || error}`);
@@ -1547,6 +1568,10 @@ ipcMain.handle('mobileRemote:stop', async () => {
   const status = await getMobileRemoteHost().stop();
   return { config, status };
 });
+ipcMain.handle('mobileRemote:listDevices', () => getMobileRemoteHost().listDevices());
+ipcMain.handle('mobileRemote:revokeDevice', async (_event, deviceId) =>
+  getMobileRemoteHost().revokeDevice(deviceId),
+);
 
 ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
