@@ -86,21 +86,30 @@ describe('end-to-end: client -> relay -> host with E2EE', () => {
       );
       await open(clientWs);
 
-      // wait for "connected"
+      // wait for "connected" (H11: relay now assigns the connectionId server-side,
+      // ignoring the client-supplied 'c-e2e'). Capture the assigned id.
       const start = Date.now();
-      while (!controlFrames.some((m) => m.type === 'connected' && m.connectionId === 'c-e2e')) {
-        if (Date.now() - start > 3000) throw new Error('no connected frame');
+      let assignedConnectionId = null;
+      while (Date.now() - start < 3000) {
+        for (const m of controlFrames) {
+          if (m.type === 'connected' && typeof m.connectionId === 'string') {
+            assignedConnectionId = m.connectionId;
+            break;
+          }
+        }
+        if (assignedConnectionId) break;
         await new Promise((r) => setTimeout(r, 20));
       }
+      if (!assignedConnectionId) throw new Error('no connected frame');
 
-      // Host opens a data socket for that client
+      // Host opens a data socket for that client using the relay-assigned id
       const hostData = new WebSocket(
         buildRelayWebSocketUrl({
           endpoint: `127.0.0.1:${relay.port}`,
           useTls: false,
           serverId,
           role: 'server',
-          connectionId: 'c-e2e',
+          connectionId: assignedConnectionId,
         }),
       );
       await open(hostData);
@@ -121,7 +130,7 @@ describe('end-to-end: client -> relay -> host with E2EE', () => {
           if (msg?.type === 'e2ee_hello' && msg.publicKeyB64) {
             hostChannel = createHostChannelFromHello(hostE2ee, msg.publicKeyB64);
             hostData.send(
-              JSON.stringify({ type: 'server_frame', connectionId: 'c-e2e', payload: buildE2eeReadyMessage() }),
+              JSON.stringify({ type: 'server_frame', connectionId: assignedConnectionId, payload: buildE2eeReadyMessage() }),
             );
           }
           return;
@@ -130,7 +139,7 @@ describe('end-to-end: client -> relay -> host with E2EE', () => {
         const op = JSON.parse(plain);
         const resp = { type: 'pong', id: op.id };
         hostData.send(
-          JSON.stringify({ type: 'server_frame', connectionId: 'c-e2e', payload: hostChannel.encrypt(JSON.stringify(resp)) }),
+          JSON.stringify({ type: 'server_frame', connectionId: assignedConnectionId, payload: hostChannel.encrypt(JSON.stringify(resp)) }),
         );
       });
 

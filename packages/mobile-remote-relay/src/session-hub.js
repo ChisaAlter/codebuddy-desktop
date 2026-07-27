@@ -12,6 +12,12 @@ import {
 const AUTH_MAX_AGE_MS = 5 * 60 * 1000;
 const AUTH_FUTURE_SKEW_MS = 60 * 1000;
 const MAX_NONCE_CACHE = 2000;
+// H10: resource caps to bound memory/DoS surface.
+const MAX_SESSIONS = 1024;
+const MAX_CLIENTS_PER_SESSION = 32;
+const MAX_PENDING_FRAMES_PER_CLIENT = 256;
+const MAX_FAILED_AUTH_PER_SERVER_ID = 8;
+const FAILED_AUTH_WINDOW_MS = 60 * 1000;
 
 /**
  * @typedef {import('ws').WebSocket} WebSocket
@@ -25,7 +31,7 @@ export class SessionHub {
     this.allowUnsignedServer = Boolean(options.allowUnsignedServer);
     this.now = options.now || (() => Date.now());
     this.log = options.log || (() => {});
-    /** @type {Map<string, { server: WebSocket | null, clients: Map<string, WebSocket>, relayAuthPublicKeyB64: string | null, usedNonces: Map<string, number> }>} */
+    /** @type {Map<string, { server: WebSocket | null, clients: Map<string, WebSocket>, relayAuthPublicKeyB64: string | null, usedNonces: Map<string, number>, failedAuth: { count: number, windowStart: number } }>} */
     this.sessions = new Map();
   }
 
@@ -35,15 +41,38 @@ export class SessionHub {
   getOrCreate(serverId) {
     let s = this.sessions.get(serverId);
     if (!s) {
+      // H10: cap total sessions to bound unbounded Map growth (any serverId string
+      // could otherwise allocate a new entry).
+      if (this.sessions.size >= MAX_SESSIONS) return null;
       s = {
         server: null,
         clients: new Map(),
         relayAuthPublicKeyB64: null,
         usedNonces: new Map(),
+        failedAuth: { count: 0, windowStart: this.now() },
       };
       this.sessions.set(serverId, s);
     }
     return s;
+  }
+
+  /**
+   * Record a failed auth attempt for a serverId and return false (reject) if the
+   * per-serverId failure budget is exhausted within the rolling window. H8/H10:
+   * prevents nonce-burn + signature-spam DoS from locking out a host's serverId.
+   * @param {string} serverId
+   * @returns {boolean} true if the attempt may proceed, false if rate-limited.
+   */
+  recordFailedAuth(serverId) {
+    const s = this.getOrCreate(serverId);
+    if (!s) return false;
+    const now = this.now();
+    if (now - s.failedAuth.windowStart > FAILED_AUTH_WINDOW_MS) {
+      s.failedAuth.count = 0;
+      s.failedAuth.windowStart = now;
+    }
+    s.failedAuth.count += 1;
+    return s.failedAuth.count <= MAX_FAILED_AUTH_PER_SERVER_ID;
   }
 
   /**
@@ -88,7 +117,6 @@ export class SessionHub {
     const now = this.now();
     if (issuedAt > now + AUTH_FUTURE_SKEW_MS) return { ok: false, reason: 'issuedAt in future' };
     if (now - issuedAt > AUTH_MAX_AGE_MS) return { ok: false, reason: 'auth expired' };
-    if (!this.consumeNonce(serverId, nonce)) return { ok: false, reason: 'nonce replay' };
 
     const session = this.getOrCreate(serverId);
     if (session.relayAuthPublicKeyB64 && session.relayAuthPublicKeyB64 !== pub) {
@@ -102,12 +130,23 @@ export class SessionHub {
       return { ok: false, reason: 'invalid relay-auth public key' };
     }
 
+    // H8: verify the signature BEFORE consuming the nonce. Previously the nonce
+    // was burned first, so an attacker who knows the (public) serverId could
+    // repeatedly hit the relay with random nonce+sig values, evicting the host's
+    // legitimate nonces and DoSing host connectivity with "nonce replay" errors.
     const valid = verifyRelayServerAuth(
       { serverId, role, connectionId: connectionId || undefined, nonce, issuedAt },
       sig,
       publicKey,
     );
-    if (!valid) return { ok: false, reason: 'bad signature' };
+    if (!valid) {
+      // H8/H10: rate-limit repeated bad-signature attempts per serverId so the
+      // nonce cache and connection slots aren't burned by a spammer.
+      this.recordFailedAuth(serverId);
+      return { ok: false, reason: 'bad signature' };
+    }
+
+    if (!this.consumeNonce(serverId, nonce)) return { ok: false, reason: 'nonce replay' };
 
     session.relayAuthPublicKeyB64 = pub;
     return { ok: true };
@@ -140,6 +179,11 @@ export class SessionHub {
         return;
       }
       const session = this.getOrCreate(serverId);
+      if (!session) {
+        // H10: sessions map is full.
+        ws.close(1013, 'relay full');
+        return;
+      }
 
       if (isData) {
         // Data socket: a per-client outbound socket opened by the host when a
@@ -234,15 +278,24 @@ export class SessionHub {
 
     // client
     const session = this.getOrCreate(serverId);
+    if (!session) {
+      // H10: sessions map is full.
+      ws.close(1013, 'relay full');
+      return;
+    }
     if (!session.server || session.server.readyState !== 1) {
       ws.close(1013, 'server offline');
       return;
     }
-    const connectionId = (query.get('connectionId') || '').trim() || randomUUID();
-    const existing = session.clients.get(connectionId);
-    if (existing) {
-      try { existing.ws.close(4000, 'replaced'); } catch { /* ignore */ }
+    // H10: cap concurrent clients per session to bound per-serverId DoS.
+    if (session.clients.size >= MAX_CLIENTS_PER_SESSION) {
+      ws.close(1013, 'too many clients');
+      return;
     }
+    // H11: ignore any client-supplied connectionId and assign a fresh server-side
+    // UUID. A predictable, client-chosen connectionId let an attacker evict a live
+    // client (duplicate key → 4000 'replaced') and squat the host's data routing.
+    const connectionId = randomUUID();
     /** @type {{ ws: WebSocket, pending: string[] }} */
     const clientState = { ws, pending: [] };
     session.clients.set(connectionId, clientState);
@@ -259,6 +312,12 @@ export class SessionHub {
       const s = this.sessions.get(serverId);
       if (!s?.server || s.server.readyState !== 1) return;
       const text = typeof data === 'string' ? data : data.toString('utf8');
+      // H10: bound the pending buffer so a pre-data-socket client cannot grow it
+      // without limit (frames are dropped oldest-first past the cap).
+      if (clientState.pending.length >= MAX_PENDING_FRAMES_PER_CLIENT) {
+        clientState.pending.shift();
+        this.log('pending overflow', serverId, connectionId);
+      }
       clientState.pending.push(text);
       // Also forward to control as client_frame (host ignores on control, but
       // keeps the option open for single-socket hosts).

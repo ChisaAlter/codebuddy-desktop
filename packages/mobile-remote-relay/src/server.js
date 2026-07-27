@@ -27,7 +27,9 @@ const server = http.createServer((req, res) => {
   res.end('Not Found');
 });
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+// H10: cap inbound frame size at 16MB (matches the host data socket limit) so a
+// single peer cannot 100MB-frame the relay to exhaust memory.
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 * 1024 });
 
 wss.on('connection', (ws, req) => {
   try {

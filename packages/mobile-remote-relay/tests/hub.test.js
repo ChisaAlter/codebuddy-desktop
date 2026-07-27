@@ -67,25 +67,31 @@ describe('SessionHub auth', () => {
     assert.equal(serverWs.closed, null);
 
     const clientWs = new FakeSocket();
+    // H11: relay now ignores any client-supplied connectionId and assigns a fresh
+    // server-side UUID. Capture the assigned id from the 'connected' control message.
     hub.attach(
       clientWs,
       new URLSearchParams({ serverId: 'srv_1', role: 'client', connectionId: 'c1' }),
     );
 
     const connected = serverWs.sent.map((s) => JSON.parse(String(s)));
-    assert.ok(connected.some((m) => m.type === 'connected' && m.connectionId === 'c1'));
+    const connectedMsg = connected.find((m) => m.type === 'connected');
+    assert.ok(connectedMsg && typeof connectedMsg.connectionId === 'string' && connectedMsg.connectionId.length > 0);
+    const connectionId = connectedMsg.connectionId;
+    // The client-supplied 'c1' must NOT be used (prevents squat/eviction).
+    assert.notEqual(connectionId, 'c1');
 
     clientWs.emit('message', 'hello-from-client', false);
     const fromClient = serverWs.sent.map((s) => JSON.parse(String(s)));
     assert.ok(
       fromClient.some(
-        (m) => m.type === 'client_frame' && m.connectionId === 'c1' && m.payload === 'hello-from-client',
+        (m) => m.type === 'client_frame' && m.connectionId === connectionId && m.payload === 'hello-from-client',
       ),
     );
 
     serverWs.emit(
       'message',
-      JSON.stringify({ type: 'server_frame', connectionId: 'c1', payload: 'hello-from-host' }),
+      JSON.stringify({ type: 'server_frame', connectionId, payload: 'hello-from-host' }),
       false,
     );
     assert.ok(clientWs.sent.includes('hello-from-host'));
@@ -121,6 +127,13 @@ describe('SessionHub auth', () => {
       clientWs,
       new URLSearchParams({ serverId: 'srv_2', role: 'client', connectionId: 'c-d' }),
     );
+    // H11: capture the relay-assigned connectionId from the 'connected' message.
+    const connectedMsg = serverCtrl.sent
+      .map((s) => JSON.parse(String(s)))
+      .find((m) => m.type === 'connected');
+    assert.ok(connectedMsg);
+    const connectionId = connectedMsg.connectionId;
+    assert.notEqual(connectionId, 'c-d');
 
     // Client sends a frame before data socket opens -> buffered + forwarded to control
     clientWs.emit('message', 'pre-data-hello', false);
@@ -130,9 +143,9 @@ describe('SessionHub auth', () => {
       ),
     );
 
-    // Host opens data socket
+    // Host opens data socket using the relay-assigned connectionId
     const dataSig = signRelayServerAuth(
-      { serverId: 'srv_2', role: 'server', connectionId: 'c-d', nonce: 'nonce-data-2', issuedAt },
+      { serverId: 'srv_2', role: 'server', connectionId, nonce: 'nonce-data-2', issuedAt },
       kp.secretKey,
     );
     const dataWs = new FakeSocket();
@@ -141,7 +154,7 @@ describe('SessionHub auth', () => {
       new URLSearchParams({
         serverId: 'srv_2',
         role: 'server',
-        connectionId: 'c-d',
+        connectionId,
         relayAuthNonce: 'nonce-data-2',
         relayAuthIssuedAt: String(issuedAt),
         relayAuthSig: dataSig,
@@ -159,12 +172,91 @@ describe('SessionHub auth', () => {
     // Host data socket server_frame -> client
     dataWs.emit(
       'message',
-      JSON.stringify({ type: 'server_frame', connectionId: 'c-d', payload: 'to-client' }),
+      JSON.stringify({ type: 'server_frame', connectionId, payload: 'to-client' }),
       false,
     );
     assert.ok(clientWs.sent.includes('to-client'));
 
     // Control socket must not have been replaced
     assert.equal(serverCtrl.closed, null);
+  });
+
+  // H8: a bad-signature auth attempt must NOT consume the nonce, so the host's
+  // legitimate auth with the same nonce can still succeed afterwards.
+  it('does not consume nonce when the signature is invalid', () => {
+    const kp = generateRelayAuthKeyPair();
+    const pub = exportRelayAuthPublicKey(kp.publicKey);
+    const issuedAt = Date.now();
+    const nonce = 'nonce-shared';
+
+    const hub = new SessionHub({ allowUnsignedServer: false });
+
+    // Attacker uses the same (public) serverId + nonce but a bogus signature.
+    const bogusSig = signRelayServerAuth(
+      { serverId: 'srv_h8', role: 'server', connectionId: '', nonce: 'other', issuedAt },
+      kp.secretKey,
+    );
+    const bogusWs = new FakeSocket();
+    hub.attach(
+      bogusWs,
+      new URLSearchParams({
+        serverId: 'srv_h8',
+        role: 'server',
+        relayAuthNonce: nonce,
+        relayAuthIssuedAt: String(issuedAt),
+        relayAuthSig: bogusSig,
+        relayAuthPublicKeyB64: pub,
+      }),
+    );
+    assert.equal(bogusWs.closed?.code, 1008);
+
+    // The legitimate host signs correctly with the same nonce and must succeed.
+    const goodSig = signRelayServerAuth(
+      { serverId: 'srv_h8', role: 'server', connectionId: '', nonce, issuedAt },
+      kp.secretKey,
+    );
+    const goodWs = new FakeSocket();
+    hub.attach(
+      goodWs,
+      new URLSearchParams({
+        serverId: 'srv_h8',
+        role: 'server',
+        relayAuthNonce: nonce,
+        relayAuthIssuedAt: String(issuedAt),
+        relayAuthSig: goodSig,
+        relayAuthPublicKeyB64: pub,
+      }),
+    );
+    assert.equal(goodWs.closed, null);
+  });
+
+  // H10: the sessions Map is capped; once full, new serverIds are rejected.
+  it('caps the number of sessions and rejects new serverIds beyond the cap', () => {
+    const hub = new SessionHub({ allowUnsignedServer: true });
+    // Fill sessions by attaching servers (allowUnsignedServer bypasses auth).
+    for (let i = 0; i < 1024; i += 1) {
+      const ws = new FakeSocket();
+      hub.attach(ws, new URLSearchParams({ serverId: `srv_fill_${i}`, role: 'server' }));
+      if (ws.closed) throw new Error(`fill attach ${i} closed unexpectedly`);
+    }
+    // The next serverId should be rejected (relay full).
+    const overflow = new FakeSocket();
+    hub.attach(overflow, new URLSearchParams({ serverId: 'srv_overflow', role: 'server' }));
+    assert.equal(overflow.closed?.code, 1013);
+  });
+
+  // H10: per-session client count is capped.
+  it('caps concurrent clients per session', () => {
+    const hub = new SessionHub({ allowUnsignedServer: true });
+    const serverWs = new FakeSocket();
+    hub.attach(serverWs, new URLSearchParams({ serverId: 'srv_clients', role: 'server' }));
+    for (let i = 0; i < 32; i += 1) {
+      const c = new FakeSocket();
+      hub.attach(c, new URLSearchParams({ serverId: 'srv_clients', role: 'client' }));
+      if (c.closed) throw new Error(`client ${i} closed unexpectedly`);
+    }
+    const extra = new FakeSocket();
+    hub.attach(extra, new URLSearchParams({ serverId: 'srv_clients', role: 'client' }));
+    assert.equal(extra.closed?.code, 1013);
   });
 });

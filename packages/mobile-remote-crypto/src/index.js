@@ -158,6 +158,28 @@ export function importRelayAuthSecretKey(base64) {
 }
 
 /**
+ * Derive a relay serverId from the host's relay-auth Ed25519 public key so the
+ * serverId is cryptographically bound to the host (H9). An attacker using their
+ * own keypair gets a different serverId and cannot pre-emptively squat the
+ * legitimate host's serverId at the relay.
+ *
+ * Uses nacl.hash (SHA-512), taking the first 16 bytes, base64url-encoded
+ * (padded with '=' stripped to match the existing serverId format).
+ * @param {string} relayAuthPublicKeyB64
+ * @returns {string} `srv_<base64url(16 bytes)>`
+ */
+export function deriveServerId(relayAuthPublicKeyB64) {
+  const pub = decodeBase64(relayAuthPublicKeyB64);
+  if (pub.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error('Invalid relay-auth public key length for serverId derivation');
+  }
+  const digest = nacl.hash(pub); // SHA-512
+  const slice = digest.slice(0, 16);
+  // base64url without padding
+  return `srv_${encodeBase64(slice).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
+/**
  * Canonical message for relay server socket auth.
  * @param {{ serverId: string, role: string, connectionId?: string, nonce: string, issuedAt: number }} fields
  */

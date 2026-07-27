@@ -10,8 +10,10 @@ import {
   signRelayServerAuth,
   verifyRelayServerAuth,
   generateRelayAuthKeyPair,
+  exportRelayAuthPublicKey,
   generateHostKeyMaterial,
   loadHostE2eeKeyPair,
+  deriveServerId,
 } from '../src/index.js';
 
 describe('e2ee channel', () => {
@@ -66,5 +68,29 @@ describe('host key material', () => {
     const material = generateHostKeyMaterial();
     const kp = loadHostE2eeKeyPair(material);
     assert.equal(exportPublicKey(kp.publicKey), material.e2ee.publicKeyB64);
+  });
+});
+
+describe('serverId derivation (H9)', () => {
+  it('derives a deterministic srv_ id from the relay-auth public key', () => {
+    const kp1 = generateRelayAuthKeyPair();
+    const pub1 = exportRelayAuthPublicKey(kp1.publicKey);
+    const id1a = deriveServerId(pub1);
+    const id1b = deriveServerId(pub1);
+    assert.equal(id1a, id1b, 'same key → same serverId');
+    assert.ok(id1a.startsWith('srv_'), 'serverId has srv_ prefix');
+    assert.ok(id1a.length > 'srv_'.length, 'serverId has a payload');
+  });
+
+  it('produces different serverIds for different keys', () => {
+    const kp1 = generateRelayAuthKeyPair();
+    const kp2 = generateRelayAuthKeyPair();
+    const id1 = deriveServerId(exportRelayAuthPublicKey(kp1.publicKey));
+    const id2 = deriveServerId(exportRelayAuthPublicKey(kp2.publicKey));
+    assert.notEqual(id1, id2, 'different keys → different serverIds');
+  });
+
+  it('rejects an invalid relay-auth public key', () => {
+    assert.throws(() => deriveServerId('not-a-valid-key'));
   });
 });

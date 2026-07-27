@@ -76,8 +76,14 @@ class MobileRemoteHost {
     await this._loadPackages();
     if (!this.state.material) {
       this.state.material = this._crypto.generateHostKeyMaterial();
+      // H9: derive serverId from the relay-auth public key so it is bound to the
+      // host's keypair. An attacker using their own keypair gets a different
+      // serverId and cannot pre-emptively squat the legitimate host's serverId at
+      // the relay. Existing material keeps its already-issued random serverId for
+      // backward compatibility (no forced re-pair of already-paired devices).
+      const relayAuthPub = this.state.material.relayAuth.publicKeyB64;
       this.state.serverId =
-        this.state.serverId || `srv_${require('crypto').randomBytes(16).toString('base64url')}`;
+        this.state.serverId || this._crypto.deriveServerId(relayAuthPub);
       saveKeyState(this.userDataPath, this.state);
     }
     this._status.serverId = this.state.serverId;
