@@ -244,6 +244,12 @@ function MarkdownCode({ className, children, ...props }) {
 function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
   const t = useUiTranslate();
   const [open, setOpen] = useState(false);
+  // M-rc7: focus management for the lightbox dialog — move focus into the dialog
+  // on open and restore it to the triggering image on close, so keyboard users and
+  // screen readers land inside the dialog instead of staying on the thumbnail.
+  const dialogRef = useRef(null);
+  const triggerRef = useRef(null);
+  const previousFocusRef = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -251,7 +257,23 @@ function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
       if (event.key === 'Escape') setOpen(false);
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    previousFocusRef.current = document.activeElement;
+    // Move focus into the dialog container next tick so the dialog is mounted.
+    const raf = requestAnimationFrame(() => {
+      dialogRef.current?.focus();
+    });
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      cancelAnimationFrame(raf);
+      // Restore focus to the triggering thumbnail on close.
+      try {
+        if (triggerRef.current && typeof triggerRef.current.focus === 'function') {
+          triggerRef.current.focus();
+        } else if (previousFocusRef.current && typeof previousFocusRef.current.focus === 'function') {
+          previousFocusRef.current.focus();
+        }
+      } catch (_) {}
+    };
   }, [open]);
 
   const imgClass =
@@ -263,23 +285,33 @@ function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
   return (
     <>
       <img
+        ref={triggerRef}
         src={src}
         alt={alt || ''}
         className={imgClass}
         style={style || (variant === 'user' ? { maxHeight: 360 } : undefined)}
         title={src ? t('message.clickToEnlarge') : undefined}
+        tabIndex={0}
         onClick={(event) => {
           event.preventDefault();
           if (src) setOpen(true);
         }}
+        onKeyDown={(event) => {
+          if (src && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
       />
       {open && src ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-zoom-out"
+          ref={dialogRef}
+          tabIndex={-1}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-zoom-out outline-none"
           onClick={() => setOpen(false)}
           role="dialog"
           aria-modal="true"
-          aria-label={t('message.clickToEnlarge')}
+          aria-label={alt || t('message.clickToEnlarge')}
         >
           <img
             src={src}
@@ -287,6 +319,13 @@ function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
             className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           />
+          <button
+            type="button"
+            className="absolute top-3 right-3 rounded-md bg-black/60 px-2 py-1 text-xs text-white hover:bg-black/80"
+            onClick={() => setOpen(false)}
+          >
+            ✕
+          </button>
         </div>
       ) : null}
     </>
@@ -733,14 +772,22 @@ function ToolCallBlock({ item }) {
   const isFailed = item.status === 'failed' || item.status === 'error';
   const isRunning = !isCompleted && !isFailed;
   const hasDetails = Boolean(item.rawInput || item.rawOutput || item.content);
+  // M-rc6: track whether the user has manually toggled expand, so the
+  // running→completed auto-collapse only fires for auto-expanded rows and does
+  // not stomp a user's manual expand (chat-cancel.test asserts this).
+  const userToggledRef = useRef(false);
   // WebUI: auto-expand failed; expand running Write/edit; otherwise collapsed
   const [expanded, setExpanded] = useState(
     () => isFailed || ((item.kind === 'edit' || item.toolName === 'Write') && isRunning),
   );
 
   useEffect(() => {
+    // M-rc6: auto-expand failed tool calls; auto-collapse running edits once they
+    // complete (the WebUI parity rule). Skip the auto-collapse when the user has
+    // manually toggled the row, preserving their explicit choice.
     if (isFailed) setExpanded(true);
-  }, [isFailed]);
+    else if (isCompleted && !userToggledRef.current) setExpanded(false);
+  }, [isFailed, isCompleted]);
 
   const title = toolCallDisplayTitle(item, t);
   const summary = toolCallSummary(item);
@@ -750,7 +797,11 @@ function ToolCallBlock({ item }) {
     <div className="tool-call-row mb-0.5">
       <button
         type="button"
-        onClick={() => canToggle && setExpanded((value) => !value)}
+        onClick={() => {
+          if (!canToggle) return;
+          userToggledRef.current = true;
+          setExpanded((value) => !value);
+        }}
         className={[
           'flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left transition-colors',
           canToggle ? 'cursor-pointer hover:bg-[var(--color-bg-hover)]/60' : 'cursor-default',
@@ -1954,14 +2005,18 @@ export default function ReplicaChatView() {
   const currentModeName =
     modeOptions.find((m) => m.id === currentMode)?.name || getSessionModeLabel(currentMode, t('mode.default'));
   const effortOptions = useMemo(() => {
+    // M-rc4: effort labels route through i18n. settings.effort.* covers
+    // minimal/low/medium/high/xhigh/max; composer.effort.ultracode is the
+    // composite-mode label (no matching server thought_level value).
     const FALLBACK = [
       { id: 'disabled', name: t('composer.effort.disabled') },
       { id: 'enabled', name: t('composer.effort.enabled') },
-      { id: 'low', name: 'Low' },
-      { id: 'medium', name: 'Medium' },
-      { id: 'high', name: 'High' },
-      { id: 'xhigh', name: 'Xhigh' },
-      { id: 'max', name: 'Max' },
+      { id: 'minimal', name: t('settings.effort.minimal') },
+      { id: 'low', name: t('settings.effort.low') },
+      { id: 'medium', name: t('settings.effort.medium') },
+      { id: 'high', name: t('settings.effort.high') },
+      { id: 'xhigh', name: t('settings.effort.xhigh') },
+      { id: 'max', name: t('settings.effort.max') },
     ];
     // 服务端回推的 options 已按当前模型过滤（如某些模型不支持 max/disabled）
     const serverItems = (Array.isArray(thoughtLevelOptions) ? thoughtLevelOptions : [])
@@ -1980,14 +2035,14 @@ export default function ReplicaChatView() {
       .filter(Boolean);
     const base = serverItems.length > 0 ? serverItems : FALLBACK;
     // ultracode 始终作为附加项（复合模式，仅 /effort ultracode 触发，服务端 thought_level 不含此值）
-    if (!base.some((o) => o.id === 'ultracode')) base.push({ id: 'ultracode', name: 'Ultracode' });
+    if (!base.some((o) => o.id === 'ultracode')) base.push({ id: 'ultracode', name: t('composer.effort.ultracode') });
     return base;
   }, [t, thoughtLevelOptions]);
   const currentEffortName = useMemo(() => {
     if (!thoughtLevel) return t('composer.effort.enabled');
     if (thoughtLevel === 'disabled') return t('composer.effort.disabled');
     if (thoughtLevel === 'enabled') return t('composer.effort.enabled');
-    if (thoughtLevel === 'ultracode') return 'Ultracode';
+    if (thoughtLevel === 'ultracode') return t('composer.effort.ultracode');
     const hit = effortOptions.find((o) => o.id === thoughtLevel);
     return hit ? hit.name : thoughtLevel;
   }, [effortOptions, t, thoughtLevel]);
@@ -3558,7 +3613,7 @@ const ChatComposer = React.memo(function ChatComposer({
                         );
                       })
                     ) : (
-                      <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
+                      <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">{t('composer.loadingModels')}</div>
                     )}
                   </ComposerAnimatedMenu>
                 </div>
@@ -3652,7 +3707,7 @@ const ChatComposer = React.memo(function ChatComposer({
 
         {showTokensCounter && usage && (
           <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
-            用量: {usage.used ?? '-'} / {usage.size ?? '-'}
+            {t('composer.usage')}: {usage.used ?? '-'} / {usage.size ?? '-'}
           </div>
         )}
       </div>

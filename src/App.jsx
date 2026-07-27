@@ -880,6 +880,11 @@ export default function App() {
       if (isShortcutInputTarget(event.target) && !guiShortcutAllowedInInput(shortcut)) return;
       const action = guiActionForShortcut(shortcut);
       if (!action) return;
+      // M-rc5: new-conversation is destructive when the user is mid-typing in an
+      // input/textarea/monaco/xterm (it tears focus out and creates a fresh
+      // session). guiShortcutAllowedInInput lets ctrl/alt/meta shortcuts through,
+      // but new-conversation should never fire while composing — block it here.
+      if (action === 'new-conversation' && isShortcutInputTarget(event.target)) return;
       const state = useStore.getState();
       if (state.authViewState !== 'authenticated') return;
       event.preventDefault();

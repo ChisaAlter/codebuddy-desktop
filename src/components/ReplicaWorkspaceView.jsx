@@ -453,6 +453,19 @@ export default function ReplicaWorkspaceView() {
     let disposed = false;
     let polling = false;
     let fallbackTicks = 0;
+    // M-rc8: guard against double-startWatcher. The eager call below and the
+    // pollWorkspace fallback can both fire before watcherId lands in the store
+    // (RPC in flight), leaking a native watcher handle. This flag serializes starts.
+    let startInFlight = false;
+    const safeStartWatcher = async () => {
+      if (disposed || startInFlight) return;
+      startInFlight = true;
+      try {
+        await startWatcher(fileCwd);
+      } finally {
+        startInFlight = false;
+      }
+    };
 
     const pollWorkspace = async () => {
       if (disposed || polling) return;
@@ -469,7 +482,7 @@ export default function ReplicaWorkspaceView() {
           }
         } else {
           fallbackTicks += 1;
-          if (fallbackTicks % 4 === 0) await startWatcher(fileCwd);
+          if (fallbackTicks % 4 === 0) await safeStartWatcher();
           if (!disposed && fallbackTicks % 3 === 0) {
             await Promise.all([
               refreshFileEntries({ silent: true }),
@@ -482,7 +495,7 @@ export default function ReplicaWorkspaceView() {
       }
     };
 
-    startWatcher(fileCwd).then(() => {
+    safeStartWatcher().then(() => {
       if (!disposed) pollWorkspace();
     });
     const timer = setInterval(pollWorkspace, 1800);

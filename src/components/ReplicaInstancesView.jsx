@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import ReplicaBackgroundSessionsView from './ReplicaBackgroundSessionsView';
+import ActionConfirmDialog from './ActionConfirmDialog';
+import { translate, resolveLocaleMode } from '../lib/i18n';
 
 export function formatSince(startedAt) {
   if (!startedAt) return '-';
@@ -31,9 +33,14 @@ export default function ReplicaInstancesView() {
   const stopProjectRuntime = useStore((state) => state.stopProjectRuntime);
   const restartProjectRuntime = useStore((state) => state.restartProjectRuntime);
   const chooseWorkspace = useStore((state) => state.chooseWorkspace);
+  const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
+  const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
   const [actionStateByProject, setActionStateByProject] = useState({});
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
+  // M-rc3: pending runtime stop drives the shared ActionConfirmDialog so a single
+  // click on "停止" does not immediately kill the CLI process mid-turn.
+  const [pendingStop, setPendingStop] = useState(null);
   const refreshRequestIdRef = useRef(0);
   const [, setClock] = useState(0);
   const actionVersionByProjectRef = useRef(new Map());
@@ -207,7 +214,7 @@ export default function ReplicaInstancesView() {
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
                       {running ? (
-                        <button className="btn-ghost px-2.5 py-1 text-xs" disabled={busy} onClick={() => runAction(projectId, stopProjectRuntime, 'stop', '运行时已停止')}>
+                        <button className="btn-ghost px-2.5 py-1 text-xs" disabled={busy} onClick={() => setPendingStop({ projectId })}>
                           {actionState.busy === 'stop' ? '停止中...' : '停止'}
                         </button>
                       ) : (
@@ -244,6 +251,25 @@ export default function ReplicaInstancesView() {
           </div>
         )}
       </div></div>}
+
+      {/* M-rc3: runtime stop confirmation. Killing the CLI process disconnects
+          the active session mid-turn; require an explicit confirm. */}
+      <ActionConfirmDialog
+        open={Boolean(pendingStop)}
+        title={t('instances.stopTitle')}
+        description={t('instances.stopDescription')}
+        confirmLabel={t('instances.confirmStop')}
+        busy={Boolean(pendingStop && actionStateByProject[pendingStop.projectId]?.busy === 'stop')}
+        error=""
+        danger
+        onCancel={() => setPendingStop(null)}
+        onConfirm={async () => {
+          if (!pendingStop) return;
+          const { projectId } = pendingStop;
+          setPendingStop(null);
+          await runAction(projectId, stopProjectRuntime, 'stop', t('instances.stopSuccess'));
+        }}
+      />
     </div>
   );
 }

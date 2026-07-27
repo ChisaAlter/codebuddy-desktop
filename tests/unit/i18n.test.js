@@ -104,4 +104,20 @@ describe('i18n', () => {
     expect(translate('zh', 'skills.title')).toBe('技能');
     expect(translate('en', 'agents.scopedMcp')).toBe('Scoped MCP');
   });
+
+  // M-rc4: composer i18n leaks now route through keys added for this fix.
+  it('covers composer usage / loadingModels / ultracode and instances stop keys', () => {
+    expect(translate('zh', 'composer.usage')).toBe('用量');
+    expect(translate('en', 'composer.usage')).toBe('Usage');
+    expect(translate('zh', 'composer.loadingModels')).toBe('加载中...');
+    expect(translate('en', 'composer.loadingModels')).toBe('Loading...');
+    expect(translate('zh', 'composer.effort.ultracode')).toBe('超码');
+    expect(translate('en', 'composer.effort.ultracode')).toBe('Ultracode');
+    // instances stop confirm (M-rc3)
+    expect(translate('zh', 'instances.stopTitle')).toBe('停止运行时？');
+    expect(translate('en', 'instances.confirmStop')).toBe('Stop');
+    // mobileRemote revoke dialog (M-rc1)
+    expect(translate('zh', 'mobileRemote.revokeTitle')).toBe('吊销设备？');
+    expect(translate('en', 'mobileRemote.confirmRevoke')).toBe('Revoke');
+  });
 });

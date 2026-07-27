@@ -360,6 +360,10 @@ export default function ReplicaTerminalView() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      // M-rc9: do not react to terminal pane shortcuts while a modal dialog is
+      // open (e.g. ActionConfirmDialog), so Ctrl+Shift+W in a confirm does not
+      // close a terminal pane underneath the overlay.
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if (event.ctrlKey && event.shiftKey && event.key === 'N') {
         event.preventDefault();
         if (!terminalOperationRef.current) splitPane(activePaneId, 'right');

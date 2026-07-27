@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import ActionConfirmDialog from './ActionConfirmDialog';
 
 /**
  * Desktop-only: 手机远程（meet-me relay + E2EE pairing）.
@@ -16,6 +17,9 @@ export default function MobileRemoteSettingsCard({ t }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  // M-rc1: pending device revoke drives the shared ActionConfirmDialog instead
+  // of the blocking, unstyleable window.confirm.
+  const [pendingRevoke, setPendingRevoke] = useState(null);
 
   const refresh = useCallback(async () => {
     if (!available) return;
@@ -308,18 +312,10 @@ export default function MobileRemoteSettingsCard({ t }) {
                 <button
                   className="btn-ghost shrink-0 px-2 py-1 text-[11px] text-[var(--color-accent-red)]"
                   disabled={busy}
-                  onClick={async () => {
+                  onClick={() => {
+                    // M-rc1: open the shared ActionConfirmDialog instead of window.confirm.
                     if (!api.mobileRemoteRevokeDevice) return;
-                    if (!window.confirm(t('mobileRemote.revokeConfirm'))) return;
-                    setBusy(true);
-                    try {
-                      await api.mobileRemoteRevokeDevice(d.deviceId);
-                      await refresh();
-                    } catch (e) {
-                      setError(e?.message || String(e));
-                    } finally {
-                      setBusy(false);
-                    }
+                    setPendingRevoke(d);
                   }}
                 >
                   {t('mobileRemote.revoke')}
@@ -334,6 +330,34 @@ export default function MobileRemoteSettingsCard({ t }) {
           </p>
         </div>
       ) : null}
+
+      {/* M-rc1: device revoke confirmation via the shared ActionConfirmDialog. */}
+      <ActionConfirmDialog
+        open={Boolean(pendingRevoke)}
+        title={t('mobileRemote.revokeTitle')}
+        description={`${t('mobileRemote.revokeDescription')}${pendingRevoke ? `（${pendingRevoke.label || pendingRevoke.deviceId.slice(0, 12)}）` : ''}`}
+        confirmLabel={t('mobileRemote.confirmRevoke')}
+        busy={busy}
+        error=""
+        danger
+        onCancel={() => {
+          if (busy) return;
+          setPendingRevoke(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingRevoke || !api.mobileRemoteRevokeDevice) return;
+          setBusy(true);
+          try {
+            await api.mobileRemoteRevokeDevice(pendingRevoke.deviceId);
+            await refresh();
+            setPendingRevoke(null);
+          } catch (e) {
+            setError(e?.message || String(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
     </div>
   );
 }
