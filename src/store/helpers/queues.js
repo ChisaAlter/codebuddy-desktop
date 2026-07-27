@@ -96,6 +96,12 @@ export function createQueueHelpers({
       .finally(() => {
         if (sessionActionOperations.get(key) === tracked) sessionActionOperations.delete(key);
       });
+    // M-st4: attach a no-op catch so a rejected unique action does not surface as
+    // an unhandledRejection warning when the original caller has already detached
+    // (e.g. a double-clicked cancel whose first call rejected). The first caller
+    // still receives the rejection via the returned `tracked` promise; this shadow
+    // only swallows the global unhandled-rejection report.
+    tracked.catch(() => {});
     sessionActionOperations.set(key, tracked);
     return tracked;
   }

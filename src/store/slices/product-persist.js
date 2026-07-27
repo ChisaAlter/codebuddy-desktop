@@ -189,6 +189,10 @@ export function createProductPersistSlice(set, get, ctx) {
     if (existing) clearTimeout(existing);
     const delay = documentIsHidden() ? TIMELINE_PERSIST_MS_HIDDEN : TIMELINE_PERSIST_MS_VISIBLE;
     const timer = setTimeout(async () => {
+      // M-st5: if flushProductStateSync cleared this timer (it clears the map and
+      // clears each timer), the map will no longer hold this timer id — bail out
+      // before overwriting the sync snapshot with a stale runtime snapshot.
+      if (threadTimelinePersistTimers.get(threadId) !== timer) return;
       threadTimelinePersistTimers.delete(threadId);
       // Fold any stream chunks that have not been committed yet.
       get().flushThreadTimelineCoalesce?.(threadId);
@@ -215,6 +219,8 @@ export function createProductPersistSlice(set, get, ctx) {
     const existing = threadDraftPersistTimers.get(threadId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(async () => {
+      // M-st5: same owner-check as scheduleThreadTimelinePersist.
+      if (threadDraftPersistTimers.get(threadId) !== timer) return;
       threadDraftPersistTimers.delete(threadId);
       if (!get().threadsById[threadId]) return;
       await get().persistProductState();
@@ -400,6 +406,19 @@ export function createProductPersistSlice(set, get, ctx) {
         },
       ]),
     );
+    // M-st7: a snapshot taken mid-prompt restores a thread whose status is still
+    // 'running'/'cancelling'/'waiting' even though the runtime is gone (process
+    // restart / crash). Normalize those to 'idle' so the UI does not show a
+    // phantom running thread with no live runtime to cancel; sendPrompt's
+    // self-heal handles genuine resume. promptQueue is preserved so a queued
+    // turn the user intended to send still drains on next send.
+    const restoredThreads = Object.fromEntries(
+      Object.entries(loaded.threadsById).map(([id, item]) => {
+        const status = item?.status;
+        const needsReset = status === 'running' || status === 'cancelling' || status === 'waiting';
+        return [id, needsReset ? { ...item, status: 'idle' } : item];
+      }),
+    );
     const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], true);
     // Root `timeline` must mirror the active thread immediately on hydrate.
     // Leaving it as the initial `[]` hides user bubbles until initializeActiveThread
@@ -410,7 +429,7 @@ export function createProductPersistSlice(set, get, ctx) {
     set({
       projectsById: restoredProjects,
       projectOrder: loaded.projectOrder,
-      threadsById: loaded.threadsById,
+      threadsById: restoredThreads,
       threadOrderByProject: loaded.threadOrderByProject,
       activeProjectId: loaded.activeProjectId,
       activeThreadId: loaded.activeThreadId,

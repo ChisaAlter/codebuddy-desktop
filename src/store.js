@@ -724,12 +724,20 @@ export const useStore = create((set, get) => {
 
   patchThreadRuntime(threadId, patch) {
     if (!threadId) return;
-    // External timeline writes must not race pending coalesced stream chunks.
-    // If the patch includes timeline, drop coalesce; otherwise leave it pending.
+    // M-st6: when an external timeline patch arrives while the window is hidden
+    // and stream chunks are coalesced, fold the coalesced chunks into the patch
+    // instead of dropping them. The coalesced entry.timeline is a superset of the
+    // stale runtime.timeline the caller used to build their patch (e.g.
+    // closeAssistantStream ran over runtime.timeline missing the hidden chunks),
+    // so prefer entry.timeline as the base and let the patch's non-timeline
+    // fields (status, lastPromptRunId, etc.) pass through unchanged.
     if (patch && Object.prototype.hasOwnProperty.call(patch, 'timeline')) {
-      const pending = threadTimelineCoalesce.get(threadId);
-      if (pending?.timer) clearTimeout(pending.timer);
-      threadTimelineCoalesce.delete(threadId);
+      const entry = threadTimelineCoalesce.get(threadId);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        threadTimelineCoalesce.delete(threadId);
+        patch = { ...patch, timeline: entry.timeline };
+      }
     }
     set((state) => {
       const nextRuntime = {

@@ -441,10 +441,19 @@ export function createSessionsChatSlice(set, get, ctx) {
       const questionToolCallIds = new Set(detail?.questionToolCallIds || []);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const invalidatedAt = Date.now();
+      // M-st3: avoid re-allocating an array from the id Sets on every timeline
+      // item. Iterate the Sets directly with for...of, which is O(|set|) per item
+      // but does not allocate an array each time.
+      const matchesAnyId = (item, idSet) => {
+        if (!idSet.size) return false;
+        for (const id of idSet) {
+          if (sessionActionItemMatches(item, id)) return true;
+        }
+        return false;
+      };
       const invalidates = (item) =>
-        (item.type === 'interruption' &&
-          Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id))) ||
-        (item.type === 'question' && Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)));
+        (item.type === 'interruption' && matchesAnyId(item, interruptionIds)) ||
+        (item.type === 'question' && matchesAnyId(item, questionToolCallIds));
       const timeline = runtime.timeline.map((item) =>
         invalidates(item) && !['resolved', 'answered', 'cancelled', 'expired'].includes(item.status)
           ? {
@@ -459,10 +468,10 @@ export function createSessionsChatSlice(set, get, ctx) {
           : item,
       );
       const permissionRequests = runtime.permissionRequests.filter(
-        (item) => !Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id)),
+        (item) => !matchesAnyId(item, interruptionIds),
       );
       const questions = runtime.questions.filter(
-        (item) => !Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)),
+        (item) => !matchesAnyId(item, questionToolCallIds),
       );
       const changed =
         permissionRequests.length !== runtime.permissionRequests.length ||
