@@ -410,6 +410,11 @@ export default function ReplicaChangesView() {
     } else if (operationDialog.type === 'discard-all') {
       action = (cwd) => discardAll(cwd);
       options = { worktreeMutation: true, all: true, removeUntracked: true, actionLabel: '丢弃全部 Git 修改' };
+    } else if (operationDialog.type === 'pull') {
+      action = (cwd) => pullBranch(cwd);
+      options = { worktreeMutation: true, all: true, actionLabel: '执行 Git Pull' };
+    } else if (operationDialog.type === 'push') {
+      action = (cwd) => pushBranch(cwd);
     } else {
       const item = operationDialog.item;
       action = (cwd) => discardFile(item, cwd);
@@ -455,6 +460,8 @@ export default function ReplicaChangesView() {
   const hasSwitchTarget = branches.some((name) => name !== branch);
   const isBranchOperation = operationType === 'switch' || operationType === 'create';
   const isDiscardOperation = operationType === 'discard-all' || operationType === 'discard-file';
+  const isPushOperation = operationType === 'push';
+  const isDangerousOperation = isDiscardOperation || isPushOperation;
   const discardItem = operationDialog?.item || null;
   const discardIsUntracked = discardItem?.indexStatus === '?' && discardItem?.worktreeStatus === '?';
   const operationTitle =
@@ -464,15 +471,23 @@ export default function ReplicaChangesView() {
         ? '新建分支'
         : operationType === 'discard-all'
           ? '丢弃全部修改？'
-          : '丢弃文件修改？';
+          : operationType === 'pull'
+            ? '拉取远端？'
+            : operationType === 'push'
+              ? '推送到远端？'
+              : '丢弃文件修改？';
   const confirmLabel =
     operationType === 'switch'
       ? '切换'
       : operationType === 'create'
         ? '创建并切换'
-        : discardIsUntracked
-          ? '删除文件'
-          : '丢弃修改';
+        : operationType === 'pull'
+          ? '拉取'
+          : operationType === 'push'
+            ? '推送'
+            : discardIsUntracked
+              ? '删除文件'
+              : '丢弃修改';
   const hasStagedChanges = items.some((item) => item.indexStatus !== ' ' && item.indexStatus !== '?');
   const hasUnstagedChanges = items.some((item) => item.worktreeStatus !== ' ' || item.indexStatus === '?');
   const selectedHasStagedChanges = Boolean(selected && selected.indexStatus !== ' ' && selected.indexStatus !== '?');
@@ -575,10 +590,10 @@ export default function ReplicaChangesView() {
               <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={onCreateBranch}>
                 新建分支
               </button>
-              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pullBranch(cwd), { worktreeMutation: true, all: true, actionLabel: '执行 Git Pull' })}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || !!operationDialog} onClick={() => setOperationDialog({ type: 'pull' })}>
                 Pull
               </button>
-              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pushBranch(cwd))}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || !!operationDialog} onClick={() => setOperationDialog({ type: 'push' })}>
                 Push
               </button>
             </div>
@@ -823,6 +838,16 @@ export default function ReplicaChangesView() {
                   : `“${discardItem?.path || ''}”的全部暂存和未暂存修改会被永久丢弃。`}
               </p>
             ) : null}
+            {operationType === 'pull' ? (
+              <p className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+                将从远端拉取当前分支更新，可能与本地未提交修改冲突。建议先提交或暂存本地改动。
+              </p>
+            ) : null}
+            {operationType === 'push' ? (
+              <p className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+                将向远端推送当前分支，可能覆盖远端历史或触发他人的拉取冲突。请确认推送目标与权限。
+              </p>
+            ) : null}
 
             {operationError ? (
               <div className="mt-3 text-xs text-[var(--color-accent-red)]">{operationError}</div>
@@ -834,11 +859,11 @@ export default function ReplicaChangesView() {
               </button>
               <button
                 className={
-                  isDiscardOperation
+                  isDangerousOperation
                     ? 'rounded-md px-3 py-1.5 text-xs font-medium text-white'
                     : 'btn-primary px-3 py-1.5 text-xs'
                 }
-                style={isDiscardOperation ? { background: 'var(--color-accent-red)' } : undefined}
+                style={isDangerousOperation ? { background: 'var(--color-accent-red)' } : undefined}
                 disabled={
                   writeBusy ||
                   (operationType === 'switch' && (!operationValue || operationValue === branch)) ||

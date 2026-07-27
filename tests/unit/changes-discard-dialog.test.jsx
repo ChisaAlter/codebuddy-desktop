@@ -145,4 +145,74 @@ describe('ReplicaChangesView discard confirm dialogs', () => {
       ),
     ).toBe(true);
   });
+
+  // H5: Pull must open a confirm dialog and only execute after confirm.
+  it('opens Pull dialog and only pulls after confirm', async () => {
+    await renderView();
+
+    const pullButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Pull',
+    );
+    expect(pullButton).toBeTruthy();
+    await act(async () => {
+      pullButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('拉取远端？');
+    expect(mocks.pullBranch).not.toHaveBeenCalled();
+
+    const confirm = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === '拉取',
+    );
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.pullBranch).toHaveBeenCalledWith('C:/Project');
+  });
+
+  // H5: Push must open a confirm dialog (danger-styled) and only execute after confirm.
+  it('opens Push dialog and only pushes after confirm; cancel does not push', async () => {
+    await renderView();
+
+    const pushButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Push',
+    );
+    expect(pushButton).toBeTruthy();
+    await act(async () => {
+      pushButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('推送到远端？');
+    expect(container.textContent).toContain('可能覆盖远端历史');
+    expect(mocks.pushBranch).not.toHaveBeenCalled();
+
+    const cancel = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === '取消',
+    );
+    expect(cancel).toBeTruthy();
+    await act(async () => {
+      cancel.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(mocks.pushBranch).not.toHaveBeenCalled();
+
+    // Re-open and confirm to verify push runs.
+    await act(async () => {
+      pushButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const confirm = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === '推送',
+    );
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.pushBranch).toHaveBeenCalledWith('C:/Project');
+  });
 });
