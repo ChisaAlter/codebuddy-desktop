@@ -18,6 +18,7 @@ export const OFFER_FRAGMENT_PREFIX = '#offer=';
  * @property {string} [relayAuthPublicKeyB64]
  * @property {{ endpoint: string, useTls?: boolean }} relay
  * @property {string} [pairingToken]  optional one-time token required to pair a new device (C1)
+ * @property {number} [exp]  optional unix-ms expiry; pairing must happen before this (M-mr7)
  */
 
 /**
@@ -71,7 +72,29 @@ export function parseConnectionOffer(value) {
     }
     offer.pairingToken = o.pairingToken.trim();
   }
+  // M-mr7: optional unix-ms expiry. A pairing offer is short-lived (default 10
+  // minutes when the host sets it) so a captured QR/offer cannot be used to pair
+  // indefinitely. Reconnect (device_auth) does not check exp — only first-time
+  // pairing does.
+  if (o.exp != null) {
+    if (typeof o.exp !== 'number' || !Number.isFinite(o.exp) || o.exp <= 0) {
+      throw new Error('exp must be a positive finite number when set');
+    }
+    offer.exp = o.exp;
+  }
   return offer;
+}
+
+/**
+ * M-mr7: check whether a parsed offer has expired. An offer without `exp` never
+ * expires (backward compatibility with offers issued before this field existed).
+ * @param {ConnectionOfferV1} offer
+ * @param {number} [now] unix-ms; defaults to Date.now()
+ * @returns {boolean}
+ */
+export function isOfferExpired(offer, now = Date.now()) {
+  if (!offer || typeof offer.exp !== 'number' || !Number.isFinite(offer.exp)) return false;
+  return now >= offer.exp;
 }
 
 /**

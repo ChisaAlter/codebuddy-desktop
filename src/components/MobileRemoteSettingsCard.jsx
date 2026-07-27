@@ -212,6 +212,18 @@ export default function MobileRemoteSettingsCard({ t }) {
         />
       </div>
 
+      {/* M-mr1: warn when the relay endpoint is non-localhost and TLS is off —
+          transport is plaintext (metadata visible to a MITM; content stays E2EE). */}
+      {config && !config.relayUseTls && (() => {
+        const ep = String(config.relayEndpoint || '').trim();
+        const isLocalhost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(ep);
+        return !isLocalhost && ep ? (
+          <div className="rounded-md border border-[var(--color-accent-yellow)]/40 bg-[var(--color-accent-yellow)]/5 p-2 text-[11px] leading-5 text-[var(--color-accent-yellow)]">
+            {t('mobileRemote.tlsWarn')}
+          </div>
+        ) : null;
+      })()}
+
       <div className="settings-row">
         <div className="settings-label-col">
           <span className="settings-label">{t('mobileRemote.status')}</span>
@@ -254,7 +266,7 @@ export default function MobileRemoteSettingsCard({ t }) {
                   onClick={loadOfferWithToken}
                   title={devices.length > 0 ? '生成带配对令牌的二维码（用于添加新设备）' : '生成配对二维码（首台设备无需令牌）'}
                 >
-                  {busy ? '…' : '配对新设备'}
+                  {busy ? '…' : t('mobileRemote.pairNew')}
                 </button>
               ) : null}
               <button
@@ -326,7 +338,7 @@ export default function MobileRemoteSettingsCard({ t }) {
           {/* C1: legacy devices (pre device-auth) lack a stored public key and are
               dropped on load; users must re-pair them. */}
           <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">
-            升级到设备鉴权后，旧设备需重新配对（设置中点「配对新设备」生成带令牌的二维码）。
+            {t('mobileRemote.repairHint')}
           </p>
         </div>
       ) : null}

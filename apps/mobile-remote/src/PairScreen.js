@@ -14,7 +14,7 @@ import {
 // (Newer SDKs renamed to CameraView + onBarcodeScanned / barcodeScannerSettings.)
 import { Camera } from 'expo-camera';
 
-import { parseConnectionOfferFromUrl } from '@codebuddy/mobile-remote-protocol';
+import { parseConnectionOfferFromUrl, isOfferExpired } from '@codebuddy/mobile-remote-protocol';
 
 export default function PairScreen({ hosts, loaded, onPair, onSelect, onRemove }) {
   const [pasted, setPasted] = useState('');
@@ -33,6 +33,12 @@ export default function PairScreen({ hosts, loaded, onPair, onSelect, onRemove }
     }
     if (!offer) {
       Alert.alert('配对失败', `${sourceLabel}: 链接里没有 #offer= 片段`);
+      return;
+    }
+    // M-mr7: reject expired pairing offers so a captured QR/offer cannot be used
+    // to pair indefinitely. Offers without `exp` (legacy) are accepted.
+    if (isOfferExpired(offer)) {
+      Alert.alert('配对失败', `${sourceLabel}: 配对链接已过期，请在桌面端重新生成二维码`);
       return;
     }
     onPair({

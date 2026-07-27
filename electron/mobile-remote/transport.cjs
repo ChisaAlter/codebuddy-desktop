@@ -63,6 +63,10 @@ async function startHostRelayTransport(args) {
   let stopped = false;
   let reconnectTimer = null;
   let pingTimer = null;
+  // M-mr3: track the last pong time so a half-open control socket (e.g. after
+  // suspend/network change) is detected and terminated instead of silently
+  // dropping future client/data traffic.
+  let lastPongAt = 0;
 
   function scheduleReconnect(delay) {
     if (stopped) return;
@@ -301,10 +305,24 @@ async function startHostRelayTransport(args) {
     ws.on('error', (err) => {
       log('control error', err?.message || err);
     });
+    // M-mr3: record pong arrivals so the ping interval can detect a half-open
+    // control socket and terminate it, triggering reconnect.
+    lastPongAt = Date.now();
+    ws.on('pong', () => {
+      lastPongAt = Date.now();
+    });
 
     if (pingTimer) clearInterval(pingTimer);
     pingTimer = setInterval(() => {
       if (controlWs && controlWs.readyState === 1) {
+        // M-mr3: if no pong has arrived within ~3x the ping interval, the control
+        // socket is half-open — terminate so connectControl's close handler
+        // schedules a reconnect instead of silently dropping traffic.
+        if (Date.now() - lastPongAt > CONTROL_PING_INTERVAL_MS * 3) {
+          log('control pong timeout, terminating');
+          try { controlWs.terminate(); } catch (_) {}
+          return;
+        }
         try { controlWs.ping(); } catch (_) {}
       }
     }, CONTROL_PING_INTERVAL_MS);

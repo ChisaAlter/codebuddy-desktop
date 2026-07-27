@@ -5,6 +5,7 @@ import {
   parseConnectionOfferFromUrl,
   parseConnectionOffer,
   buildRelayWebSocketUrl,
+  isOfferExpired,
   PROTOCOL_VERSION,
 } from '../src/index.js';
 
@@ -55,6 +56,28 @@ describe('connection offer', () => {
       () => parseConnectionOffer({ ...sampleOffer, pairingToken: 42 }),
       /pairingToken/,
     );
+  });
+
+  // M-mr7: optional `exp` field round-trips and isOfferExpired checks it.
+  it('round-trips an optional exp field and reports expiry', () => {
+    const future = Date.now() + 60_000;
+    const withExp = { ...sampleOffer, exp: future };
+    const url = encodeConnectionOfferToUrl(withExp);
+    const parsed = parseConnectionOfferFromUrl(url);
+    assert.equal(parsed.exp, future);
+    assert.equal(isOfferExpired(parsed), false);
+    assert.equal(isOfferExpired({ ...parsed, exp: Date.now() - 1 }), true);
+  });
+
+  it('treats an offer without exp as never expired', () => {
+    const parsed = parseConnectionOffer(sampleOffer);
+    assert.equal('exp' in parsed, false);
+    assert.equal(isOfferExpired(parsed), false);
+  });
+
+  it('rejects a non-positive/non-finite exp when set', () => {
+    assert.throws(() => parseConnectionOffer({ ...sampleOffer, exp: 0 }), /exp/);
+    assert.throws(() => parseConnectionOffer({ ...sampleOffer, exp: 'soon' }), /exp/);
   });
 });
 

@@ -138,6 +138,9 @@ class MobileRemoteHost {
     if (options.pairingToken) {
       offer.pairingToken = options.pairingToken;
     }
+    // M-mr7: expire the pairing offer after 10 minutes so a captured QR/offer
+    // cannot be used to pair indefinitely. Reconnect (device_auth) ignores exp.
+    offer.exp = Date.now() + 10 * 60 * 1000;
     const offerUrl = this._protocol.encodeConnectionOfferToUrl(offer);
     return { offerUrl, offer, qrPayload: offerUrl };
   }
