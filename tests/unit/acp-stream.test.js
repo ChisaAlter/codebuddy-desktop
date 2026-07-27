@@ -854,4 +854,45 @@ describe('AcpClient GET SSE notification stream', () => {
 
     await client.disconnect();
   });
+
+  // M-st8: concurrent connect() calls must not double-issue /acp/connect. The
+  // _connecting guard makes the second call return early.
+  it('does not double-issue /acp/connect when two connect() calls race', async () => {
+    setApiBase('http://127.0.0.1:23457');
+    let connectCalls = 0;
+    let releaseConnect;
+    const fetchMock = vi.fn(async (url, init = {}) => {
+      const method = init.method || 'GET';
+      if (url === 'http://127.0.0.1:23457/api/v1/acp/connect' && method === 'POST') {
+        connectCalls += 1;
+        // Hold the first connect until both connect() calls have been dispatched.
+        return new Promise((resolve) => {
+          releaseConnect = () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({ connectionId: 'conn-race', sessionToken: 'sess-race' }),
+            });
+        });
+      }
+      if (url === 'http://127.0.0.1:23457/api/v1/acp/connect/conn-race' && method === 'DELETE') {
+        return { ok: true, status: 204, text: async () => '' };
+      }
+      throw new Error(`unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.electronAPI = {
+      openCodeBuddyStream: () => ({ close: () => {} }),
+    };
+
+    const client = new AcpClient();
+    const p1 = client.connect();
+    const p2 = client.connect();
+    // Release the in-flight connect so both promises can settle.
+    releaseConnect();
+    await Promise.all([p1, p2]);
+
+    expect(connectCalls).toBe(1);
+    await client.disconnect();
+  });
 });

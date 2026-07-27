@@ -166,7 +166,10 @@ export function parseEventStreamMessages(text) {
       .map((line) => line.slice(5).trim());
 
     if (!dataLines.length) continue;
-    const joined = dataLines.join('');
+    // M-st10: per SSE spec, multiple `data:` lines within one event are joined
+    // with `\n`, not the empty string. The empty-string join silently merged
+    // cross-line JSON fragments and swallowed multi-line text payloads.
+    const joined = dataLines.join('\n');
     try {
       messages.push(JSON.parse(joined));
     } catch (_) {
@@ -240,8 +243,23 @@ function promptEventRequestId(message) {
 }
 
 function incomingEventFingerprint(message) {
+  // M-st11: previously this stringified the entire message (including every
+  // streaming token) on each event, costing CPU and storing up to 4000 long
+  // string keys in incomingEventOccurrences. For session/update dedupe the
+  // method + request id + sessionUpdate type + per-event identity (messageId /
+  // toolCallId) uniquely identify a repeated notification (the same SSE event
+  // arriving via both GET and POST), so hash only that structural subset.
   try {
-    return JSON.stringify(message);
+    const params = message?.params || {};
+    const update = params.update || params;
+    const sessionUpdate = update?.sessionUpdate || update?.session_update || update?.type || null;
+    const eventKey = update?.messageId || update?.toolCallId || update?.id || null;
+    return JSON.stringify({
+      m: message?.method || null,
+      id: message?.id || null,
+      su: sessionUpdate,
+      e: eventKey,
+    });
   } catch (_) {
     return null;
   }
@@ -703,7 +721,12 @@ export class AcpClient {
   }
 
   async connect() {
-    if (this.connected) return;
+    // M-st8: guard against concurrent connect() calls. Without this, two callers
+    // (e.g. reconnect() + an explicit connect()) both pass the `connected` check,
+    // each issues a /api/v1/acp/connect POST, and the second overwrites
+    // connectionId/sessionToken while the first's heartbeat + SSE are still live —
+    // leaving the client talking to a connection id the server doesn't know.
+    if (this.connected || this._connecting) return;
 
     this._connecting = true;
     this._connectionError = false;
@@ -936,7 +959,8 @@ export class AcpClient {
         .split(/\r?\n/)
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trim())
-        .join('');
+        // M-st10: join multi-line `data:` with `\n` per SSE spec (was empty string).
+        .join('\n');
       if (!data) continue;
       try {
         onMessage(JSON.parse(data));

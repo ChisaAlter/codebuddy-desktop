@@ -35,6 +35,21 @@ describe('parseEventStreamMessages - SSE 解析', () => {
     expect(msgs).toEqual([]);
   });
 
+  // M-st10: per SSE spec, multiple `data:` lines within one event are joined
+  // with `\n`. A JSON object split across two data: lines (a common server-side
+  // pretty-print) must parse when joined with `\n` (whitespace outside strings
+  // is allowed in JSON).
+  it('joins multi-line data: with \\n per SSE spec (M-st10)', () => {
+    // A JSON object split across two data: lines:
+    //   data: {"a":1,
+    //   data: "b":2}
+    // joined with \n → {"a":1,\n"b":2} → valid JSON.
+    const text = 'data: {"a":1,\ndata: "b":2}\n\n';
+    const msgs = parseEventStreamMessages(text);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({ a: 1, b: 2 });
+  });
+
   it('data: 行带前导空格被 trim 清理后解析', () => {
     const text = 'data:    {"k":"v"}\n\n';
     const msgs = parseEventStreamMessages(text);
