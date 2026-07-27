@@ -31,6 +31,31 @@ describe('connection offer', () => {
   it('returns null without offer fragment', () => {
     assert.equal(parseConnectionOfferFromUrl('https://example.com/'), null);
   });
+
+  // C1: the optional pairingToken field round-trips through encode → parse and
+  // is dropped when absent (no stray key on offers that omit it).
+  it('round-trips an optional pairingToken field', () => {
+    const withToken = { ...sampleOffer, pairingToken: 'tok_abc123' };
+    const url = encodeConnectionOfferToUrl(withToken);
+    const parsed = parseConnectionOfferFromUrl(url);
+    assert.equal(parsed.pairingToken, 'tok_abc123');
+  });
+
+  it('omits pairingToken when not set on the source offer', () => {
+    const parsed = parseConnectionOffer(sampleOffer);
+    assert.equal('pairingToken' in parsed, false);
+  });
+
+  it('rejects an empty/non-string pairingToken when set', () => {
+    assert.throws(
+      () => parseConnectionOffer({ ...sampleOffer, pairingToken: '' }),
+      /pairingToken/,
+    );
+    assert.throws(
+      () => parseConnectionOffer({ ...sampleOffer, pairingToken: 42 }),
+      /pairingToken/,
+    );
+  });
 });
 
 describe('relay url', () => {
