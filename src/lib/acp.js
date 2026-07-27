@@ -11,7 +11,7 @@ const MAX_INCOMING_EVENT_FINGERPRINTS = 4000;
 const PROMPT_NOTIFICATION_FALLBACK_MS = 80;
 // After session/prompt's POST stream settles, late GET-SSE chunks may still arrive.
 // Keep the last promptRunId long enough for store grace + history recovery to correlate them.
-const LATE_PROMPT_CORRELATION_MS = 5000;
+export const LATE_PROMPT_CORRELATION_MS = 5000;
 const PROMPT_CONTENT_SESSION_UPDATES = new Set([
   'agent_message_chunk',
   'agent_thought_chunk',

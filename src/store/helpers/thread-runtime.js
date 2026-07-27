@@ -9,6 +9,11 @@ export function emptyThreadRuntime() {
     isAwaitingResponse: false,
     promptStartedAt: null,
     activePromptRunId: null,
+    // H1: track the most recently finalized prompt run so late SSE content chunks
+    // that arrive after `activePromptRunId` is cleared can still be correlated and
+    // appended to the last assistant message instead of being dropped.
+    lastPromptRunId: null,
+    lastPromptRunAt: 0,
     promptDispatched: false,
     promptQueue: [],
     pendingAttachments: [],
@@ -121,6 +126,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'isAwaitingResponse',
   'promptStartedAt',
   'activePromptRunId',
+  'lastPromptRunId',
+  'lastPromptRunAt',
   'promptDispatched',
   'promptQueue',
   'pendingAttachments',

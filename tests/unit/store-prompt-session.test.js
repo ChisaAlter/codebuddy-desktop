@@ -765,4 +765,112 @@ describe('store prompt session selection', () => {
     expect(request).not.toHaveBeenCalled();
     expect(useStore.getState().error).toContain('当前回复进行中');
   });
+
+  // H1: a content chunk that arrives after the run has finalized (activePromptRunId
+  // cleared) but within the LATE_PROMPT_CORRELATION_MS window must still be accepted
+  // and appended to the timeline instead of being silently dropped.
+  it('accepts a late content chunk for the just-finalized prompt run', async () => {
+    let finishedRunId = null;
+    request.mockImplementationOnce(async () => {
+      finishedRunId = useStore.getState().threadRuntimeById['thread-1'].activePromptRunId;
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-ready',
+          _client: { source: 'request', promptRunId: finishedRunId },
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'reply-final',
+            content: { type: 'text', text: 'done' },
+          },
+        },
+      });
+      return { stopReason: 'end_turn' };
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(true);
+
+    // After success the activePromptRunId is cleared but lastPromptRunId is set.
+    const runtimeAfter = useStore.getState().threadRuntimeById['thread-1'];
+    expect(runtimeAfter.activePromptRunId).toBeNull();
+    expect(runtimeAfter.lastPromptRunId).toBe(finishedRunId);
+
+    // A late chunk arrives tagged with the finished run id (transport correlates it).
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-ready',
+        _client: { source: 'request', promptRunId: finishedRunId },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'late-tail',
+          content: { type: 'text', text: 'LATE_TAIL' },
+        },
+      },
+    });
+
+    expect(
+      useStore.getState().threadRuntimeById['thread-1'].timeline.some((item) => item.content === 'LATE_TAIL'),
+    ).toBe(true);
+  });
+
+  // H2: while isAwaitingResponse is true (promptDispatched not yet set), cancelling
+  // must still emit session/cancel because the POST may already be in flight backend-side.
+  it('emits session/cancel when cancelling during isAwaitingResponse pre-dispatch', async () => {
+    const notify = vi.fn().mockResolvedValue(true);
+    const cancelActivePrompt = vi.fn().mockReturnValue(true);
+    const hasActivePrompt = vi.fn().mockReturnValue(false);
+    useStore.setState((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], status: 'running' },
+      },
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': runtime({
+          activePromptRunId: 'run-pending',
+          promptDispatched: false,
+          isAwaitingResponse: true,
+        }),
+      },
+      getThreadClient: () => ({
+        request,
+        notify,
+        cancelActivePrompt,
+        hasActivePrompt,
+        invalidateInteractiveRequests: vi.fn(),
+      }),
+    }));
+
+    await expect(useStore.getState().cancelSession()).resolves.toBe(true);
+
+    expect(notify).toHaveBeenCalledWith('session/cancel', { sessionId: 'session-ready' });
+  });
+
+  // H4: two concurrent drainThreadPromptQueue calls must only dispatch session/prompt once.
+  it('does not double-send session/prompt when two drains race past the queue lock', async () => {
+    useStore.setState((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], status: 'idle' },
+      },
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': runtime({
+          isAwaitingResponse: false,
+          activePromptRunId: null,
+          promptQueue: [{ id: 'q1', text: 'first' }, { id: 'q2', text: 'second' }],
+        }),
+      },
+    }));
+
+    const p1 = useStore.getState().drainThreadPromptQueue('thread-1');
+    const p2 = useStore.getState().drainThreadPromptQueue('thread-1');
+    await Promise.all([p1, p2]);
+
+    const promptCalls = request.mock.calls.filter((call) => call[0] === 'session/prompt');
+    expect(promptCalls.length).toBe(1);
+  });
 });

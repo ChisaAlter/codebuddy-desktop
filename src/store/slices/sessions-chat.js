@@ -1,6 +1,7 @@
 import {
   setAcpSessionToken,
   isAcpAuthenticationError,
+  LATE_PROMPT_CORRELATION_MS,
 } from '../../lib/acp';
 import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent } from '../../lib/timeline';
 import {
@@ -366,8 +367,27 @@ export function createSessionsChatSlice(set, get, ctx) {
       const promptRunId = detail?._client?.promptRunId || null;
       const sessionUpdate = update.sessionUpdate || update.session_update || update.type;
       const promptContentEvent = PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
-      if (promptContentEvent && promptRunId && promptRunId !== runtime.activePromptRunId) return;
-      if (promptContentEvent && !promptRunId && runtime.activePromptRunId && !runtime.historyReplayActive) return;
+      if (promptContentEvent && promptRunId && promptRunId !== runtime.activePromptRunId) {
+        // H1: accept late content chunks for the just-finalized run. After a prompt
+        // succeeds/is cancelled, `activePromptRunId` is cleared but the transport
+        // layer keeps correlating late SSE chunks to that run id for up to
+        // LATE_PROMPT_CORRELATION_MS. Without this, the tail of the assistant
+        // answer (or post-cancel final tokens) is silently dropped.
+        const recent =
+          runtime.lastPromptRunId &&
+          promptRunId === runtime.lastPromptRunId &&
+          Date.now() - runtime.lastPromptRunAt < LATE_PROMPT_CORRELATION_MS;
+        if (!recent) return;
+      }
+      if (promptContentEvent && !promptRunId && runtime.activePromptRunId && !runtime.historyReplayActive) {
+        // H1: same idea — a chunk without a run id that matches the just-finished run
+        // is still useful (transport correlates by recency), so accept it while the
+        // late-correlation window is open.
+        const recentUnmarked =
+          runtime.lastPromptRunId &&
+          Date.now() - runtime.lastPromptRunAt < LATE_PROMPT_CORRELATION_MS;
+        if (!recentUnmarked) return;
+      }
       if (
         promptContentEvent &&
         !promptRunId &&
@@ -1661,11 +1681,27 @@ export function createSessionsChatSlice(set, get, ctx) {
       const waitingForInput = currentThread.status === 'waiting';
       const responseBusy = RESPONSE_BUSY_STATUSES.has(currentThread.status);
       if (!hadPlannedRun && !hadActiveRequest && !waitingForInput && !responseBusy) return false;
+      // H2: while `isAwaitingResponse` is true the POST stream may have already
+      // landed on the backend even though `promptDispatched` has not been set yet.
+      // Treat that window as backend-may-be-running so we always emit session/cancel
+      // instead of leaving the turn silently executing (its later chunks would then
+      // be dropped by the H1 guard above).
       const preflightOnly =
-        hadPlannedRun && !currentRuntime.promptDispatched && !hadActiveRequest && currentThread.status === 'running';
-      const backendMayBeRunning = !preflightOnly && (currentRuntime.promptDispatched || hadActiveRequest || responseBusy);
+        hadPlannedRun &&
+        !currentRuntime.promptDispatched &&
+        !hadActiveRequest &&
+        !currentRuntime.isAwaitingResponse &&
+        currentThread.status === 'running';
+      const backendMayBeRunning =
+        !preflightOnly && (currentRuntime.promptDispatched || hadActiveRequest || responseBusy || currentRuntime.isAwaitingResponse);
 
-      get().patchThreadRuntime(threadId, responseTerminalRuntimePatch());
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({
+          lastPromptRunId: currentRuntime.activePromptRunId || null,
+          lastPromptRunAt: currentRuntime.activePromptRunId ? Date.now() : 0,
+        }),
+      );
       await get().updateThreadRecord(threadId, { status: 'cancelling' });
 
       client.cancelActivePrompt?.(sessionId);
@@ -1862,7 +1898,15 @@ export function createSessionsChatSlice(set, get, ctx) {
       const latestThread = get().threadsById[threadId];
       const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const latestSessionId = latestThread?.sessionId || latestRuntime.sessionId;
-      return latestRuntime.activePromptRunId === activePromptRunId && latestSessionId === requestSessionId;
+      // H3: a cancel that lands between the runIsCurrent() check and the final
+      // terminal patch would otherwise let the success path overwrite status
+      // `cancelled` with `idle` and notify success for a cancelled turn.
+      return (
+        latestRuntime.activePromptRunId === activePromptRunId &&
+        latestSessionId === requestSessionId &&
+        latestThread?.status !== 'cancelled' &&
+        latestThread?.status !== 'cancelling'
+      );
     };
 
     const hasFinalResponse = () =>
@@ -2066,11 +2110,21 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
 
       get().flushThreadTimelineCoalesce?.(threadId);
+      // H3: re-check current-ness right before the terminal patch; a cancel that
+      // arrived after the runIsCurrent() guard at line 2061 must not be overwritten
+      // with `idle`/`success`.
+      if (!runIsCurrent()) return false;
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const completedTimeline = closeAssistantStream(completedRuntime.timeline);
       get().patchThreadRuntime(
         threadId,
-        responseTerminalRuntimePatch({ timeline: completedTimeline }),
+        responseTerminalRuntimePatch({
+          timeline: completedTimeline,
+          // H1: remember the just-finished run so late SSE chunks still arriving
+          // within LATE_PROMPT_CORRELATION_MS are appended instead of dropped.
+          lastPromptRunId: activePromptRunId,
+          lastPromptRunAt: Date.now(),
+        }),
       );
       await get().updateThreadRecord(threadId, {
         status: 'idle',
@@ -2078,6 +2132,14 @@ export function createSessionsChatSlice(set, get, ctx) {
         timeline: completedTimeline.slice(-300),
         metadata: { ...(get().threadsById[threadId]?.metadata || {}), lastError: null },
       });
+      // Clear the late-correlation window after it expires so a stale run id can
+      // never accept unrelated chunks far in the future.
+      setTimeout(() => {
+        const r = get().threadRuntimeById[threadId];
+        if (r && r.lastPromptRunId === activePromptRunId) {
+          get().patchThreadRuntime(threadId, { lastPromptRunId: null, lastPromptRunAt: 0 });
+        }
+      }, LATE_PROMPT_CORRELATION_MS + 500);
       if ((get().threadRuntimeById[threadId]?.promptQueue || []).length > 0) {
         setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
       } else {
@@ -2195,11 +2257,17 @@ export function createSessionsChatSlice(set, get, ctx) {
       return { next, attachments };
     });
     if (!prepared) return false;
-    return get().runThreadPrompt(
-      threadId,
-      prepared.next.text,
-      prepared.attachments,
-      prepared.next.draftText ?? prepared.next.text,
+    // H4: serialize the actual prompt dispatch per thread so two concurrent
+    // drainThreadPromptQueue calls (one from the success-path setTimeout and one
+    // from a queued sendPrompt, both of which pass the queue lock that only guards
+    // the pop) cannot each call runThreadPrompt and double-send session/prompt.
+    return runUniqueSessionAction(`${threadId}:prompt`, () =>
+      get().runThreadPrompt(
+        threadId,
+        prepared.next.text,
+        prepared.attachments,
+        prepared.next.draftText ?? prepared.next.text,
+      ),
     );
   },
 
