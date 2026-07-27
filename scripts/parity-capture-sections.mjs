@@ -72,6 +72,9 @@ function abEval(session, js) {
   // agent-browser eval reads expression as arg — use file content
   const expr = fs.readFileSync(tmp, 'utf8');
   const { out } = ab(session, ['eval', expr]);
+  // L11: clean up the temp file after use (previously overwritten each call but
+  // never deleted, accumulating one per session).
+  try { fs.unlinkSync(tmp); } catch { /* already gone */ }
   return parseJsonLoose(out);
 }
 
@@ -79,11 +82,11 @@ function shortId(id) {
   return id.replace('settings-section-', '');
 }
 
-function sleep(ms) {
-  spawnSync(process.platform === 'win32' ? 'timeout' : 'sleep', process.platform === 'win32' ? ['/t', String(Math.ceil(ms / 1000)), '/nobreak'] : [String(ms / 1000)], {
-    stdio: 'ignore',
-    shell: true,
-  });
+// L13: use a Node timer instead of shelling out to Windows `timeout /t N` (which
+// only accepts integer seconds — sleep(350) became 1s). Now async; callers must
+// await. Kept synchronous-callable via spawnSync fallback removed.
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function loadPng(file) {
@@ -100,7 +103,7 @@ async function loadPng(file) {
   return null;
 }
 
-function captureSession(session, prefix) {
+async function captureSession(session, prefix) {
   const results = {};
   for (const sid of SECTIONS) {
     const short = shortId(sid);
@@ -112,7 +115,7 @@ function captureSession(session, prefix) {
   return { id: ${JSON.stringify(sid)}, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
 })()`;
     abEval(session, js);
-    sleep(350);
+    await sleep(350);
     const rect = abEval(session, js);
     const shot = path.join(OUT, `_tmp_${prefix}_${short}.png`);
     const { out } = ab(session, ['screenshot', shot]);
@@ -228,7 +231,7 @@ print('WROTE metrics', len(metrics))
 
 fs.mkdirSync(OUT, { recursive: true });
 console.log('WEB...');
-const web = captureSession('parity-web', 'web');
+const web = await captureSession('parity-web', 'web');
 console.log('GUI...');
-const gui = captureSession('parity-gui', 'gui');
+const gui = await captureSession('parity-gui', 'gui');
 cropWithPython({ web, gui });

@@ -3,7 +3,7 @@
 // 用法：node scripts/dev-launch.cjs   （或经桌面 .bat 双击）
 // 退出码：electron 的退出码；Ctrl+C 杀两进程后退出 130。
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -42,7 +42,17 @@ function killAll(code) {
   exiting = true;
   for (const p of [electronProc, viteProc]) {
     if (p && !p.killed) {
-      try { process.kill(p.pid); } catch (_) {}
+      try {
+        // L9: on Windows, process.kill(parentPid) does not propagate to child
+        // processes (Electron spawns renderer/GPU helpers; Vite may spawn esbuild
+        // workers). Use taskkill /T to kill the whole tree; on POSIX the signal
+        // to the parent is enough since children share the process group.
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/pid', String(p.pid), '/T', '/F'], { stdio: 'ignore', shell: true });
+        } else {
+          process.kill(p.pid, 'SIGTERM');
+        }
+      } catch (_) {}
     }
   }
   process.exit(code ?? 0);

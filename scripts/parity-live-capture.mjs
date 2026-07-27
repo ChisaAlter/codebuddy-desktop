@@ -189,6 +189,8 @@ print('wrote', OUT / f'{TAG}-pixel-metrics.json')
 const pyPath = path.join(OUT, `_${TAG}_metrics.py`);
 fs.writeFileSync(pyPath, py, 'utf8');
 const pr = spawnSync('python', [pyPath], { encoding: 'utf8', cwd: ROOT });
+// L11: clean up the temp python script (previously left behind, one stray .py per invocation).
+try { fs.unlinkSync(pyPath); } catch { /* already gone */ }
 process.stdout.write(pr.stdout || '');
 if (pr.stderr) process.stderr.write(pr.stderr);
 process.exit(pr.status || 0);

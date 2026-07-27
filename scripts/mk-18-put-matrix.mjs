@@ -8,9 +8,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const BASE = process.env.CODEBUDDY_BASE || 'http://127.0.0.1:18789';
 const TOKEN = process.env.CODEBUDDY_TOKEN || '';
+// L15: fail fast with a clear message if the token is missing — an empty bearer
+// produces confusing 401s instead of a hint to set the env var.
+if (!TOKEN) {
+  console.error('CODEBUDDY_TOKEN required: set it to a valid session token before running.');
+  process.exit(2);
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.resolve(__dirname, '../docs/parity-evidence');
 
@@ -52,8 +59,10 @@ function setByPath(obj, p, v) {
   return out;
 }
 
+// L14: use Node's deep-strict equality instead of JSON.stringify (which is
+// order-sensitive on object keys and treats undefined/omitted inconsistently).
 function deepEq(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return isDeepStrictEqual(a, b);
 }
 
 async function api(method, urlPath, body) {
