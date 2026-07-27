@@ -184,11 +184,15 @@ function createProductStateStore(userDataPath, logger = () => {}) {
     const tempFile = `${stateFile}.tmp`;
     const backupFile = `${stateFile}.bak`;
     fs.mkdirSync(userDataPath, { recursive: true });
-    fs.writeFileSync(tempFile, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+    // L1: write with 0o600 so conversation/thread content is not world-readable
+    // on multi-user machines. The temp+rename below preserves atomicity.
+    fs.writeFileSync(tempFile, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     try {
       if (fs.existsSync(backupFile)) fs.rmSync(backupFile, { force: true });
       if (fs.existsSync(stateFile)) fs.renameSync(stateFile, backupFile);
       fs.renameSync(tempFile, stateFile);
+      // L1: enforce 0o600 on the final file (rename may not preserve mode on all platforms).
+      try { fs.chmodSync(stateFile, 0o600); } catch { /* windows */ }
     } catch (error) {
       try {
         if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {

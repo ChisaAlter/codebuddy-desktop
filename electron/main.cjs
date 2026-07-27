@@ -62,7 +62,12 @@ function writeMobileRemoteConfig(config) {
   };
   const file = mobileRemoteConfigPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+  // L1: atomic temp+rename with 0o600 so the relay endpoint/TLS preference is
+  // not left in a half-written or world-readable file.
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, 0o600); } catch { /* windows */ }
   return next;
 }
 
@@ -126,7 +131,11 @@ function windowStateIsVisible(state) {
 
 function writeWindowState(state) {
   try {
-    fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state));
+    // L1: atomic temp+rename with 0o600.
+    const tmp = `${WINDOW_STATE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+    fs.renameSync(tmp, WINDOW_STATE_FILE);
+    try { fs.chmodSync(WINDOW_STATE_FILE, 0o600); } catch { /* windows */ }
   } catch (_) {
     /* 写失败不阻塞 */
   }
@@ -1798,7 +1807,9 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      devTools: true,
+      // L2: gate DevTools on isDev so production builds cannot detach DevTools
+      // (sandbox+CSP already neutralize the privilege, this removes the surface).
+      devTools: isDev,
       // Keep timers/stream paint alive while the window is unfocused so returning
       // from another app does not dump multi-second backlog and freeze the UI.
       backgroundThrottling: false,
@@ -1936,7 +1947,9 @@ async function createWindow() {
     if (isDev || level >= 2) {
       const tag = level === 3 ? 'ERROR' : level === 2 ? 'WARN' : level === 1 ? 'INFO' : 'LOG';
       const src = sourceId ? ` @${sourceId.split('/').slice(-2).join('/')}:${line}` : '';
-      logStartup(`renderer [${tag}]${src}: ${message}`);
+      // L3: redact secrets from renderer console logs (a renderer that warns
+      // with a token/URL would otherwise persist it to startup.log).
+      logStartup(`renderer [${tag}]${src}: ${redactSecrets(String(message))}`);
     }
   });
 
@@ -2254,6 +2267,17 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     const decoder = new TextDecoder();
     let buffer = '';
     const sender = event.sender;
+    // L7: abort the stream when the renderer is destroyed so the read loop does
+    // not keep running (consuming CPU/network) for an orphaned sender. The loop
+    // already checks sender.isDestroyed() before sending, but it continues to
+    // read from the network until done/abort/timeout.
+    const onSenderDestroyed = () => {
+      try { controller.abort(); } catch (_) {}
+      codebuddyStreams.delete(streamId);
+    };
+    if (sender && !sender.isDestroyed()) {
+      sender.once('destroyed', onSenderDestroyed);
+    }
     (async () => {
       const emitMessages = (messages) => {
         for (const message of messages) {
@@ -2287,6 +2311,8 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           streamError = timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
+        // L7: remove the destroyed listener now that the loop is exiting.
+        try { sender?.removeListener?.('destroyed', onSenderDestroyed); } catch (_) {}
         try {
           reader.releaseLock?.();
         } catch (_) {}
@@ -2677,6 +2703,8 @@ ipcMain.on('productState:saveSync', (event, state) => {
   }
 });
 ipcMain.on('window:openDevTools', () => {
+  // L2: only allow DevTools in development; production builds ignore the IPC.
+  if (!isDev) return;
   if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' });
 });
 

@@ -125,4 +125,15 @@ describe('electron product-state store', () => {
     fs.writeFileSync(`${store.stateFile}.bak`, '{also-bad', 'utf8');
     expect(store.load()).toEqual(emptyProductState());
   });
+
+  // L1: product-state.json must be written with 0o600 so conversation/thread
+  // content is not world-readable on multi-user POSIX machines. Windows chmod is
+  // a no-op so the assertion is skipped there.
+  (process.platform === 'win32' ? it.skip : it)('writes the primary file with mode 0o600 (POSIX)', () => {
+    const { store } = makeStore();
+    store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'] });
+    const stat = fs.statSync(store.stateFile);
+    // Mask to permission bits only.
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
 });
