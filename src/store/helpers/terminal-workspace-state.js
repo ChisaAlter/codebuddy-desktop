@@ -1,6 +1,20 @@
+function newPaneId() {
+  // L1: pane id is the persistent identity used in activePaneId matching; derive
+  // from crypto.randomUUID (renderer always has it) instead of Math.random.
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `pane-${uuid}`;
+  const c = globalThis.crypto;
+  if (c?.getRandomValues) {
+    const buf = new Uint8Array(8);
+    c.getRandomValues(buf);
+    return `pane-${Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return `pane-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 export function makePane(title = 'Terminal') {
   return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: newPaneId(),
     title,
     status: 'idle',
     sessionId: null,

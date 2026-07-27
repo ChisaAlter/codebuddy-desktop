@@ -974,7 +974,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
             ) : null}
             <div className="flex flex-col gap-0.5">
               {toolItems.map((item, index) => (
-                <ToolCallBlock key={item.id || index} item={item} />
+                <ToolCallBlock key={item.id || `tool-${index}-${item.toolName || item.kind || ''}`} item={item} />
               ))}
             </div>
           </div>
@@ -1144,7 +1144,7 @@ function ArtifactTimelineCard({ item }) {
           {tasks.length ? (
             <div className="mt-2 space-y-1">
               {tasks.map((task, index) => (
-                <div key={task.id || index} className="flex items-start gap-2 text-xs">
+                <div key={task.id || `task-${index}`} className="flex items-start gap-2 text-xs">
                   <span
                     className={
                       task.status === 'completed'
@@ -1291,7 +1291,7 @@ function TeamStatusPanel({ teamState }) {
             const active = ['working', 'running', 'in_progress'].includes(status);
             return (
               <div
-                key={member.id || member.name || index}
+                key={member.id || member.name || `member-${index}`}
                 className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-2 py-1 text-[10px]"
               >
                 <span
@@ -2857,7 +2857,7 @@ export default function ReplicaChatView() {
             <div>
               <div className="text-xs text-[var(--color-text-muted)] text-center py-2">{t('chat.disclaimer')}</div>
               {timelineWithDates.map(({ item, showDate }, idx) => (
-                <React.Fragment key={item.id || idx}>
+                <React.Fragment key={item.id || `${item.type || 'item'}-${idx}-${item.createdAt || 0}`}>
                   {showDate && <DateSeparator label={getDayLabel(item.createdAt, t)} />}
                   <TimelineItem item={item} />
                 </React.Fragment>

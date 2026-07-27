@@ -30,11 +30,14 @@ function normalizeModeKey(value) {
 export function getSessionModeLabel(mode, fallback = '') {
   const id = typeof mode === 'string' ? mode : mode?.id || mode?.modeId || mode?.value;
   const name = typeof mode === 'string' ? '' : mode?.name || mode?.label;
+  // L18: prefer the caller's fallback over leaking the raw internal id to the UI
+  // when no label matches (e.g. unknown "custom_xyz" mode). `id` is still returned
+  // only if no fallback was provided, preserving call sites that pass no fallback.
   return MODE_LABELS[normalizeModeKey(id)]
     || MODE_LABELS[normalizeModeKey(name)]
     || name
-    || id
-    || fallback;
+    || fallback
+    || id;
 }
 
 /**

@@ -27,9 +27,16 @@ function normalizeTimelineEntry(entry) {
   const content = entry.content;
   if (!historyMode || typeof rawText !== 'string' || !rawText || typeof content !== 'string') return entry;
   const repeatCount = content.length / rawText.length;
-  const repeatedContent = Number.isInteger(repeatCount)
+  // L3: bound the repeat comparison. A very short rawText against a huge content
+  // would make repeatCount enormous, allocating a multi-MB string transiently
+  // for the `=== content` check. Skip the repeat path entirely when the
+  // allocation would exceed 1MB or the count exceeds 1000 (treat as non-repeated).
+  const repeatSafe =
+    Number.isInteger(repeatCount)
     && repeatCount >= 2
-    && rawText.repeat(repeatCount) === content;
+    && repeatCount <= 1000
+    && rawText.length * repeatCount <= 1_000_000;
+  const repeatedContent = repeatSafe && rawText.repeat(repeatCount) === content;
   const metaText = entry.meta?.content?.text;
   const corruptedMeta = typeof metaText === 'string'
     && metaText.includes('\uFFFD')

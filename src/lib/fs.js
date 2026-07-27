@@ -1,10 +1,14 @@
 import { fetchJson, requestCodeBuddy } from './acp';
 
 export async function fsList(path = '.', depth = 1) {
+  // L1: cap depth client-side so a runaway caller cannot ask the backend for a
+  // 9999-deep tree (huge payload). The backend canonicalizes and rejects `..`
+  // traversal; this is a defense-in-depth bound.
+  const cappedDepth = Math.min(Math.max(Number(depth) || 1, 1), 10);
   const payload = await fetchJson('/api/v1/fs/list', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, depth }),
+    body: JSON.stringify({ path, depth: cappedDepth }),
   });
   return payload.data?.entries || payload.entries || payload.files || [];
 }
@@ -178,6 +182,9 @@ export function normalizePathParts(path) {
 
 export function joinPath(base, child) {
   if (!base || base === '.') return child;
+  // L1: no client-side `..` rejection here — backend `/api/v1/fs/*` canonicalizes
+  // and rejects traversal. Defense-in-depth relies on the backend; if a future
+  // backend loosens that, add a `..` segment check here.
   return `${base.replace(/\\/g, '/')}/${child}`;
 }
 

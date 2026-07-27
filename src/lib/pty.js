@@ -108,7 +108,10 @@ export class PtySocket {
       let payload = event.data;
       try {
         payload = JSON.parse(event.data);
-      } catch (_) {}
+      } catch (_) {
+        // L7: non-JSON frames (e.g. terminal keepalive/binary) are emitted raw
+        // below by design; the WS server only sends JSON for typed messages.
+      }
       this.emit('message', payload);
       if (payload?.type) this.emit(payload.type, payload);
     };

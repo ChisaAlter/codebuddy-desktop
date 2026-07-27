@@ -36,4 +36,13 @@ describe('session mode labels', () => {
     expect(isUltracodeEffort('Ultracode')).toBe(true);
     expect(isUltracodeEffort('high')).toBe(false);
   });
+
+  // L18: an unknown mode id returns the caller's fallback rather than leaking
+  // the raw internal id into the UI. With no fallback, the id is the last resort.
+  it('returns fallback for unknown modes instead of leaking the raw id', () => {
+    expect(getSessionModeLabel('custom_xyz', '未知')).toBe('未知');
+    expect(getSessionModeLabel({ id: 'weird', name: 'Weird' }, '默认')).toBe('Weird');
+    // No fallback + unknown id → id is still returned (preserves existing no-fallback call sites).
+    expect(getSessionModeLabel('custom_xyz')).toBe('custom_xyz');
+  });
 });

@@ -63,6 +63,11 @@ export function loadGuiSettings() {
     if (!legacyHasGuiFields(legacy)) return { ...DEFAULT_GUI_SETTINGS };
     const migrated = normalizeGuiSettings(legacy);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    // Note: the legacy cache (LEGACY_STORAGE_KEY) also holds backend-only
+    // settings (e.g. gateway.port), so it is intentionally NOT cleared here —
+    // removing it would drop offline backend state. A re-migration on a future
+    // load that loses STORAGE_KEY is harmless (the legacy cache is the source of
+    // truth for backend keys the GUI does not own).
     return migrated;
   } catch (_) {
     return { ...DEFAULT_GUI_SETTINGS };

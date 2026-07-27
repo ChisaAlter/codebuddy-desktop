@@ -13,10 +13,23 @@ export function emptyProductState() {
   };
 }
 
+function randomHexFallback(bytes = 16) {
+  // L4: when crypto.randomUUID is unavailable (older renderer/Node), derive an
+  // id from crypto.getRandomValues instead of Math.random (collision-prone,
+  // non-RFC-4122). Falls back to Math.random only if both are absent.
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj?.getRandomValues) {
+    const buf = new Uint8Array(bytes);
+    cryptoObj.getRandomValues(buf);
+    return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 2 + bytes)}`;
+}
+
 export function createEntityId(prefix) {
   const uuid = globalThis.crypto?.randomUUID?.();
   if (uuid) return `${prefix}-${uuid}`;
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${randomHexFallback(16)}`;
 }
 
 export function projectNameFromPath(workspacePath) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createProjectRecord,
   createThreadRecord,
+  createEntityId,
   normalizeProductState,
   productStateSnapshot,
 } from '../../src/lib/product-state';
@@ -233,5 +234,34 @@ describe('product state sidebar fields', () => {
       desktopNotificationsEnabled: false,
     });
     expect(normalizeProductState(snapshot).guiSettings.theme).toBe('light');
+  });
+});
+
+describe('createEntityId', () => {
+  it('produces a prefixed unique id', () => {
+    const a = createEntityId('project');
+    const b = createEntityId('project');
+    expect(a).toMatch(/^project-/);
+    expect(b).toMatch(/^project-/);
+    expect(a).not.toBe(b);
+  });
+
+  // L4: when crypto.randomUUID is unavailable, the fallback still produces
+  // unique ids (via getRandomValues) instead of collision-prone Date.now+Math.random.
+  it('falls back to getRandomValues when randomUUID is missing', () => {
+    const original = globalThis.crypto;
+    // Stub crypto with getRandomValues but no randomUUID.
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { getRandomValues: (buf) => { for (let i = 0; i < buf.length; i += 1) buf[i] = i + 1; return buf; } },
+      configurable: true,
+    });
+    try {
+      const id = createEntityId('thread');
+      expect(id).toMatch(/^thread-[0-9a-f]+$/);
+      // Deterministic fill (1,2,3,...) so the hex is stable.
+      expect(id).not.toContain('undefined');
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { value: original, configurable: true });
+    }
   });
 });

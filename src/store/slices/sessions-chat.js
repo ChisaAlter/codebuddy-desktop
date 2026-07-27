@@ -1877,7 +1877,21 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     const project = get().projectsById[thread.projectId];
     const promptStartedAt = Date.now();
-    const activePromptRunId = `run-${promptStartedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    // L1: prompt run id is identity-bearing for cancel/correlation; use a crypto
+    // suffix (UUID or getRandomValues) instead of Math.random. The Date.now()
+    // prefix is kept for human-readable ordering.
+    const runSuffix = (() => {
+      const u = globalThis.crypto?.randomUUID?.();
+      if (u) return u.slice(0, 8);
+      const c = globalThis.crypto;
+      if (c?.getRandomValues) {
+        const buf = new Uint8Array(4);
+        c.getRandomValues(buf);
+        return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+      }
+      return Math.random().toString(36).slice(2, 8);
+    })();
+    const activePromptRunId = `run-${promptStartedAt}-${runSuffix}`;
     // WebUI shows images/files inside the user bubble; keep timeline text as the prompt body only.
     const timelineAttachments = (attachments || []).map((attachment) => ({
       name: attachment.name || attachment.path,

@@ -136,4 +136,36 @@ describe('electron product-state store', () => {
     // Mask to permission bits only.
     expect(stat.mode & 0o777).toBe(0o600);
   });
+
+  // L3: normalizeTimelineEntry must not allocate a multi-MB string when a tiny
+  // rawText is "repeated" into a huge content. The repeat-comparison is skipped
+  // past the cap; the entry is returned unchanged (treated as non-repeated).
+  it('skips the repeat comparison for oversized repeated content', () => {
+    const { store } = makeStore();
+    const rawText = 'ab';
+    const hugeContent = rawText.repeat(50_000); // 100k chars, repeatCount=50000 (>1000 cap)
+    const thread = {
+      id: 't1',
+      projectId: 'p1',
+      timeline: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: hugeContent,
+          raw: {
+            content: { text: rawText },
+            _meta: { 'codebuddy.ai': { mode: 'history' } },
+          },
+        },
+      ],
+    };
+    const normalized = store.load();
+    // Use normalizeProductState indirectly by saving + loading.
+    store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'], threadsById: { t1: thread }, threadOrderByProject: { p1: ['t1'] } });
+    const loaded = store.load();
+    // Without the cap, content would be collapsed to 'ab' (rawText). With the cap,
+    // the entry is treated as non-repeated and the huge content is preserved.
+    const loadedEntry = loaded.threadsById.t1.timeline[0];
+    expect(loadedEntry.content).toBe(hugeContent);
+  });
 });
