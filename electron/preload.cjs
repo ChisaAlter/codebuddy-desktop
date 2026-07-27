@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mobileRemoteGetConfig: () => ipcRenderer.invoke('mobileRemote:getConfig'),
   mobileRemoteSetConfig: (config) => ipcRenderer.invoke('mobileRemote:setConfig', config),
   mobileRemoteGetPairingOffer: () => ipcRenderer.invoke('mobileRemote:getPairingOffer'),
+  mobileRemoteGetPairingOfferWithToken: () => ipcRenderer.invoke('mobileRemote:getPairingOfferWithToken'),
   mobileRemoteStart: () => ipcRenderer.invoke('mobileRemote:start'),
   mobileRemoteStop: () => ipcRenderer.invoke('mobileRemote:stop'),
   mobileRemoteListDevices: () => ipcRenderer.invoke('mobileRemote:listDevices'),

@@ -17,6 +17,7 @@ export const OFFER_FRAGMENT_PREFIX = '#offer=';
  * @property {string} hostPublicKeyB64
  * @property {string} [relayAuthPublicKeyB64]
  * @property {{ endpoint: string, useTls?: boolean }} relay
+ * @property {string} [pairingToken]  optional one-time token required to pair a new device (C1)
  */
 
 /**
@@ -62,6 +63,14 @@ export function parseConnectionOffer(value) {
     relay: { endpoint, useTls },
   };
   if (relayAuthPublicKeyB64) offer.relayAuthPublicKeyB64 = relayAuthPublicKeyB64;
+  // C1: optional one-time pairing token embedded in the offer; required to pair
+  // a new device when the trust store is non-empty.
+  if (o.pairingToken != null) {
+    if (typeof o.pairingToken !== 'string' || !o.pairingToken.trim()) {
+      throw new Error('pairingToken must be a non-empty string when set');
+    }
+    offer.pairingToken = o.pairingToken.trim();
+  }
   return offer;
 }
 
@@ -210,6 +219,12 @@ export const Ops = Object.freeze({
   DEVICES: 'devices',
   REVOKE_DEVICE: 'revoke_device',
   DEVICE_REVOKED: 'device_revoked',
+  // C1/C2: device authentication & pairing ops.
+  DEVICE_AUTH: 'device_auth',
+  DEVICE_AUTH_ACK: 'device_auth_ack',
+  DEVICE_AUTH_REQUIRED: 'auth_required',
+  DEVICE_PAIR: 'device_pair',
+  DEVICE_PAIRED: 'device_paired',
   THREADS: 'threads',
   PROJECTS: 'projects',
   RUNTIME: 'runtime',

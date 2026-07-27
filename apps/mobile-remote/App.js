@@ -9,7 +9,8 @@ import { useEffect, useState } from 'react';
 
 import PairScreen from './src/PairScreen';
 import HostScreen from './src/HostScreen';
-import { loadHostsAsync, saveHosts } from './src/storage';
+import { loadHostsAsync, saveHosts, loadDeviceKey, saveDeviceKey } from './src/storage';
+import { generateDeviceKeyPair, exportDevicePublicKey, exportDeviceSecretKey, importDevicePublicKey, deriveDeviceId } from '@codebuddy/mobile-remote-crypto';
 
 export default function App() {
   // Sync [] as initial value; real persisted hosts load async on mount.
@@ -30,13 +31,45 @@ export default function App() {
     };
   }, []);
 
-  const addHost = (host) => {
+  // C1: ensure a persistent device keypair exists (generated on first pair,
+  // reused across hosts/sessions). The deviceId is derived from the public key
+  // so it is stable and unforgeable.
+  const ensureDeviceKey = async () => {
+    let key = await loadDeviceKey();
+    if (!key) {
+      const kp = generateDeviceKeyPair();
+      key = {
+        publicKeyB64: exportDevicePublicKey(kp.publicKey),
+        secretKeyB64: exportDeviceSecretKey(kp.secretKey),
+      };
+      await saveDeviceKey(key);
+    }
+    const deviceId = deriveDeviceId(importDevicePublicKey(key.publicKeyB64));
+    return { ...key, deviceId };
+  };
+
+  const addHost = async (host) => {
+    // C1: attach the device key + deviceId to the host entry so HostScreen can
+    // sign per-connection device-auth challenges.
+    let device = null;
+    try {
+      device = await ensureDeviceKey();
+    } catch (err) {
+      // If device key generation fails (e.g. PRNG unavailable), fall back to the
+      // legacy random deviceId so pairing still works (auth will fail at the host
+      // until a re-pair with a real key). Surface nothing to the user for now.
+      // eslint-disable-next-line no-console
+      console.warn('device key generation failed', err?.message || err);
+    }
+    const enriched = device
+      ? { ...host, deviceId: device.deviceId, devicePublicKeyB64: device.publicKeyB64, deviceSecretKeyB64: device.secretKeyB64 }
+      : host;
     setHosts((prev) => {
-      const next = [...prev.filter((h) => h.serverId !== host.serverId), host];
+      const next = [...prev.filter((h) => h.serverId !== host.serverId), enriched];
       void saveHosts(next);
       return next;
     });
-    setActiveHost(host);
+    setActiveHost(enriched);
   };
 
   const removeHost = (serverId) => {

@@ -62,6 +62,32 @@ export default function MobileRemoteSettingsCard({ t }) {
     }
   }, [api, available, refresh]);
 
+  // C1: load an offer that embeds a fresh one-time pairing token, required to pair
+  // a NEW device when devices already exist. The first device pairs without a token.
+  const loadOfferWithToken = useCallback(async () => {
+    if (!available || !api.mobileRemoteGetPairingOfferWithToken) return;
+    setBusy(true);
+    try {
+      const result = await api.mobileRemoteGetPairingOfferWithToken();
+      const url = result?.offerUrl || result?.qrPayload || '';
+      setOfferUrl(url);
+      if (url) {
+        const { default: QRCode } = await import('qrcode');
+        setQrDataUrl(
+          await QRCode.toDataURL(url, { width: 220, margin: 1, errorCorrectionLevel: 'M' }),
+        );
+      } else {
+        setQrDataUrl('');
+      }
+      setError('');
+      await refresh();
+    } catch (e) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [api, available, refresh]);
+
   const setEnabled = async (enabled) => {
     if (!available || !config) return;
     setBusy(true);
@@ -215,6 +241,18 @@ export default function MobileRemoteSettingsCard({ t }) {
               >
                 {busy ? '…' : t('mobileRemote.regenerate')}
               </button>
+              {/* C1: pair a NEW device — embeds a one-time token in the offer so it
+                  can pair against a non-empty trust store. */}
+              {api.mobileRemoteGetPairingOfferWithToken ? (
+                <button
+                  className="btn-ghost px-2 py-1 text-[11px]"
+                  disabled={busy}
+                  onClick={loadOfferWithToken}
+                  title={devices.length > 0 ? '生成带配对令牌的二维码（用于添加新设备）' : '生成配对二维码（首台设备无需令牌）'}
+                >
+                  {busy ? '…' : '配对新设备'}
+                </button>
+              ) : null}
               <button
                 className="btn-primary px-2 py-1 text-[11px]"
                 disabled={busy || !offerUrl}
@@ -289,6 +327,11 @@ export default function MobileRemoteSettingsCard({ t }) {
               </li>
             ))}
           </ul>
+          {/* C1: legacy devices (pre device-auth) lack a stored public key and are
+              dropped on load; users must re-pair them. */}
+          <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">
+            升级到设备鉴权后，旧设备需重新配对（设置中点「配对新设备」生成带令牌的二维码）。
+          </p>
         </div>
       ) : null}
     </div>

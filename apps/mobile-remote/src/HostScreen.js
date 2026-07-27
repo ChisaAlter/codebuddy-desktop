@@ -21,6 +21,10 @@ import {
   createClientChannel,
   parseHandshakeMessage,
   buildE2eeHelloMessage,
+  importDeviceSecretKey,
+  signDeviceAuth,
+  deriveDeviceId,
+  importDevicePublicKey,
 } from '@codebuddy/mobile-remote-crypto';
 
 const RECONNECT_BASE_MS = 1000;
@@ -54,12 +58,26 @@ export default function HostScreen({ host, onLeave }) {
   const wsRef = useRef(null);
   const channelRef = useRef(null);
   const readyRef = useRef(false);
+  // C1: the relay-assigned connectionId, received from the host's encrypted
+  // 'connected' message right after e2ee_ready. Used to sign the device-auth
+  // challenge so the signature is bound to this connection (anti-replay).
+  const connectionIdRef = useRef(null);
+  // C1: set true once a device_pair/device_auth succeeds; gates privileged ops.
+  const authedRef = useRef(false);
+  // C1: set true once we've attempted device_pair (so an auth_required after that
+  // is a real failure, not a "first-time, try pairing instead" signal).
+  const pairAttemptedRef = useRef(false);
   const opSeq = useRef(0);
   const activeRunId = useRef(null);
   const reconnectTimer = useRef(null);
   const attemptRef = useRef(0);
   const closedByUserRef = useRef(false);
-  const deviceIdRef = useRef(`dev-${Math.random().toString(36).slice(2, 10)}`);
+  // C1: deviceId and device secret key come from the host entry (set by App.js
+  // from the persistent per-device Ed25519 keypair). Falling back to a random id
+  // only when the host entry lacks a device key (legacy/failed-key-generation).
+  const deviceIdRef = useRef(
+    host.deviceId || (host.devicePublicKeyB64 ? deriveDeviceId(importDevicePublicKey(host.devicePublicKeyB64)) : `dev-${Math.random().toString(36).slice(2, 10)}`),
+  );
 
   const connect = useCallback(() => {
     if (closedByUserRef.current) return;
@@ -88,11 +106,10 @@ export default function HostScreen({ host, onLeave }) {
         const msg = parseHandshakeMessage(text);
         if (msg?.type === 'e2ee_ready') {
           readyRef.current = true;
-          setStatus('ready');
+          setStatus('authenticating');
           attemptRef.current = 0;
-          // register device + request projects
-          sendOp({ type: 'device_register', deviceId: deviceIdRef.current, label: `Android-${deviceIdRef.current.slice(4, 10)}` });
-          sendOp({ type: Ops.LIST_PROJECTS });
+          // Wait for the host's encrypted 'connected' message (carries the
+          // relay-assigned connectionId) before sending the device-auth challenge.
         }
         return;
       }
@@ -100,6 +117,12 @@ export default function HostScreen({ host, onLeave }) {
       try { plain = channel.decryptUtf8(text); } catch { return; }
       let msg;
       try { msg = JSON.parse(plain); } catch { return; }
+      // C1: the host sends 'connected' first with the connectionId we must sign.
+      if (msg.type === 'connected' && msg.connectionId && !authedRef.current) {
+        connectionIdRef.current = msg.connectionId;
+        authenticateDevice(msg.serverId || host.serverId);
+        return;
+      }
       handleServerMessage(msg);
     };
 
@@ -143,9 +166,94 @@ export default function HostScreen({ host, onLeave }) {
     return id;
   }
 
+  // C1: sign the device-auth challenge { serverId, deviceId, connectionId, issuedAt }
+  // with the persistent device secret key and send device_auth. Falls back to
+  // device_pair on the host's auth_required (first-time pairing).
+  const authenticateDevice = (serverId) => {
+    if (!host.deviceSecretKeyB64) {
+      // No persistent device key → try first-time pairing directly.
+      pairAttemptedRef.current = true;
+      sendDevicePair();
+      return;
+    }
+    const issuedAt = Date.now();
+    let sig;
+    try {
+      sig = signDeviceAuth(
+        { serverId, deviceId: deviceIdRef.current, connectionId: connectionIdRef.current, issuedAt },
+        importDeviceSecretKey(host.deviceSecretKeyB64),
+      );
+    } catch (err) {
+      setStatus('error');
+      setError(`设备密钥签名失败：${err?.message || err}`);
+      return;
+    }
+    sendOp({
+      type: 'device_auth',
+      deviceId: deviceIdRef.current,
+      signedChallenge: sig,
+      issuedAt,
+    });
+  };
+
+  const sendDevicePair = () => {
+    if (!host.deviceSecretKeyB64 || !host.devicePublicKeyB64) {
+      setStatus('error');
+      setError('缺少设备密钥，无法配对');
+      return;
+    }
+    const issuedAt = Date.now();
+    let sig;
+    try {
+      sig = signDeviceAuth(
+        { serverId: host.serverId, deviceId: deviceIdRef.current, connectionId: connectionIdRef.current, issuedAt },
+        importDeviceSecretKey(host.deviceSecretKeyB64),
+      );
+    } catch (err) {
+      setStatus('error');
+      setError(`设备密钥签名失败：${err?.message || err}`);
+      return;
+    }
+    sendOp({
+      type: 'device_pair',
+      publicKeyB64: host.devicePublicKeyB64,
+      label: `Android-${deviceIdRef.current.slice(4, 10)}`,
+      signedChallenge: sig,
+      issuedAt,
+      pairingToken: host.pairingToken || null,
+    });
+  };
+
   const handleServerMessage = useCallback((msg) => {
     if (!msg) return;
     switch (msg.type) {
+      // C1: device_auth success → connection is now privileged; request projects.
+      case 'device_auth_ack':
+        authedRef.current = true;
+        setDeviceRegistered(true);
+        setStatus('ready');
+        sendOp({ type: Ops.LIST_PROJECTS });
+        break;
+      // C1: device_pair success → first-time pairing established; request projects.
+      case 'device_paired':
+        authedRef.current = true;
+        deviceIdRef.current = msg.deviceId || deviceIdRef.current;
+        setDeviceRegistered(true);
+        setStatus('ready');
+        sendOp({ type: Ops.LIST_PROJECTS });
+        break;
+      // C1: auth required / pair failed. If we tried device_auth and the host
+      // doesn't know this device, retry with device_pair (first-time pair). If
+      // device_pair failed, surface the error.
+      case 'auth_required':
+        if (!authedRef.current && !pairAttemptedRef.current) {
+          pairAttemptedRef.current = true;
+          sendDevicePair();
+        } else {
+          setStatus('error');
+          setError(`鉴权失败：${msg.error || 'unknown'}`);
+        }
+        break;
       case 'device_registered':
         setDeviceRegistered(true);
         break;

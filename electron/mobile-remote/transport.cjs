@@ -327,6 +327,19 @@ async function startHostRelayTransport(args) {
         clients: Array.from(clients.keys()),
       };
     },
+    /**
+     * Force-close a specific client's data socket (C2: used when revoking a
+     * device so its active connection is torn down and cannot keep issuing ops).
+     * @param {string} connectionId
+     * @returns {boolean} whether a client was found and closed.
+     */
+    kickConnection(connectionId) {
+      const s = clients.get(connectionId);
+      if (!s) return false;
+      try { s.ws.close(4001, 'revoked'); } catch (_) {}
+      handleClientClose(s);
+      return true;
+    },
     async stop() {
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }

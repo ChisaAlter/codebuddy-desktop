@@ -176,16 +176,91 @@ function createBridge(deps) {
     const id = op.id || null;
     log('op', type, id);
 
+    // C1: ops other than the handshake trio (ping, device_auth, device_pair)
+    // require an authenticated connection. A connection is authenticated once its
+    // device_auth or device_pair op succeeds. This blocks anyone who merely has
+    // the (public) QR/relayAuth info from issuing prompts, approving permissions,
+    // or revoking devices.
+    const AUTH_EXEMPT = new Set(['ping', 'device_auth', 'device_pair']);
+    if (!AUTH_EXEMPT.has(type) && !ctx.authenticated) {
+      return sendError(ctx, op, 'auth_required', 'device authentication required');
+    }
+
     try {
       switch (type) {
         case 'ping':
           ctx.send({ type: 'pong', id });
           return;
 
+        case 'device_auth': {
+          // C1: verify a per-connection device-auth signature against the trust store.
+          const deviceId = String(op.deviceId || '').trim();
+          const signedChallenge = String(op.signedChallenge || '').trim();
+          const issuedAt = Number(op.issuedAt);
+          if (!deviceId || !signedChallenge) {
+            return sendError(ctx, op, 'bad_request', 'deviceId and signedChallenge required');
+          }
+          if (!deps.authenticateDevice) {
+            return sendError(ctx, op, 'auth_required', 'device authentication not configured');
+          }
+          const result = deps.authenticateDevice({ deviceId, connectionId: ctx.connectionId, signedChallenge, issuedAt });
+          if (result?.ok) {
+            // Mark this connection authenticated for subsequent ops.
+            ctx.authenticated = true;
+            ctx.deviceId = deviceId;
+            ctx.send({ type: 'device_auth_ack', id, deviceId, ok: true });
+          } else {
+            ctx.send({ type: 'auth_required', id, ok: false, error: result?.error || 'auth_failed' });
+          }
+          return;
+        }
+
+        case 'device_pair': {
+          // C1: pair a new device (first device pairs free; later devices need a
+          // pairing token embedded in the offer). The device presents its Ed25519
+          // public key + a signed challenge proving key possession. The host-side
+          // pairDevice verifies the signature, derives deviceId, and stores the
+          // public key.
+          const publicKeyB64 = String(op.publicKeyB64 || '').trim();
+          const label = String(op.label || '').trim().slice(0, 64);
+          const signedChallenge = String(op.signedChallenge || '').trim();
+          const issuedAt = Number(op.issuedAt);
+          const pairingToken = op.pairingToken ? String(op.pairingToken).trim() : null;
+          if (!publicKeyB64 || !signedChallenge) {
+            return sendError(ctx, op, 'bad_request', 'publicKeyB64 and signedChallenge required');
+          }
+          if (!deps.pairDevice) {
+            return sendError(ctx, op, 'auth_required', 'device pairing not configured');
+          }
+          const result = deps.pairDevice({
+            publicKeyB64,
+            label,
+            connectionId: ctx.connectionId,
+            pairingToken,
+            signedChallenge,
+            issuedAt,
+          });
+          if (result?.ok) {
+            ctx.authenticated = true;
+            ctx.deviceId = result.deviceId;
+            ctx.send({ type: 'device_paired', id, deviceId: result.deviceId, ok: true });
+          } else {
+            ctx.send({ type: 'auth_required', id, ok: false, error: result?.error || 'pair_failed' });
+          }
+          return;
+        }
+
         case 'device_register': {
+          // C1: device_register now only updates the label of an already-paired
+          // device. First-time identity is established via device_pair. The
+          // connection must be authenticated, and the deviceId must match the
+          // connection's authenticated deviceId (derived from its keypair).
           const deviceId = String(op.deviceId || '').trim();
           const label = String(op.label || '').trim().slice(0, 64);
           if (!deviceId) return sendError(ctx, op, 'bad_request', 'deviceId required');
+          if (ctx.deviceId && ctx.deviceId !== deviceId) {
+            return sendError(ctx, op, 'bad_request', 'deviceId must match the authenticated device');
+          }
           if (deps.registerDevice) {
             const result = deps.registerDevice({ deviceId, label, connectionId: ctx.connectionId });
             ctx.send({ type: 'device_registered', id, deviceId, label, ok: !result?.error, error: result?.error });
@@ -204,8 +279,11 @@ function createBridge(deps) {
         case 'revoke_device': {
           const deviceId = String(op.deviceId || '').trim();
           if (!deviceId) return sendError(ctx, op, 'bad_request', 'deviceId required');
-          // Only allow revoke from a device that is itself registered (or first device).
-          const result = deps.revokeDevice ? deps.revokeDevice(deviceId) : { ok: true };
+          // C2: pass the requesting (authenticated) device's id so the host can
+          // enforce "a device may only revoke itself, or the first (admin) device".
+          const result = deps.revokeDevice
+            ? deps.revokeDevice(deviceId, ctx.deviceId || null)
+            : { ok: true };
           ctx.send({
             type: 'device_revoked',
             id,

@@ -14,6 +14,14 @@ import {
   generateHostKeyMaterial,
   loadHostE2eeKeyPair,
   deriveServerId,
+  generateDeviceKeyPair,
+  exportDevicePublicKey,
+  exportDeviceSecretKey,
+  importDevicePublicKey,
+  importDeviceSecretKey,
+  signDeviceAuth,
+  verifyDeviceAuth,
+  deriveDeviceId,
 } from '../src/index.js';
 
 describe('e2ee channel', () => {
@@ -92,5 +100,52 @@ describe('serverId derivation (H9)', () => {
 
   it('rejects an invalid relay-auth public key', () => {
     assert.throws(() => deriveServerId('not-a-valid-key'));
+  });
+});
+
+describe('device authentication (C1/C2/H12)', () => {
+  it('signs and verifies a device auth challenge', () => {
+    const kp = generateDeviceKeyPair();
+    const fields = {
+      serverId: 'srv_x',
+      deviceId: 'dev_y',
+      connectionId: 'c1',
+      issuedAt: 1_700_000_000_000,
+    };
+    const sig = signDeviceAuth(fields, kp.secretKey);
+    assert.equal(verifyDeviceAuth(fields, sig, kp.publicKey), true);
+    // Tampering with issuedAt must invalidate the signature.
+    assert.equal(
+      verifyDeviceAuth({ ...fields, issuedAt: fields.issuedAt + 1 }, sig, kp.publicKey),
+      false,
+    );
+    // A different connectionId must invalidate.
+    assert.equal(
+      verifyDeviceAuth({ ...fields, connectionId: 'c-other' }, sig, kp.publicKey),
+      false,
+    );
+  });
+
+  it('deriveDeviceId is deterministic and unique per key', () => {
+    const kp1 = generateDeviceKeyPair();
+    const kp2 = generateDeviceKeyPair();
+    const id1a = deriveDeviceId(kp1.publicKey);
+    const id1b = deriveDeviceId(kp1.publicKey);
+    const id2 = deriveDeviceId(kp2.publicKey);
+    assert.equal(id1a, id1b, 'same key → same deviceId');
+    assert.notEqual(id1a, id2, 'different keys → different deviceIds');
+    assert.ok(id1a.startsWith('dev_'), 'deviceId has dev_ prefix');
+  });
+
+  it('export/import round-trip device keys', () => {
+    const kp = generateDeviceKeyPair();
+    const pubB64 = exportDevicePublicKey(kp.publicKey);
+    const secB64 = exportDeviceSecretKey(kp.secretKey);
+    assert.equal(importDevicePublicKey(pubB64).byteLength, kp.publicKey.byteLength);
+    // Re-import and sign → verify still works.
+    const pub = importDevicePublicKey(pubB64);
+    const fields = { serverId: 's', deviceId: 'd', connectionId: 'c', issuedAt: 1 };
+    const sig = signDeviceAuth(fields, importDeviceSecretKey(secB64));
+    assert.equal(verifyDeviceAuth(fields, sig, pub), true);
   });
 });

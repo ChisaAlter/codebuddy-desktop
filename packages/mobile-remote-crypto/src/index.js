@@ -179,6 +179,117 @@ export function deriveServerId(relayAuthPublicKeyB64) {
   return `srv_${encodeBase64(slice).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
 }
 
+// ---------------------------------------------------------------------------
+// Device authentication (C1/C2/H12)
+//
+// Each paired mobile device owns a long-lived Ed25519 keypair. Its deviceId is
+// derived from the public key so it cannot be impersonated. On every connection
+// the device signs a fresh { serverId, deviceId, connectionId, issuedAt }
+// challenge; the desktop verifies the signature against the device's stored
+// public key before authorizing any op.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {object} DeviceKeyPair
+ * @property {Uint8Array} publicKey  32-byte Ed25519 public key
+ * @property {Uint8Array} secretKey  64-byte Ed25519 secret key
+ */
+
+/** @returns {DeviceKeyPair} */
+export function generateDeviceKeyPair() {
+  ensurePrng();
+  const { publicKey, secretKey } = nacl.sign.keyPair();
+  return { publicKey, secretKey };
+}
+
+/** @param {Uint8Array} publicKey */
+export function exportDevicePublicKey(publicKey) {
+  if (!(publicKey instanceof Uint8Array) || publicKey.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error('Invalid device public key length');
+  }
+  return encodeBase64(publicKey);
+}
+
+/** @param {string} base64 */
+export function importDevicePublicKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error('Invalid device public key length');
+  }
+  return bytes;
+}
+
+/** @param {Uint8Array} secretKey */
+export function exportDeviceSecretKey(secretKey) {
+  if (!(secretKey instanceof Uint8Array) || secretKey.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error('Invalid device secret key length');
+  }
+  return encodeBase64(secretKey);
+}
+
+/** @param {string} base64 */
+export function importDeviceSecretKey(base64) {
+  const bytes = decodeBase64(base64);
+  if (bytes.byteLength !== nacl.sign.secretKeyLength) {
+    throw new Error('Invalid device secret key length');
+  }
+  return bytes;
+}
+
+/**
+ * Canonical message for device connection auth.
+ * @param {{ serverId: string, deviceId: string, connectionId: string, issuedAt: number }} fields
+ */
+export function buildDeviceAuthMessage(fields) {
+  return [
+    'cb-mobile-remote-device-auth-v1',
+    fields.serverId,
+    fields.deviceId,
+    fields.connectionId,
+    String(fields.issuedAt),
+  ].join('\n');
+}
+
+/**
+ * @param {{ serverId: string, deviceId: string, connectionId: string, issuedAt: number }} fields
+ * @param {Uint8Array} secretKey
+ * @returns {string} base64 signature
+ */
+export function signDeviceAuth(fields, secretKey) {
+  ensurePrng();
+  const msg = new TextEncoder().encode(buildDeviceAuthMessage(fields));
+  const sig = nacl.sign.detached(msg, secretKey);
+  return encodeBase64(sig);
+}
+
+/**
+ * @param {{ serverId: string, deviceId: string, connectionId: string, issuedAt: number }} fields
+ * @param {string} signatureB64
+ * @param {Uint8Array} publicKey
+ */
+export function verifyDeviceAuth(fields, signatureB64, publicKey) {
+  const msg = new TextEncoder().encode(buildDeviceAuthMessage(fields));
+  const sig = decodeBase64(signatureB64);
+  return nacl.sign.detached.verify(msg, sig, publicKey);
+}
+
+/**
+ * Derive a stable deviceId from a device's Ed25519 public key (H12). The id is
+ * deterministic and unforgeable: an attacker cannot claim another device's id
+ * without that device's secret key. Uses base32-ish encoding of a SHA-512
+ * prefix for a compact, URL-safe id.
+ * @param {Uint8Array} devicePublicKey
+ * @returns {string} `dev_<base64url(10 bytes)>`
+ */
+export function deriveDeviceId(devicePublicKey) {
+  if (!(devicePublicKey instanceof Uint8Array) || devicePublicKey.byteLength !== nacl.sign.publicKeyLength) {
+    throw new Error('Invalid device public key length for deviceId derivation');
+  }
+  const digest = nacl.hash(devicePublicKey); // SHA-512
+  const slice = digest.slice(0, 10);
+  return `dev_${encodeBase64(slice).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
 /**
  * Canonical message for relay server socket auth.
  * @param {{ serverId: string, role: string, connectionId?: string, nonce: string, issuedAt: number }} fields

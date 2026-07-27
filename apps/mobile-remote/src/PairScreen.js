@@ -38,6 +38,10 @@ export default function PairScreen({ hosts, loaded, onPair, onSelect, onRemove }
     onPair({
       serverId: offer.serverId,
       hostPublicKeyB64: offer.hostPublicKeyB64,
+      // C1: preserve relayAuthPublicKeyB64 (previously dropped) and the optional
+      // one-time pairing token so a new device can pair against a non-empty trust store.
+      relayAuthPublicKeyB64: offer.relayAuthPublicKeyB64 || null,
+      pairingToken: offer.pairingToken || null,
       relay: offer.relay,
       label: `Host ${offer.serverId.slice(0, 8)}`,
       addedAt: Date.now(),

@@ -1559,6 +1559,14 @@ ipcMain.handle('mobileRemote:setConfig', async (_event, config = {}) => {
   return { config: next, status: host.getStatus() };
 });
 ipcMain.handle('mobileRemote:getPairingOffer', async () => getMobileRemoteHost().getPairingOffer());
+// C1: generate a one-time pairing token and embed it in the offer so a new
+// device can pair against a non-empty trust store (first device pairs free).
+ipcMain.handle('mobileRemote:getPairingOfferWithToken', async () => {
+  const host = getMobileRemoteHost();
+  await host.ensureMaterial();
+  const token = host.generatePairingToken();
+  return host.getPairingOffer({ pairingToken: token });
+});
 ipcMain.handle('mobileRemote:start', async () => {
   const config = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: true });
   const status = await getMobileRemoteHost().start();
