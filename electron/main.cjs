@@ -17,6 +17,7 @@ const { createFinalExitController } = require('./final-exit-controller.cjs');
 const { deleteModelConfig, ensureModelConfigFile, listModelConfig, saveModelConfig } = require('./model-config.cjs');
 const { normalizeGitRequest, validateGitArgs } = require('./git-validate.cjs');
 const { buildAttachmentChooseDialogOptions } = require('./attachment-choose.cjs');
+const { createAttachmentScope } = require('./attachment-scope.cjs');
 const {
   isTrustedRendererNavigation,
   normalizeExternalHttpUrl,
@@ -2543,6 +2544,15 @@ async function pruneClipboardAttachments() {
   }
 }
 
+// H7: track attachment paths the user explicitly chose via attachment:choose or
+// drag-drop so attachment:read can scope reads to those or to active project
+// workspaces, blocking renderer-driven arbitrary local file reads.
+const attachmentScope = createAttachmentScope({ loadProductState: () => productStateStore.load() });
+const registerChosenAttachmentPaths = (filePaths) => attachmentScope.register(filePaths);
+function allowAttachmentRead(filePath) {
+  return attachmentScope.allow(filePath);
+}
+
 async function readAttachmentFiles(filePaths) {
   const attachments = [];
   const uniquePaths = [
@@ -2558,6 +2568,19 @@ async function readAttachmentFiles(filePaths) {
       const base = { name, path: filePath, size: stat.size };
       if (!stat.isFile()) {
         attachments.push({ ...base, kind: 'unsupported', error: '所选路径不是文件' });
+        continue;
+      }
+      // H7: scope reads to paths the user actively chose (via attachment:choose or
+      // drag-drop) or that live inside an active project workspace. Without this a
+      // renderer XSS could exfiltrate arbitrary .env/config/source files from
+      // anywhere the Electron user can read.
+      const allowReason = allowAttachmentRead(filePath);
+      if (allowReason !== 'chosen' && allowReason !== 'workspace') {
+        attachments.push({
+          ...base,
+          kind: 'unsupported',
+          error: '该路径不在已选附件或当前项目工作区内，拒绝读取',
+        });
         continue;
       }
       if (ATTACHMENT_IMAGE_TYPES[ext]) {
@@ -2597,9 +2620,21 @@ ipcMain.handle('attachment:choose', async (_event, options = {}) => {
   const dialogOptions = buildAttachmentChooseDialogOptions(options);
   const result = await dialog.showOpenDialog(mainWindow, dialogOptions);
   if (result.canceled) return [];
+  registerChosenAttachmentPaths(result.filePaths);
   return readAttachmentFiles(result.filePaths);
 });
-ipcMain.handle('attachment:read', (_event, filePaths) => readAttachmentFiles(filePaths));
+ipcMain.handle('attachment:read', (_event, filePaths) => {
+  // H7: readAttachments (explicit renderer call) is scoped to chosen/workspace
+  // paths only. Drag-drop uses the dedicated attachment:readDropped channel so
+  // the main process can register the resolved paths as chosen before reading.
+  return readAttachmentFiles(filePaths);
+});
+ipcMain.handle('attachment:readDropped', (_event, filePaths) => {
+  // H7: drag-drop paths are resolved in the preload via webUtils.getPathForFile
+  // (which the renderer cannot forge), so register them as chosen before reading.
+  registerChosenAttachmentPaths(filePaths);
+  return readAttachmentFiles(filePaths);
+});
 ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => {
   const mimeType = String(payload.mimeType || '').toLowerCase();
   const extension = ATTACHMENT_IMAGE_EXTENSIONS[mimeType];
@@ -2614,6 +2649,7 @@ ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => 
   const fileName = `clipboard-image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extension}`;
   const filePath = path.join(CLIPBOARD_ATTACHMENT_DIR, fileName);
   await fs.promises.writeFile(filePath, data, { flag: 'wx' });
+  registerChosenAttachmentPaths([filePath]);
   const [attachment] = await readAttachmentFiles([filePath]);
   if (!attachment || attachment.kind === 'unsupported') {
     await fs.promises.rm(filePath, { force: true }).catch(() => {});
@@ -2664,6 +2700,13 @@ process.on('uncaughtException', (err) => {
       `程序遇到未捕获异常:\n\n${err?.message || err}\n\n崩溃日志已写入 userData/crash.log，重启应用前建议反馈给开发者。`,
     );
   } catch (_) {}
+  // H6: continuing after an uncaughtException leaves the main process in an
+  // inconsistent state (mid-flight IPC, half-written maps, leaked timers). Show
+  // the dialog, then begin the final-exit sequence (which has its own force-delay
+  // fallback) so the app restarts clean instead of limping on.
+  setTimeout(() => {
+    try { beginFinalApplicationExit('uncaughtException'); } catch (_) {}
+  }, 100);
 });
 process.on('unhandledRejection', (reason) => {
   writeCrashLog('unhandledRejection', reason);

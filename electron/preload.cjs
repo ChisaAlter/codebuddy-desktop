@@ -67,7 +67,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseAttachments: (options) => ipcRenderer.invoke('attachment:choose', options),
   readDroppedAttachments: (files = []) => {
     const filePaths = Array.from(files || [], (file) => webUtils.getPathForFile(file)).filter(Boolean);
-    return ipcRenderer.invoke('attachment:read', filePaths);
+    return ipcRenderer.invoke('attachment:readDropped', filePaths);
   },
   readAttachments: (filePaths) => ipcRenderer.invoke('attachment:read', filePaths),
   saveClipboardImage: (payload) => ipcRenderer.invoke('attachment:saveClipboardImage', payload),
