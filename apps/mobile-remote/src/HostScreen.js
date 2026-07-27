@@ -90,7 +90,9 @@ export default function HostScreen({ host, onLeave }) {
       useTls: host.relay.useTls !== false,
       serverId: host.serverId,
       role: 'client',
-      connectionId: `c-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      // L1: connectionId is assigned server-side by the relay (H11) and delivered
+      // back via the encrypted 'connected' frame. The client no longer supplies a
+      // predictable Math.random-based id that could be used to squat/evict.
     });
     const ws = new WebSocket(url);
     wsRef.current = ws;

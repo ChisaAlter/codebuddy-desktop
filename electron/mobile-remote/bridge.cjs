@@ -1,5 +1,7 @@
 'use strict';
 
+const { randomBytes } = require('crypto');
+
 /**
  * Mobile-remote bridge: decrypts op JSON and maps to local CodeBuddy runtime / CLI.
  * Reuses the same patterns as the renderer IPC: runtimeManager.ensure + net.fetch to
@@ -393,7 +395,9 @@ function createBridge(deps) {
           if (!sessionId) {
             return sendError(ctx, op, 'bad_request', 'thread has no sessionId; open in desktop first');
           }
-          const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          // L1: prompt runId is the abort handle key; use a crypto suffix
+          // instead of Math.random (collision-prone under burst prompts).
+          const runId = `run_${Date.now()}_${randomBytes(4).toString('hex')}`;
           const controller = new AbortController();
           activePrompts.set(runId, controller);
           ctx.send({ type: 'prompt_started', id, runId, projectId, threadId });
