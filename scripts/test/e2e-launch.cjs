@@ -9,6 +9,7 @@ const {
   captureScreenshot,
   cleanupOwned,
   cleanupRuntimeDir,
+  sweepStaleQuarantineDirs,
   connectCdp,
   createOverallWatchdog,
   createOwnershipCleanupEvidence,
@@ -47,6 +48,9 @@ const runtimeOwnership = createRuntimeLayout({
   label: 'launch',
 });
 const { runtimeRoot, runtimeDir, userDataDir } = runtimeOwnership;
+// L16: sweep stale quarantine dirs left by a previous run whose rmSync partially
+// failed (AV/indexer lock) before this run creates its own runtime dir.
+sweepStaleQuarantineDirs(runtimeRoot);
 const screenshotPath = path.join(runLayout.screenshotDir, 'startup.png');
 const runnerProfile =
   'dedicated authenticated test profile; CodeBuddy backend session state may persist between runs';

@@ -453,7 +453,32 @@ async function cleanupRuntimeDir(options = {}) {
   verifyRuntimeOwnership(quarantinedOwnership, { verifySubtree: true });
   const removeImpl = options.removeImpl || fs.rmSync;
   removeImpl(quarantineDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  return { runtimeRoot, runtimeDir, removed: !fs.existsSync(runtimeDir) };
+  // L16: distinguish "original runtime dir gone" from "quarantine dir fully removed".
+  // A partial rm leaves a quarantine dir lingering; the caller can sweep stale
+  // quarantine dirs at next harness start via sweepStaleQuarantineDirs.
+  const removed = !fs.existsSync(runtimeDir);
+  const quarantineRemoved = !fs.existsSync(quarantineDir);
+  return { runtimeRoot, runtimeDir, removed, quarantineRemoved, quarantineDir };
+}
+
+/**
+ * L16: sweep stale `.codebuddy-e2e-quarantine-*` directories left behind by a
+ * previous run whose rmSync partially failed (AV/indexer lock). Best-effort,
+ * never throws — a remaining dir will be retried on the next sweep.
+ * @param {string} parentDir the directory that contains runtime dirs (and their quarantines)
+ */
+function sweepStaleQuarantineDirs(parentDir) {
+  let entries = [];
+  try { entries = fs.readdirSync(parentDir); } catch { return; }
+  for (const name of entries) {
+    if (!name.startsWith('.codebuddy-e2e-quarantine-')) continue;
+    const qDir = path.join(parentDir, name);
+    try {
+      fs.rmSync(qDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {
+      /* leave for next sweep */
+    }
+  }
 }
 
 const WINDOWS_JOB_NAME_PATTERN = /^CodeBuddyE2E-([0-9a-f]{32})$/;
@@ -3396,6 +3421,7 @@ module.exports = {
   createRuntimeLayout,
   seedProductState,
   cleanupRuntimeDir,
+  sweepStaleQuarantineDirs,
   portIsAvailable,
   startupLogCandidates,
   findRendererTarget,

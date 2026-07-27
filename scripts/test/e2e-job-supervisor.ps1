@@ -209,7 +209,22 @@ foreach ($argument in $arguments) {
   $argumentValues.Add($value)
 }
 
-[System.IO.File]::Delete($resolvedConfigPath)
+# L17: delete the validated config file with a short retry loop. On Windows, AV
+# or the indexer can briefly hold a handle and make [System.IO.File]::Delete
+# throw IOException; without a retry the harness fails spuriously.
+$deleteAttempts = 0
+$deleteMaxAttempts = 3
+$deleted = $false
+while (-not $deleted -and $deleteAttempts -lt $deleteMaxAttempts) {
+  $deleteAttempts += 1
+  try {
+    [System.IO.File]::Delete($resolvedConfigPath)
+    $deleted = $true
+  } catch {
+    if ($deleteAttempts -ge $deleteMaxAttempts) { throw }
+    Start-Sleep -Milliseconds 200
+  }
+}
 if (Test-Path -LiteralPath $resolvedConfigPath) {
   throw 'Validated ConfigPath could not be removed before root resume'
 }
