@@ -42,6 +42,11 @@ export class ConversationManager {
     if (!threadId) throw new Error('threadId is required');
     let entry = this.entries.get(threadId);
     if (entry && entry.apiBase !== apiBase) {
+      // M-ls10: dispose is async (it awaits client.disconnect). Capture the old
+      // entry and trigger its disposal, but don't await here (getClient is sync).
+      // The dispose below only deletes the map entry when it still points at the
+      // SAME entry, so a freshly-created entry below is never torn down by the
+      // in-flight old dispose.
       this.dispose(threadId);
       entry = null;
     }
@@ -62,7 +67,12 @@ export class ConversationManager {
   async dispose(threadId) {
     const entry = this.entries.get(threadId);
     if (!entry) return;
-    this.entries.delete(threadId);
+    // M-ls10: only delete the map entry if it still points at THIS entry. A
+    // concurrent getClient(threadId, newApiBase) may have already replaced it
+    // with a fresh client while this old disconnect is in flight; deleting the
+    // new entry would leak a live WS connection and lose the new client. Also
+    // capture the entry so the disconnect/disposers run against the right client.
+    if (this.entries.get(threadId) === entry) this.entries.delete(threadId);
     entry.client.invalidateInteractiveRequests('client-disposed');
     for (const dispose of entry.disposers) dispose();
     await entry.client.disconnect().catch(() => null);

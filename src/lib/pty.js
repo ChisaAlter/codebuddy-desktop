@@ -116,7 +116,11 @@ export class PtySocket {
 
   sendInput(data) {
     if (this._transport === 'sse') {
-      ptySendInputHttp(this.sessionId, data);
+      // M-ls3: surface SSE transport failures instead of silently swallowing, so
+      // callers can observe backpressure/retry. The WS path throws when not open;
+      // the SSE path now emits an 'error' event on failure rather than returning.
+      const p = ptySendInputHttp(this.sessionId, data);
+      if (p && typeof p.catch === 'function') p.catch((err) => this.emit('error', err));
       return;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
@@ -127,7 +131,9 @@ export class PtySocket {
 
   resize(cols, rows) {
     if (this._transport === 'sse') {
-      ptyResizeHttp(this.sessionId, cols, rows);
+      // M-ls3: same error surfacing as sendInput for the SSE resize path.
+      const p = ptyResizeHttp(this.sessionId, cols, rows);
+      if (p && typeof p.catch === 'function') p.catch((err) => this.emit('error', err));
       return;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
@@ -161,6 +167,12 @@ export class PtySocket {
   }
 
   _doReconnectAttempt() {
+    // M-ls9: bail out if the PTY was closed explicitly — a reconnect attempt
+    // scheduled before close() must not open a fresh socket afterward.
+    if (this._closedExplicitly) {
+      this._reconnecting = false;
+      return;
+    }
     this._reconnectAttempts++;
     if (this._reconnectAttempts > this._maxReconnectAttempts) {
       this._reconnecting = false;
@@ -216,7 +228,8 @@ export class PtySocket {
         const connectTimeout = setTimeout(() => {
           if (this._reconnecting && socket.readyState !== WebSocket.OPEN) {
             try { socket.close(); } catch (_) {}
-            this._doReconnectAttempt();
+            // M-ls9: do not schedule another reconnect attempt after close().
+            if (!this._closedExplicitly) this._doReconnectAttempt();
           }
         }, 3000);
 
@@ -292,6 +305,8 @@ export class PtySocket {
           if (this._closedExplicitly || this._sseStream !== stream) return;
           try { stream?.close?.(); } catch (_) {}
           this._sseStream = null;
+          // M-ls5: same half-dead reset as the connect-failure catch.
+          this._transport = null;
           this.emit('error', error);
           this.emit('close', error);
         },
@@ -301,6 +316,9 @@ export class PtySocket {
     } catch (error) {
       if (this._closedExplicitly) return;
       this._sseStream = null;
+      // M-ls5: reset _transport so a subsequent connect() retries WS instead of
+      // silently POSTing to /input/send on a half-dead SSE session forever.
+      this._transport = null;
       this.emit('error', error);
       this.emit('close', error);
     }
