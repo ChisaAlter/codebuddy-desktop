@@ -18,9 +18,17 @@ export function makePane(title = 'Terminal') {
     title,
     status: 'idle',
     sessionId: null,
+    // Last known shell cwd for this pane. Reused when recreating the PTY after
+    // close/reconnect/app restart so "cd" survives session teardown.
+    cwd: null,
     output: '',
     split: 'single',
   };
+}
+
+function normalizePaneCwd(value) {
+  const cwd = typeof value === 'string' ? value.trim() : '';
+  return cwd || null;
 }
 
 export function terminalStateFromProject(project, resetSessions = false) {
@@ -31,6 +39,8 @@ export function terminalStateFromProject(project, resetSessions = false) {
           ...makePane(pane.title || 'Terminal'),
           ...pane,
           output: String(pane.output || '').slice(-200000),
+          // Always keep cwd across runtime resets — only live sessionId is dropped.
+          cwd: normalizePaneCwd(pane.cwd),
           sessionId: resetSessions ? null : pane.sessionId || null,
           status: resetSessions ? 'idle' : pane.status || 'idle',
         }))

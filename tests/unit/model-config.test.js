@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const require = createRequire(import.meta.url);
 const {
   deleteModelConfig,
+  isCustomOnlyWhitelist,
   listModelConfig,
   resolveModelConfigPath,
   saveModelConfig,
@@ -191,16 +192,61 @@ describe('model config storage', () => {
     });
   });
 
-  it('removes a model from both models and availableModels', () => {
+  it('removes a model from both models and availableModels, keeping non-custom whitelist entries', () => {
+    // 白名单含非自定义 id（account:gpt-4o）时，删除自定义模型后剩余白名单仍合法，
+    // 不应被自愈清掉——验证 delete 不误清合法混合白名单。
     const filePath = createTempConfig({
       models: [{ id: 'keep' }, { id: 'remove' }],
-      availableModels: ['keep', 'remove'],
+      availableModels: ['account:gpt-4o', 'keep', 'remove'],
     });
     const snapshot = deleteModelConfig('remove', { filePath });
     const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
 
     expect(snapshot.models.map((model) => model.id)).toEqual(['keep']);
-    expect(written.availableModels).toEqual(['keep']);
+    expect(written.availableModels).toEqual(['account:gpt-4o', 'keep']);
+  });
+
+  it('self-heals custom-only availableModels on delete (drops the whitelist)', () => {
+    // 删除后白名单只剩自定义 id（keep）→ 属 custom-only，自愈清掉，避免隐藏内置模型。
+    const filePath = createTempConfig({
+      models: [{ id: 'keep' }, { id: 'remove' }],
+      availableModels: ['keep', 'remove'],
+    });
+    deleteModelConfig('remove', { filePath });
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.availableModels).toBeUndefined();
+  });
+
+  it('self-heals custom-only availableModels on read (writes back a clean file)', () => {
+    // 模拟 CLI 写回的脏白名单：只有自定义 id。读取应静默清掉并写回干净文件。
+    const filePath = createTempConfig({
+      models: [{ id: 'grok-4.5', url: 'http://example/v1', apiKey: 'sk-keep' }],
+      availableModels: ['grok-4.5'],
+    });
+    listModelConfig({ filePath });
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.availableModels).toBeUndefined();
+    expect(written.models[0].apiKey).toBe('sk-keep');
+  });
+
+  it('leaves mixed (non-custom) availableModels untouched on read', () => {
+    const filePath = createTempConfig({
+      models: [{ id: 'grok-4.5', url: 'http://example/v1', apiKey: 'sk-keep' }],
+      availableModels: ['account:gpt-4o', 'grok-4.5'],
+    });
+    listModelConfig({ filePath });
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.availableModels).toEqual(['account:gpt-4o', 'grok-4.5']);
+  });
+
+  it('isCustomOnlyWhitelist detects custom-only and empty whitelists', () => {
+    const models = [{ id: 'a' }, { id: 'b' }];
+    expect(isCustomOnlyWhitelist(['a', 'b'], models)).toBe(true);
+    expect(isCustomOnlyWhitelist(['a'], models)).toBe(true);
+    expect(isCustomOnlyWhitelist([], models)).toBe(true);
+    expect(isCustomOnlyWhitelist(['a', 'account:x'], models)).toBe(false);
+    expect(isCustomOnlyWhitelist(undefined, models)).toBe(false);
+    expect(isCustomOnlyWhitelist(['a'], [])).toBe(false);
   });
 
   it('rejects duplicate model ids and invalid endpoints', () => {

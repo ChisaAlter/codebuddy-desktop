@@ -2436,7 +2436,7 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
     }
     const response = await net.fetch(
       url,
-      codebuddyFetchOptions({
+      codeBuddyFetchOptions({
         method,
         headers: request.headers || {},
         body: request.body,

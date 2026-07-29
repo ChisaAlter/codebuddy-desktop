@@ -18,23 +18,23 @@ describe('saveCustomModel visibility', () => {
     mocks.fetchJson.mockResolvedValue({ models: [] });
   });
 
-  it('defaults visible:true so custom models join session pickers after product sync', async () => {
+  it('defaults visible:false (WebUI whitelist-off path, avoids custom-only whitelist writeback)', async () => {
     await saveCustomModel({ model: { id: 'grok', url: 'http://example/v1' } }, 'http://127.0.0.1:4000');
     expect(mocks.fetchJson).toHaveBeenCalled();
     const [, init] = mocks.fetchJson.mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       model: { id: 'grok' },
-      visible: true,
+      visible: false,
       global: true,
     });
   });
 
-  it('allows explicit visible:false (WebUI whitelist-off path)', async () => {
+  it('allows explicit visible:true (opt-in product sync)', async () => {
     await saveCustomModel(
-      { model: { id: 'hidden' }, visible: false },
+      { model: { id: 'grok', url: 'http://example/v1' }, visible: true },
       'http://127.0.0.1:4000',
     );
     const [, init] = mocks.fetchJson.mock.calls[0];
-    expect(JSON.parse(init.body)).toMatchObject({ visible: false });
+    expect(JSON.parse(init.body)).toMatchObject({ visible: true });
   });
 });

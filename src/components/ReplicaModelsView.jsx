@@ -416,7 +416,8 @@ export default function ReplicaModelsView() {
             {
               model: buildRuntimeModelPayload(editorDraft, id, url),
               previousId: previousId && previousId !== id ? previousId : undefined,
-              visible: true,
+              // 不传 visible：保持官方默认 false，理由同 CustomModelsModal
+              // （见 CODEBUDDY.md「自定义模型与白名单」）。
               global: true,
             },
             apiBase,

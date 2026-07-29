@@ -15,6 +15,8 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
   const setPaneStatus = useStore((s) => s.setPaneStatus);
   const appendPaneOutput = useStore((s) => s.appendPaneOutput);
   const setPaneSession = useStore((s) => s.setPaneSession);
+  const fetchPtyCwd = useStore((s) => s.fetchPtyCwd);
+  const setPaneCwd = useStore((s) => s.setPaneCwd);
   const currentSessionIdRef = useRef(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const isCurrentProject = () => useStore.getState().activeProjectId === projectId;
@@ -72,10 +74,13 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
     async function ensureSession() {
       if (pane.sessionId || !isCurrentProject()) return;
       setPaneStatus(pane.id, 'connecting', projectId);
-      const created = await createPty(120, 32);
+      // Prefer live store cwd (may have been captured just before a prior session died).
+      const latestPane = useStore.getState().terminalPanes.find((item) => item.id === pane.id);
+      const resumeCwd = latestPane?.cwd || pane.cwd || null;
+      const created = await createPty(120, 32, resumeCwd);
       if (!isCurrentProject()) return;
       if (!created?.sessionId) throw new Error('PTY 创建失败');
-      bindPtyToPane(pane.id, created.sessionId, projectId);
+      bindPtyToPane(pane.id, created.sessionId, projectId, created.cwd || resumeCwd);
     }
     ensureSession().catch(() => {
       if (isCurrentProject()) setPaneStatus(pane.id, 'error', projectId);
@@ -127,6 +132,12 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
         appendPaneOutput(pane.id, payload.data, projectId);
       }
       if (payload?.type === 'exit') {
+        // Best-effort: remember cwd before the session is gone so reconnect can resume there.
+        fetchPtyCwd(pane.sessionId).then((cwd) => {
+          if (cwd && isCurrentProject() && currentSessionIdRef.current === pane.sessionId) {
+            setPaneCwd(pane.id, cwd, projectId);
+          }
+        }).catch(() => {});
         setPaneStatus(pane.id, 'disconnected', projectId);
       }
     });
@@ -143,7 +154,7 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
       if (socketRef.current === socket) socketRef.current = null;
       socket.close();
     };
-  }, [projectId, pane.id, pane.sessionId, appendPaneOutput, setPaneSession, setPaneStatus]);
+  }, [projectId, pane.id, pane.sessionId, appendPaneOutput, setPaneSession, setPaneStatus, fetchPtyCwd, setPaneCwd]);
 
   return (
     <div
@@ -237,6 +248,8 @@ export default function ReplicaTerminalView() {
   const setActivePane = useStore((s) => s.setActivePane);
   const createPty = useStore((s) => s.createPty);
   const releasePty = useStore((s) => s.releasePty);
+  const fetchPtyCwd = useStore((s) => s.fetchPtyCwd);
+  const setPaneCwd = useStore((s) => s.setPaneCwd);
   const setPaneStatus = useStore((s) => s.setPaneStatus);
   const bindPtyToPane = useStore((s) => s.bindPtyToPane);
   const initializeTerminal = useStore((s) => s.initializeTerminal);
@@ -295,6 +308,17 @@ export default function ReplicaTerminalView() {
     setTerminalOperationPaneId(null);
   };
 
+  /** Snapshot live PTY cwd onto the pane before tearing the session down. */
+  const capturePaneCwd = async (pane, projectId) => {
+    if (!pane?.sessionId) return pane?.cwd || null;
+    const liveCwd = await fetchPtyCwd(pane.sessionId);
+    if (liveCwd) {
+      setPaneCwd(pane.id, liveCwd, projectId);
+      return liveCwd;
+    }
+    return pane.cwd || null;
+  };
+
   const closeTerminalPane = async (paneId) => {
     const pane = useStore.getState().terminalPanes.find((item) => item.id === paneId);
     if (!pane || useStore.getState().terminalPanes.length <= 1) return false;
@@ -302,6 +326,10 @@ export default function ReplicaTerminalView() {
     if (!operation) return false;
     try {
       if (pane.sessionId) {
+        // Persist cwd even though this pane is removed — useful if user reopens
+        // a similar pane layout later via restored terminalState for other panes.
+        await capturePaneCwd(pane, operation.projectId);
+        if (!isPaneOperationCurrent(operation)) return false;
         const released = await releasePty(pane.sessionId);
         if (!isPaneOperationCurrent(operation)) return false;
         if (!released) {
@@ -329,7 +357,10 @@ export default function ReplicaTerminalView() {
     if (!operation) return false;
     setPaneStatus(paneId, 'connecting', operation.projectId);
     try {
+      let resumeCwd = pane.cwd || null;
       if (pane.sessionId) {
+        resumeCwd = (await capturePaneCwd(pane, operation.projectId)) || resumeCwd;
+        if (!isPaneOperationCurrent(operation)) return false;
         const released = await releasePty(pane.sessionId);
         if (!isPaneOperationCurrent(operation)) return false;
         if (!released) {
@@ -338,14 +369,14 @@ export default function ReplicaTerminalView() {
           return false;
         }
       }
-      const created = await createPty(120, 32);
+      const created = await createPty(120, 32, resumeCwd);
       if (!isPaneOperationCurrent(operation)) return false;
       if (!created?.sessionId) {
         setTerminalActionError(useStore.getState().error || '重连失败：无法创建新的 PTY 会话');
         setPaneStatus(paneId, 'error', operation.projectId);
         return false;
       }
-      bindPtyToPane(paneId, created.sessionId, operation.projectId);
+      bindPtyToPane(paneId, created.sessionId, operation.projectId, created.cwd || resumeCwd);
       return true;
     } catch (error) {
       if (isPaneOperationCurrent(operation)) {

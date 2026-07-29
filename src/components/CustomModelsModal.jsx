@@ -365,8 +365,9 @@ export default function CustomModelsModal({ onClose }) {
             {
               model,
               previousId: editingId && editingId !== id ? editingId : undefined,
-              // Request inclusion so the model shows up in session availableModels after sync.
-              visible: true,
+              // 不传 visible：保持官方默认 false，自定义模型经 models.json 的 models[]
+              // 由 CLI 自动合并进可选列表，不触发 availableModels 白名单写入
+              // （见 CODEBUDDY.md「自定义模型与白名单」）。
               global: true,
             },
             apiBase,

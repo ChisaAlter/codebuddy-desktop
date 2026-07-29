@@ -107,6 +107,21 @@ Electron 产品状态保存以下核心数据：
 
 Timeline 归并由 `src/lib/timeline.js` 负责。流式消息、思考、工具调用、权限请求、问题、状态和使用量必须写回产生它们的 thread，不能依赖当前可见对话来判断归属。
 
+## 自定义模型与白名单
+
+自定义模型配置存储在 `~/.codebuddy/models.json`（可用 `CODEBUDDY_CONFIG_DIR` 覆盖），由 `electron/model-config.cjs` 管理，IPC 入口 `modelConfig:list/save/delete/open`。会话下拉的模型列表由 CLI 运行时通过 `model_update` / `config_option_update` 推送，GUI 只归一化展示，不持有内置模型目录。
+
+**核心约定（违反会导致内置模型消失，必须遵守）：**
+
+- 自定义模型只写 `models.json` 的 `models[]` 数组。CLI 启动/热重载时会自动把 `models[]` 合并进可选列表（运行时 id 形如 `custom-local:<id>`），**不需要也不应该写 `availableModels` 字段**。
+- `availableModels` 一旦存在且只含自定义 id（custom-only），CLI 会把它当成**硬产品白名单**，丢弃所有账号/内置模型。症状：会话下拉只剩 `custom-local:*`，日志出现 `AgentModelResolver model ids: custom-local:<id>`。
+- `src/lib/ops.js` 的 `saveCustomModel` 默认 `visible:false`，与官方 WebUI 一致。`visible:true` 会触发 CLI product-sync 把模型加入会话 `availableModels`，历史上曾导致 CLI 把 custom-only 白名单写回 `models.json` 并覆盖 GUI 的清理——**任何调用方不得默认传 `visible:true`**，除非有明确理由并在此处记录。当前两个保存入口（`CustomModelsModal.jsx`、`ReplicaModelsView.jsx`）都不传 `visible`。
+- 保存流程顺序：`saveModelConfig`（磁盘）先于 `saveCustomModel`（runtime sync）。runtime sync **不应**触发 CLI 回写 `availableModels`；若发现 CLI 回写白名单，优先检查是否有调用方传了 `visible:true`。
+
+**深度防御（不能替代上面的根因防线）：**
+
+`electron/model-config.cjs` 的 `isCustomOnlyWhitelist` 判定 custom-only 白名单，`readInternalModelConfig` 在读取时自愈（静默清掉并原子写回），`saveModelConfig` / `deleteModelConfig` 同样清理。这保证 GUI 启动（`listModelConfig`）即触发自愈，CLI 下次启动读到干净文件。但这是兜底——根因防线是 `visible:false`，不能依赖自愈代替不写白名单。
+
 ## 终端
 
 `src/lib/pty.js` 和 `ReplicaTerminalView.jsx` 提供项目级多面板终端：

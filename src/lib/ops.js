@@ -404,8 +404,11 @@ export async function listCustomModels(baseUrl = '', global = true) {
 
 /**
  * 保存自定义模型并触发 product sync（WebUI hQ）。
- * Desktop 默认 visible:true，保证自定义模型进入会话可选列表；
- * 显式传 visible:false 时保持 WebUI「不写白名单」行为。
+ * visible 默认 false，与官方 WebUI 一致：自定义模型经 models.json 的 models[]
+ * 由 CLI 自动合并进可选列表，不触发 availableModels 白名单写入。
+ * 显式传 visible:true 会触发 CLI product-sync 把模型加入会话 availableModels，
+ * 历史上曾导致 CLI 把 custom-only 白名单写回 models.json 并当成硬白名单，
+ * 丢弃所有账号/内置模型——除非有明确理由并记录在 CODEBUDDY.md，否则不要传 true。
  * @param {{model: object, previousId?: string, visible?: boolean, global?: boolean}} payload
  */
 export async function saveCustomModel(payload = {}, baseUrl = '') {
@@ -414,7 +417,7 @@ export async function saveCustomModel(payload = {}, baseUrl = '') {
     {
       model: payload.model,
       previousId: payload.previousId,
-      visible: payload.visible !== false,
+      visible: payload.visible === true,
       global: payload.global !== false,
     },
     baseUrl,

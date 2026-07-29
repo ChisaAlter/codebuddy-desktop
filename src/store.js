@@ -1365,6 +1365,24 @@ export const useStore = create((set, get) => {
       clearTimeout(pending.timer || pending);
       terminalStatePersistTimers.delete(projectId);
     }
+    // Best-effort refresh of live PTY cwd before snapshotting so project switch /
+    // app quit can reopen terminals in the directory the user last left them in.
+    const livePanes = get().terminalPanes;
+    const cwdByPaneId = new Map();
+    await Promise.all(
+      livePanes.map(async (pane) => {
+        if (!pane.sessionId) return;
+        const cwd = await get().fetchPtyCwd(pane.sessionId);
+        if (cwd) cwdByPaneId.set(pane.id, cwd);
+      }),
+    );
+    if (cwdByPaneId.size && get().activeProjectId === projectId) {
+      set((state) => ({
+        terminalPanes: state.terminalPanes.map((pane) =>
+          cwdByPaneId.has(pane.id) ? { ...pane, cwd: cwdByPaneId.get(pane.id) } : pane,
+        ),
+      }));
+    }
     await get().persistProjectTerminalState(projectId, {
       panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
       activePaneId: get().activePaneId,
@@ -1415,11 +1433,32 @@ export const useStore = create((set, get) => {
     return true;
   },
 
-  bindPtyToPane(paneId, sessionId, projectId = get().activeProjectId) {
+  bindPtyToPane(paneId, sessionId, projectId = get().activeProjectId, cwd = undefined) {
     if (projectId !== get().activeProjectId) return false;
+    const nextCwd = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : undefined;
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => (pane.id === paneId ? { ...pane, sessionId } : pane)),
+      terminalPanes: state.terminalPanes.map((pane) =>
+        pane.id === paneId
+          ? {
+              ...pane,
+              sessionId,
+              ...(nextCwd !== undefined ? { cwd: nextCwd } : {}),
+            }
+          : pane,
+      ),
       ptySessionId: sessionId,
+    }));
+    get().scheduleTerminalStatePersist();
+    return true;
+  },
+
+  setPaneCwd(paneId, cwd, projectId = get().activeProjectId) {
+    if (projectId !== get().activeProjectId) return false;
+    const nextCwd = typeof cwd === 'string' && cwd.trim() ? cwd.trim() : null;
+    set((state) => ({
+      terminalPanes: state.terminalPanes.map((pane) =>
+        pane.id === paneId ? { ...pane, cwd: nextCwd } : pane,
+      ),
     }));
     get().scheduleTerminalStatePersist();
     return true;
@@ -3063,7 +3102,7 @@ export const useStore = create((set, get) => {
     }
   },
 
-  async createPty(cols = 120, rows = 32) {
+  async createPty(cols = 120, rows = 32, cwd = null) {
     const state = get();
     const projectId = state.activeProjectId;
     const apiBase = state.apiBase;
@@ -3074,13 +3113,16 @@ export const useStore = create((set, get) => {
       ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(acpSessionToken ? { 'acp-session-token': acpSessionToken } : {}),
     };
+    const body = { cols, rows };
+    const initialCwd = typeof cwd === 'string' ? cwd.trim() : '';
+    if (initialCwd) body.cwd = initialCwd;
     try {
       const payload = await fetchJson(`${apiBase}/api/v1/pty`, {
         method: 'POST',
         headers,
         omitAuthToken: true,
         omitAcpSessionToken: true,
-        body: JSON.stringify({ cols, rows }),
+        body: JSON.stringify(body),
       });
       const data = payload.data || payload;
       if (projectId !== get().activeProjectId || apiBase !== get().apiBase) {
@@ -3095,13 +3137,52 @@ export const useStore = create((set, get) => {
         }
         return null;
       }
+      const session = {
+        ...data,
+        cwd: typeof data?.cwd === 'string' && data.cwd.trim() ? data.cwd.trim() : initialCwd || '',
+      };
       set((current) => ({
-        ptySessionId: data.sessionId,
-        terminalSessions: [...current.terminalSessions.filter((item) => item.sessionId !== data.sessionId), data],
+        ptySessionId: session.sessionId,
+        terminalSessions: [
+          ...current.terminalSessions.filter((item) => item.sessionId !== session.sessionId),
+          session,
+        ],
       }));
-      return data;
+      return session;
     } catch (error) {
       if (projectId === get().activeProjectId && apiBase === get().apiBase) set({ error: error.message });
+      return null;
+    }
+  },
+
+  /**
+   * Read the live shell cwd for a PTY session (WebUI parity: GET /api/v1/pty/:id).
+   * Used before close/reconnect so the next session can reopen in the same directory.
+   */
+  async fetchPtyCwd(sessionId) {
+    if (!sessionId) return null;
+    const state = get();
+    const projectId = state.activeProjectId;
+    const apiBase = state.apiBase;
+    const authToken = getAuthToken();
+    const acpSessionToken = getAcpSessionToken();
+    const headers = {
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(acpSessionToken ? { 'acp-session-token': acpSessionToken } : {}),
+    };
+    try {
+      const payload = await fetchJson(`${apiBase}/api/v1/pty/${encodeURIComponent(sessionId)}`, {
+        method: 'GET',
+        headers,
+        omitAuthToken: true,
+        omitAcpSessionToken: true,
+        timeoutMs: 8000,
+      });
+      if (projectId !== get().activeProjectId || apiBase !== get().apiBase) return null;
+      const data = payload?.data || payload;
+      const cwd = typeof data?.cwd === 'string' ? data.cwd.trim() : '';
+      return cwd || null;
+    } catch (_) {
       return null;
     }
   },

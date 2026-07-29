@@ -282,6 +282,10 @@ export function formatNetworkOrProxyFailureMessage(raw, extras = {}) {
  */
 export function classifyPromptRefusal(result) {
   const topCategory = String(result?.category || result?.data?.category || '').toLowerCase();
+  // CLI 把模型请求失败详情放进 result._meta["codebuddy.ai/errorMessage"]（JSON 字符串），
+  // 不在顶层 errorMessage/data 里。不加这一项，custom_model_auth / auth / network 信号
+  // 会被丢掉，分类落到 bare refusal，UI 显示通用「请求被拒绝」而非真正的鉴权/网络提示。
+  const metaErrorMessage = result?._meta?.['codebuddy.ai/errorMessage'];
   const rawCandidates = [
     result?.errorMessage,
     result?.error,
@@ -290,6 +294,7 @@ export function classifyPromptRefusal(result) {
     result?.data?.message,
     result?.data?.errorMessage,
     result?.error?.message,
+    metaErrorMessage,
   ];
   let unwrapped = { message: null, category: null, statusCode: null, data: null };
   for (const item of rawCandidates) {

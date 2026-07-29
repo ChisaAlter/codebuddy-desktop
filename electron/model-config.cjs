@@ -36,12 +36,32 @@ function parseModelConfig(text, filePath) {
   };
 }
 
+// 判断 availableModels 是否只剩自定义 id（或为空）——这种白名单会被 CLI 当成硬白名单，
+// 丢弃所有账号/内置模型。合法的混合白名单（含非自定义 id）不会被判定为 custom-only。
+function isCustomOnlyWhitelist(availableModels, models) {
+  if (!Array.isArray(availableModels)) return false;
+  const customIds = new Set((Array.isArray(models) ? models : []).map((m) => m?.id).filter(Boolean));
+  return availableModels.length === 0 || availableModels.every((id) => customIds.has(id));
+}
+
 function readInternalModelConfig(filePath = resolveModelConfigPath()) {
   if (!fs.existsSync(filePath)) {
     return { filePath, exists: false, shape: 'object', raw: { models: [] }, models: [], availableModels: undefined };
   }
   const parsed = parseModelConfig(fs.readFileSync(filePath, 'utf8'), filePath);
-  return { filePath, exists: true, ...parsed };
+  const config = { filePath, exists: true, ...parsed };
+  // 读时自愈：custom-only availableModels 会被 CLI 当成硬白名单，丢弃所有账号/内置模型。
+  // 静默清掉并原子写回，保证 CLI 下次启动/热重载读到干净文件。自愈失败不阻断读取。
+  if (isCustomOnlyWhitelist(config.availableModels, config.models)) {
+    config.availableModels = undefined;
+    if (config.raw && typeof config.raw === 'object') delete config.raw.availableModels;
+    try {
+      writeModelConfig(config);
+    } catch (_) {
+      /* 自愈失败不阻断读取；下次 save/delete 仍会清理 */
+    }
+  }
+  return config;
 }
 
 function finiteOptionalNumber(value, label, { integer = true, min, max } = {}) {
@@ -230,11 +250,7 @@ function saveModelConfig(payload = {}, options = {}) {
       config.availableModels = config.availableModels.map((id) => (id === originalId ? normalized.id : id));
     }
     // Drop empty or custom-only whitelist (would hide account/built-in models).
-    const customIds = new Set(config.models.map((model) => model?.id).filter(Boolean));
-    const onlyCustom =
-      config.availableModels.length === 0 ||
-      config.availableModels.every((id) => customIds.has(id));
-    if (onlyCustom) {
+    if (isCustomOnlyWhitelist(config.availableModels, config.models)) {
       config.availableModels = undefined;
       if (config.raw && typeof config.raw === 'object') delete config.raw.availableModels;
     }
@@ -253,6 +269,11 @@ function deleteModelConfig(modelId, options = {}) {
   config.models = nextModels;
   if (Array.isArray(config.availableModels))
     config.availableModels = config.availableModels.filter((value) => value !== id);
+  // 删除后若白名单只剩自定义 id（或为空），清掉，避免隐藏账号/内置模型。
+  if (isCustomOnlyWhitelist(config.availableModels, config.models)) {
+    config.availableModels = undefined;
+    if (config.raw && typeof config.raw === 'object') delete config.raw.availableModels;
+  }
   writeModelConfig(config);
   return listModelConfig({ ...options, filePath });
 }
@@ -270,6 +291,7 @@ module.exports = {
   deleteModelConfig,
   displayModelConfigPath,
   ensureModelConfigFile,
+  isCustomOnlyWhitelist,
   listModelConfig,
   normalizeModelPayload,
   parseModelConfig,
