@@ -74,6 +74,12 @@ function runtimeConnection(entry) {
 
 function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () => {} }) {
   const runtimes = new Map();
+  // Per-project in-flight ensure promises. Without this, two concurrent
+  // ensure(projectId) calls (e.g. restart racing an ensureProjectRuntime IPC)
+  // could both pass the "no running entry / no startPromise" checks and each
+  // spawn a CodeBuddy process for the same project — leaking one process + its
+  // port. Coalescing on a single promise guarantees only one start at a time.
+  const inflight = new Map();
 
   function emit(entry) {
     const value = publicRuntime(entry);
@@ -227,6 +233,24 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
   }
 
   async function ensure(projectId, cwd, options = {}) {
+    // Coalesce concurrent ensure calls for the same project onto one in-flight
+    // promise. The first caller runs the real start logic; later callers await
+    // the same promise and observe the same runtime connection. This closes the
+    // restart-vs-ensure race where two ensures could each spawn a process.
+    const pending = inflight.get(projectId);
+    if (pending) return pending;
+    const work = (async () => {
+      try {
+        return await ensureInner(projectId, cwd, options);
+      } finally {
+        inflight.delete(projectId);
+      }
+    })();
+    inflight.set(projectId, work);
+    return work;
+  }
+
+  async function ensureInner(projectId, cwd, options = {}) {
     if (!projectId) throw new Error('projectId is required');
     if (!cwd) throw new Error('project cwd is required');
     // Always resolve against on-disk OAuth so spawn env matches token domain.
@@ -290,12 +314,21 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     entry.cancelStart = null;
     entry.status = 'stopped';
     entry.error = null;
+    // Remove the entry from the map as soon as stop completes. Previously this
+    // only happened in `restart`, leaving a window between `await stop` and the
+    // subsequent `runtimes.delete` where a concurrent `ensure` could reuse the
+    // stopped entry, start a new process against it, and then have restart's
+    // delete evict that live entry — producing an orphan process invisible to
+    // list()/stopAll(). Deleting here makes stop + ensure/restart atomic from
+    // the map's perspective: any subsequent ensure sees no entry and creates a
+    // fresh one, deduped by the inflight map below.
+    runtimes.delete(projectId);
     return emit(entry);
   }
 
   async function restart(projectId, cwd, options = {}) {
     await stop(projectId);
-    runtimes.delete(projectId);
+    // stop() already removed the entry from the map; no separate delete needed.
     return ensure(projectId, cwd, options);
   }
 

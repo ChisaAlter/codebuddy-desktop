@@ -3453,9 +3453,15 @@ describe('desktop E2E harness public contract', () => {
       'scripts/test/e2e-packaged.cjs',
     ]) {
       const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
-      expect(script, relativePath).toContain('routeResults.length === 21');
+      // Route counts must be derived from ROUTE_EXPECTATIONS.length rather than
+      // hardcoded, so adding/removing a route never silently desyncs the check.
+      expect(script, relativePath).toContain('routeResults.length === ROUTE_EXPECTATIONS.length');
+      expect(script, relativePath).toContain('contactSheet.screenshots === routeScreenshots.length');
       expect(script, relativePath).toContain("result.route === 'chat' && !result.state.hash");
+      // No hardcoded route-count magic numbers should remain.
+      expect(script, relativePath).not.toContain('routeResults.length === 21');
       expect(script, relativePath).not.toContain('routeResults.length === 19');
+      expect(script, relativePath).not.toContain('contactSheet.screenshots === 19');
     }
   });
 });

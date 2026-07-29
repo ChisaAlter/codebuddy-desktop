@@ -7,14 +7,29 @@ const DEVICE_KEY = '@codebuddy/mobile-remote/device-key';
 
 /**
  * Load paired hosts from persistent storage. Always async — RN has no sync
- * storage API. Returns [] on missing/corrupt.
+ * storage API. Returns [] on missing/corrupt. Sanitizes legacy host records
+ * that may still carry a `deviceSecretKeyB64` field (private keys must never
+ * live in the host list — they belong only in DEVICE_KEY storage).
  */
 export async function loadHostsAsync() {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    let dirty = false;
+    const cleaned = parsed.map((h) => {
+      if (h && Object.prototype.hasOwnProperty.call(h, 'deviceSecretKeyB64')) {
+        dirty = true;
+        const { deviceSecretKeyB64, ...rest } = h;
+        return rest;
+      }
+      return h;
+    });
+    if (dirty) {
+      try { await AsyncStorage.setItem(KEY, JSON.stringify(cleaned)); } catch { /* ignore */ }
+    }
+    return cleaned;
   } catch {
     return [];
   }

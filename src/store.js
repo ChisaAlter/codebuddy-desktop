@@ -152,6 +152,12 @@ const sessionActionOperations = new Map();
 const promptQueueOperationChains = new Map();
 let dirtyFileConfirmationResolve = null;
 const DELETED_SESSION_HISTORY_LIMIT = 200;
+// Cap the live runtime.timeline to the same length persisted to disk (300
+// entries). Without this, runtime.timeline grows unboundedly across many turns
+// on a long-lived thread that is never reconnected (reconnection is the only
+// other place that trims). The persisted copy is sliced to 300 in
+// product-persist.js; keeping the live mirror in sync bounds memory.
+const TIMELINE_MAX = 300;
 
 const {
   beginProjectNavigation,
@@ -724,6 +730,19 @@ export const useStore = create((set, get) => {
 
   patchThreadRuntime(threadId, patch) {
     if (!threadId) return;
+    // Defensive guard: if the thread has been deleted (e.g. via deleteThread or
+    // removeProject), do not resurrect a zombie threadRuntimeById entry. A
+    // hidden-window coalesce timer that fires just after deletion, or a late
+    // stream event, would otherwise write a runtime entry for a thread that no
+    // longer exists — leaking memory and producing stale timeline writes.
+    if (!get().threadsById[threadId]) {
+      const entry = threadTimelineCoalesce.get(threadId);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        threadTimelineCoalesce.delete(threadId);
+      }
+      return;
+    }
     // M-st6: when an external timeline patch arrives while the window is hidden
     // and stream chunks are coalesced, fold the coalesced chunks into the patch
     // instead of dropping them. The coalesced entry.timeline is a superset of the
@@ -740,11 +759,17 @@ export const useStore = create((set, get) => {
       }
     }
     set((state) => {
-      const nextRuntime = {
+      let nextRuntime = {
         ...emptyThreadRuntime(),
         ...(state.threadRuntimeById[threadId] || {}),
         ...patch,
       };
+      // Bound runtime.timeline so a long-lived thread never accumulates an
+      // unbounded in-memory timeline (the persisted copy is already capped at
+      // TIMELINE_MAX in product-persist.js; this keeps the live mirror aligned).
+      if (Array.isArray(nextRuntime.timeline) && nextRuntime.timeline.length > TIMELINE_MAX) {
+        nextRuntime = { ...nextRuntime, timeline: nextRuntime.timeline.slice(-TIMELINE_MAX) };
+      }
       const result = {
         threadRuntimeById: { ...state.threadRuntimeById, [threadId]: nextRuntime },
       };

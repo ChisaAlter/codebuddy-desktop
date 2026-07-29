@@ -18,6 +18,11 @@ const MAX_CLIENTS_PER_SESSION = 32;
 const MAX_PENDING_FRAMES_PER_CLIENT = 256;
 const MAX_FAILED_AUTH_PER_SERVER_ID = 8;
 const FAILED_AUTH_WINDOW_MS = 60 * 1000;
+// Failure-count buckets for serverIds that have no bound session yet. Without
+// this, an attacker could spam verifyServerAuth with random serverIds and force
+// getOrCreate to allocate a session per attempt, exhausting MAX_SESSIONS and
+// blocking legitimate hosts ("relay full"). Buckets are LRU-capped separately.
+const MAX_UNAUTH_BUCKETS = 4096;
 
 /**
  * @typedef {import('ws').WebSocket} WebSocket
@@ -33,6 +38,11 @@ export class SessionHub {
     this.log = options.log || (() => {});
     /** @type {Map<string, { server: WebSocket | null, clients: Map<string, WebSocket>, relayAuthPublicKeyB64: string | null, usedNonces: Map<string, number>, failedAuth: { count: number, windowStart: number } }>} */
     this.sessions = new Map();
+    // Failure counters for serverIds with no live session. Kept separate from
+    // `sessions` so unauthenticated serverId spam cannot allocate sessions and
+    // exhaust MAX_SESSIONS. LRU-evicted past MAX_UNAUTH_BUCKETS.
+    /** @type {Map<string, { count: number, windowStart: number }>} */
+    this.unauthFailures = new Map();
   }
 
   /**
@@ -60,19 +70,43 @@ export class SessionHub {
    * Record a failed auth attempt for a serverId and return false (reject) if the
    * per-serverId failure budget is exhausted within the rolling window. H8/H10:
    * prevents nonce-burn + signature-spam DoS from locking out a host's serverId.
+   * Does NOT allocate a session: when no session exists for serverId yet, the
+   * counter lives in `unauthFailures` (LRU-capped) so unauthenticated serverId
+   * spam cannot exhaust MAX_SESSIONS via this path.
    * @param {string} serverId
    * @returns {boolean} true if the attempt may proceed, false if rate-limited.
    */
   recordFailedAuth(serverId) {
-    const s = this.getOrCreate(serverId);
-    if (!s) return false;
     const now = this.now();
-    if (now - s.failedAuth.windowStart > FAILED_AUTH_WINDOW_MS) {
-      s.failedAuth.count = 0;
-      s.failedAuth.windowStart = now;
+    const s = this.sessions.get(serverId);
+    if (s) {
+      if (now - s.failedAuth.windowStart > FAILED_AUTH_WINDOW_MS) {
+        s.failedAuth.count = 0;
+        s.failedAuth.windowStart = now;
+      }
+      s.failedAuth.count += 1;
+      return s.failedAuth.count <= MAX_FAILED_AUTH_PER_SERVER_ID;
     }
-    s.failedAuth.count += 1;
-    return s.failedAuth.count <= MAX_FAILED_AUTH_PER_SERVER_ID;
+    // No session yet — track in unauthFailures (separate, LRU-capped map).
+    let bucket = this.unauthFailures.get(serverId);
+    if (!bucket) {
+      if (this.unauthFailures.size >= MAX_UNAUTH_BUCKETS) {
+        const first = this.unauthFailures.keys().next().value;
+        if (first) this.unauthFailures.delete(first);
+      }
+      bucket = { count: 0, windowStart: now };
+      this.unauthFailures.set(serverId, bucket);
+    } else {
+      // Refresh LRU position.
+      this.unauthFailures.delete(serverId);
+      this.unauthFailures.set(serverId, bucket);
+    }
+    if (now - bucket.windowStart > FAILED_AUTH_WINDOW_MS) {
+      bucket.count = 0;
+      bucket.windowStart = now;
+    }
+    bucket.count += 1;
+    return bucket.count <= MAX_FAILED_AUTH_PER_SERVER_ID;
   }
 
   /**
@@ -80,7 +114,14 @@ export class SessionHub {
    * @param {string} nonce
    */
   consumeNonce(serverId, nonce) {
-    const s = this.getOrCreate(serverId);
+    const s = this.sessions.get(serverId);
+    if (!s) {
+      // No bound session → nothing to record. Nonces for unregistered serverIds
+      // are not tracked (they cannot be replayed against a session that does not
+      // exist). Returning true lets verifyServerAuth proceed; the caller is
+      // expected to have created the session first on the success path.
+      return true;
+    }
     const now = this.now();
     for (const [n, exp] of s.usedNonces) {
       if (exp < now) s.usedNonces.delete(n);
@@ -118,8 +159,12 @@ export class SessionHub {
     if (issuedAt > now + AUTH_FUTURE_SKEW_MS) return { ok: false, reason: 'issuedAt in future' };
     if (now - issuedAt > AUTH_MAX_AGE_MS) return { ok: false, reason: 'auth expired' };
 
-    const session = this.getOrCreate(serverId);
-    if (session.relayAuthPublicKeyB64 && session.relayAuthPublicKeyB64 !== pub) {
+    // Read-only lookup: do NOT allocate a session here. Previously this called
+    // getOrCreate, which meant any failed-auth attempt with a random serverId
+    // would allocate a session and exhaust MAX_SESSIONS (relay full DoS). The
+    // session is created only after the signature verifies.
+    const existing = this.sessions.get(serverId);
+    if (existing && existing.relayAuthPublicKeyB64 && existing.relayAuthPublicKeyB64 !== pub) {
       return { ok: false, reason: 'relay-auth key mismatch for serverId' };
     }
 
@@ -141,11 +186,17 @@ export class SessionHub {
     );
     if (!valid) {
       // H8/H10: rate-limit repeated bad-signature attempts per serverId so the
-      // nonce cache and connection slots aren't burned by a spammer.
+      // nonce cache and connection slots aren't burned by a spammer. This no
+      // longer allocates a session — see recordFailedAuth.
       this.recordFailedAuth(serverId);
       return { ok: false, reason: 'bad signature' };
     }
 
+    // Signature verified — now it is safe to bind the session and consume the
+    // nonce. Creating the session here (rather than on every attempt) closes the
+    // "random serverId spam → MAX_SESSIONS exhaustion" DoS.
+    const session = this.getOrCreate(serverId);
+    if (!session) return { ok: false, reason: 'relay full' };
     if (!this.consumeNonce(serverId, nonce)) return { ok: false, reason: 'nonce replay' };
 
     session.relayAuthPublicKeyB64 = pub;
@@ -277,10 +328,13 @@ export class SessionHub {
     }
 
     // client
-    const session = this.getOrCreate(serverId);
+    // Do NOT allocate a session here — clients must join an existing session
+    // whose server control socket already authenticated via verifyServerAuth.
+    // Pre-allocating would let an attacker spam random serverIds as clients and
+    // exhaust MAX_SESSIONS ("relay full" DoS), mirroring the server-side fix.
+    const session = this.sessions.get(serverId);
     if (!session) {
-      // H10: sessions map is full.
-      ws.close(1013, 'relay full');
+      ws.close(1013, 'server offline');
       return;
     }
     if (!session.server || session.server.readyState !== 1) {

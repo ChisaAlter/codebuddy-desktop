@@ -110,7 +110,7 @@ async function main() {
       }))()`,
       {
         timeoutMs: 60000,
-        predicate: (v) => v && (v.users > 0 || (v.composer && v.body > 50)),
+        accept: (v) => v && (v.users > 0 || (v.composer && v.body > 50)),
       },
     );
 

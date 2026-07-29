@@ -24,6 +24,7 @@ const {
   seedProductState,
   throwIfAborted,
   waitForRendererValue,
+  ROUTE_EXPECTATIONS,
 } = require('./e2e-driver.cjs');
 const {
   createTaskRunLayout,
@@ -282,8 +283,8 @@ async function main(signal) {
   });
   check(
     'packaged renderer reached all routes through sidebar clicks',
-    routeResults.length === 21,
-    `routes=${routeResults.length}`,
+    routeResults.length === ROUTE_EXPECTATIONS.length,
+    `routes=${routeResults.length} expected=${ROUTE_EXPECTATIONS.length}`,
   );
 
   throwIfAborted(signal, 'packaged CSP check aborted');
@@ -309,7 +310,11 @@ async function main(signal) {
     outputPath: path.join(screenshotDir, 'contact-sheet.svg'),
     columns: 3,
   });
-  check('packaged route contact sheet saved', contactSheet.screenshots === 19, contactSheet.path);
+  check(
+    'packaged route contact sheet saved',
+    contactSheet.screenshots === routeScreenshots.length,
+    `${contactSheet.path} (have=${contactSheet.screenshots} collected=${routeScreenshots.length})`,
+  );
 }
 
 async function finish(error) {
@@ -427,7 +432,7 @@ async function finish(error) {
             {
               name: 'packaged route contact sheet',
               path: contactSheet.path,
-              analysis: 'All 20 packaged route captures in sidebar order.',
+              analysis: `All ${routeScreenshots.length} packaged route captures in sidebar order.`,
             },
           ]
         : []),

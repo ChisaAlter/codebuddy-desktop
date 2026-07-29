@@ -259,6 +259,11 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       }
       const previousState = get();
       const threadIds = [...(previousState.threadOrderByProject[projectId] || [])];
+      // Drop pending coalesced stream chunks for every thread in this project
+      // before tearing down their runtime entries. Otherwise a hidden-window
+      // coalesce timer could fire post-deletion and patchThreadRuntime would
+      // resurrect zombie threadRuntimeById entries (memory leak + stale writes).
+      for (const tid of threadIds) get().flushThreadTimelineCoalesce(tid);
       await get()
         .stopProjectRuntime(projectId)
         .catch(() => false);
@@ -426,6 +431,12 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
 
   async disconnectProjectThreads(projectId) {
     if (!projectId) return false;
+    // Fold any pending coalesced stream chunks into runtime.timeline BEFORE we
+    // closeAssistantStream, so tail chunks produced while the window was hidden
+    // are not lost. Without this, closeAssistantStream would finalize a timeline
+    // missing the buffered tail.
+    const threadIds = [...(get().threadOrderByProject[projectId] || [])];
+    for (const threadId of threadIds) get().flushThreadTimelineCoalesce(threadId);
     const disconnectedAt = new Date().toISOString();
     set((state) => {
       const threadIds = state.threadOrderByProject[projectId] || [];
@@ -434,7 +445,7 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       for (const threadId of threadIds) {
         const record = threadsById[threadId];
         if (record) {
-          const status = ['idle', 'connecting', 'running', 'waiting'].includes(record.status)
+          const status = ['idle', 'connecting', 'running', 'waiting', 'cancelling'].includes(record.status)
             ? 'disconnected'
             : record.status;
           threadsById[threadId] = { ...record, status, updatedAt: disconnectedAt };

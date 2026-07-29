@@ -18,6 +18,10 @@ const COALESCED_TIMELINE_EVENTS = new Set(['agent_message_chunk', 'agent_thought
 const TIMELINE_COALESCE_MS_HIDDEN = 200;
 const TIMELINE_PERSIST_MS_VISIBLE = 900;
 const TIMELINE_PERSIST_MS_HIDDEN = 2000;
+/** Max timeline entries persisted to disk AND kept in the live runtime mirror
+ * (store.js enforces the same cap on runtime.timeline). Keep in sync with
+ * TIMELINE_MAX in src/store.js. */
+const TIMELINE_MAX = 300;
 
 function documentIsHidden() {
   return typeof document !== 'undefined' && Boolean(document.hidden);
@@ -204,7 +208,7 @@ export function createProductPersistSlice(set, get, ctx) {
           ...state.threadsById,
           [threadId]: {
             ...state.threadsById[threadId],
-            timeline: runtime.timeline.slice(-300),
+            timeline: runtime.timeline.slice(-TIMELINE_MAX),
             updatedAt: new Date().toISOString(),
           },
         },
@@ -289,7 +293,7 @@ export function createProductPersistSlice(set, get, ctx) {
           const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
           threadsById[threadId] = {
             ...thread,
-            timeline: runtime.timeline.slice(-300),
+            timeline: runtime.timeline.slice(-TIMELINE_MAX),
             updatedAt: now,
           };
         }

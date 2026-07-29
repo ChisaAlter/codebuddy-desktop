@@ -37,7 +37,7 @@ const MODE_PRESETS = [
   { id: 'bypass_permissions', label: '跳过权限' },
 ];
 
-export default function HostScreen({ host, onLeave }) {
+export default function HostScreen({ host, deviceSecretKeyB64, onLeave }) {
   const [status, setStatus] = useState('connecting');
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
@@ -172,7 +172,7 @@ export default function HostScreen({ host, onLeave }) {
   // with the persistent device secret key and send device_auth. Falls back to
   // device_pair on the host's auth_required (first-time pairing).
   const authenticateDevice = (serverId) => {
-    if (!host.deviceSecretKeyB64) {
+    if (!deviceSecretKeyB64) {
       // No persistent device key → try first-time pairing directly.
       pairAttemptedRef.current = true;
       sendDevicePair();
@@ -183,7 +183,7 @@ export default function HostScreen({ host, onLeave }) {
     try {
       sig = signDeviceAuth(
         { serverId, deviceId: deviceIdRef.current, connectionId: connectionIdRef.current, issuedAt },
-        importDeviceSecretKey(host.deviceSecretKeyB64),
+        importDeviceSecretKey(deviceSecretKeyB64),
       );
     } catch (err) {
       setStatus('error');
@@ -199,7 +199,7 @@ export default function HostScreen({ host, onLeave }) {
   };
 
   const sendDevicePair = () => {
-    if (!host.deviceSecretKeyB64 || !host.devicePublicKeyB64) {
+    if (!deviceSecretKeyB64 || !host.devicePublicKeyB64) {
       setStatus('error');
       setError('缺少设备密钥，无法配对');
       return;
@@ -209,7 +209,7 @@ export default function HostScreen({ host, onLeave }) {
     try {
       sig = signDeviceAuth(
         { serverId: host.serverId, deviceId: deviceIdRef.current, connectionId: connectionIdRef.current, issuedAt },
-        importDeviceSecretKey(host.deviceSecretKeyB64),
+        importDeviceSecretKey(deviceSecretKeyB64),
       );
     } catch (err) {
       setStatus('error');

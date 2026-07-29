@@ -1364,6 +1364,40 @@ async function prunePluginDependencies(payload = {}) {
 
 logStartup('main.cjs loaded');
 
+/**
+ * Validate that a URL points at a locally-hosted CodeBuddy runtime (or, in dev,
+ * the Vite dev server). Previously both codebuddy:openStream and
+ * codebuddy:request accepted ANY 127.0.0.1/localhost port, so a renderer
+ * compromise (or XSS) could pivot to other local services on the loopback
+ * interface — a limited SSRF surface. This tightens the port set to:
+ *   - the ports of currently-running CodeBuddy runtimes (runtimeManager.list),
+ *   - the packaged static-content server port (prodServerPort),
+ *   - the Vite dev server port 5173 (only when allowDevPort and isDev).
+ * Hostnames are limited to 127.0.0.1 / localhost / [::1].
+ */
+function isAllowedLocalRuntimeUrl(rawUrl, { allowDevPort = false } = {}) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ''));
+  } catch (_) {
+    return false;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
+  if (!localHosts.has(parsed.hostname)) return false;
+  const port = Number(parsed.port);
+  if (!Number.isFinite(port) || port <= 0) return false;
+  const allowed = new Set();
+  try {
+    for (const r of runtimeManager.list()) {
+      if (r && r.port) allowed.add(Number(r.port));
+    }
+  } catch (_) {}
+  if (prodServerPort) allowed.add(Number(prodServerPort));
+  if (allowDevPort && isDev) allowed.add(5173);
+  return allowed.has(port);
+}
+
 const runtimeManager = createCodeBuddyRuntimeManager({
   net,
   logger: (message) => logStartup(redactSecrets(message)),
@@ -1556,16 +1590,25 @@ ipcMain.handle('mobileRemote:getConfig', () => readMobileRemoteConfig());
 ipcMain.handle('mobileRemote:setConfig', async (_event, config = {}) => {
   const next = writeMobileRemoteConfig(config);
   const host = getMobileRemoteHost();
+  let startError = null;
   if (next.enabled) {
     try {
       await host.start();
     } catch (error) {
-      logStartup(`mobileRemote start failed: ${error?.message || error}`);
+      startError = error?.message || String(error);
+      logStartup(`mobileRemote start failed: ${startError}`);
+      // Roll back enabled so the persisted config does not claim the host is on
+      // while it is actually not running (the renderer would otherwise show
+      // enabled=true with no running status and no explanation). Stop anything
+      // that partially started, then persist enabled=false.
+      const rolled = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: false });
+      await host.stop().catch(() => {});
+      return { config: rolled, status: host.getStatus(), startError };
     }
   } else {
     await host.stop();
   }
-  return { config: next, status: host.getStatus() };
+  return { config: next, status: host.getStatus(), startError };
 });
 ipcMain.handle('mobileRemote:getPairingOffer', async () => getMobileRemoteHost().getPairingOffer());
 // C1: generate a one-time pairing token and embed it in the offer so a new
@@ -2180,7 +2223,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     ? Number(request.timeoutMs)
     : CODEBUDDY_REQUEST_TIMEOUT_MS;
   if (!streamId) return { ok: false, error: 'missing streamId' };
-  if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
+  if (!isAllowedLocalRuntimeUrl(url, { allowDevPort: true })) {
     return { ok: false, error: 'Only localhost CodeBuddy streams are allowed' };
   }
 
@@ -2359,16 +2402,31 @@ ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
   }
 });
 
-ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
+ipcMain.handle('codebuddy:request', async (event, request = {}) => {
   // timeoutMs 由前端透传：session/prompt 等 SSE 长请求使用 120000ms，普通 REST 使用 30000ms。
   const timeoutMs = Number.isFinite(Number(request.timeoutMs))
     ? Number(request.timeoutMs)
     : CODEBUDDY_REQUEST_TIMEOUT_MS;
   const timeout = createTimeoutSignal(timeoutMs);
+  // Keep a sender reference so we can abort the SSE read loop if the renderer
+  // that issued the request is destroyed mid-stream. Without this, a long SSE
+  // response keeps accumulating into `body` until the timeout fires, even after
+  // the renderer is gone — wasting main-process memory and CPU. Mirrors the
+  // pattern used by codebuddy:openStream (sender.once('destroyed') → abort).
+  const sender = event.sender;
+  const onSenderDestroyed = () => {
+    try { timeout.controller.abort(); } catch (_) {}
+  };
+  if (sender && !sender.isDestroyed()) {
+    try { sender.once('destroyed', onSenderDestroyed); } catch (_) {}
+  }
+  // Cap the accumulated SSE body so a runaway/malicious stream cannot grow
+  // main-process memory without bound (the only other bound is the timeout).
+  const MAX_SSE_BODY_BYTES = 8 * 1024 * 1024;
   try {
     const method = request.method || 'GET';
     const url = String(request.url || '');
-    if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
+    if (!isAllowedLocalRuntimeUrl(url, { allowDevPort: true })) {
       return {
         ok: false,
         status: 400,
@@ -2378,7 +2436,7 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
     }
     const response = await net.fetch(
       url,
-      codeBuddyFetchOptions({
+      codebuddyFetchOptions({
         method,
         headers: request.headers || {},
         body: request.body,
@@ -2396,7 +2454,8 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       const decoder = new TextDecoder();
       const tMax = Date.now() + timeoutMs;
       while (true) {
-        if (Date.now() > tMax) {
+        // Stop as soon as the issuing renderer is gone or the deadline passes.
+        if ((sender && sender.isDestroyed()) || Date.now() > tMax) {
           truncated = true;
           try {
             reader.cancel();
@@ -2407,6 +2466,15 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         body += chunk;
+        // Bound accumulated body size; a drip-feed stream could otherwise grow
+        // `body` for the full timeout window.
+        if (Buffer.byteLength(body) > MAX_SSE_BODY_BYTES) {
+          truncated = true;
+          try {
+            reader.cancel();
+          } catch (_) {}
+          break;
+        }
       }
       body += decoder.decode();
     } else if (contentType.startsWith('image/')) {
@@ -2449,6 +2517,9 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
     };
   } finally {
     timeout.cleanup();
+    if (sender && !sender.isDestroyed()) {
+      try { sender.removeListener('destroyed', onSenderDestroyed); } catch (_) {}
+    }
   }
 });
 ipcMain.on('window:minimize', () => {

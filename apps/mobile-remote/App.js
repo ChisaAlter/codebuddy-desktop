@@ -16,6 +16,11 @@ export default function App() {
   // Sync [] as initial value; real persisted hosts load async on mount.
   const [hosts, setHosts] = useState([]);
   const [activeHost, setActiveHost] = useState(null);
+  // C1: the device secret key is held in App-level state, sourced from the
+  // global DEVICE_KEY storage. It is NOT persisted into the host list (which
+  // is plain JSON on disk) — only deviceId + devicePublicKeyB64 travel with
+  // each host record. HostScreen receives the secret via props at render time.
+  const [deviceSecretKeyB64, setDeviceSecretKeyB64] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -48,9 +53,24 @@ export default function App() {
     return { ...key, deviceId };
   };
 
+  // C1: load the device secret key into App state once on mount so it can be
+  // passed to HostScreen as a prop without ever being written into the host
+  // list. Regenerated lazily by ensureDeviceKey during addHost if absent.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const key = await loadDeviceKey();
+      if (cancelled) return;
+      if (key?.secretKeyB64) setDeviceSecretKeyB64(key.secretKeyB64);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const addHost = async (host) => {
-    // C1: attach the device key + deviceId to the host entry so HostScreen can
-    // sign per-connection device-auth challenges.
+    // C1: attach the deviceId + devicePublicKey to the host entry so HostScreen
+    // can build the device-auth challenge. The secret key is deliberately NOT
+    // stored in the host record — it stays only in global DEVICE_KEY storage
+    // and is passed to HostScreen via the `deviceSecretKeyB64` prop below.
     let device = null;
     try {
       device = await ensureDeviceKey();
@@ -61,8 +81,9 @@ export default function App() {
       // eslint-disable-next-line no-console
       console.warn('device key generation failed', err?.message || err);
     }
+    if (device) setDeviceSecretKeyB64(device.secretKeyB64);
     const enriched = device
-      ? { ...host, deviceId: device.deviceId, devicePublicKeyB64: device.publicKeyB64, deviceSecretKeyB64: device.secretKeyB64 }
+      ? { ...host, deviceId: device.deviceId, devicePublicKeyB64: device.publicKeyB64 }
       : host;
     setHosts((prev) => {
       const next = [...prev.filter((h) => h.serverId !== host.serverId), enriched];
@@ -85,7 +106,7 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <StatusBar style="auto" />
       {activeHost ? (
-        <HostScreen host={activeHost} onLeave={() => setActiveHost(null)} />
+        <HostScreen host={activeHost} deviceSecretKeyB64={deviceSecretKeyB64} onLeave={() => setActiveHost(null)} />
       ) : (
         <PairScreen
           hosts={hosts}

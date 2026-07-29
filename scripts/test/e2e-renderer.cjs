@@ -25,6 +25,7 @@ const {
   throwIfAborted,
   waitForRendererValue,
   waitForVisibleSettingValue,
+  ROUTE_EXPECTATIONS,
 } = require('./e2e-driver.cjs');
 const {
   createTaskRunLayout,
@@ -623,8 +624,8 @@ async function main(signal) {
   });
   check(
     'all routes were reached by clicking sidebar controls',
-    routeResults.length === 21,
-    `routes=${routeResults.length}`,
+    routeResults.length === ROUTE_EXPECTATIONS.length,
+    `routes=${routeResults.length} expected=${ROUTE_EXPECTATIONS.length}`,
   );
 
   await driveByRole(client, {
@@ -684,7 +685,11 @@ async function main(signal) {
     outputPath: path.join(screenshotDir, 'contact-sheet.svg'),
     columns: 3,
   });
-  check('route contact sheet saved', contactSheet.screenshots === 19, contactSheet.path);
+  check(
+    'route contact sheet saved',
+    contactSheet.screenshots === routeScreenshots.length,
+    `${contactSheet.path} (have=${contactSheet.screenshots} collected=${routeScreenshots.length})`,
+  );
 }
 
 async function finish(error) {
@@ -800,7 +805,7 @@ async function finish(error) {
             {
               name: 'route contact sheet',
               path: contactSheet.path,
-              analysis: 'All 20 route captures in sidebar order.',
+              analysis: `All ${routeScreenshots.length} route captures in sidebar order.`,
             },
           ]
         : []),

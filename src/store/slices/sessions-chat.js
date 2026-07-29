@@ -1154,6 +1154,11 @@ export function createSessionsChatSlice(set, get, ctx) {
         for (const key of ACTIVE_THREAD_RUNTIME_KEYS) previousActiveRuntime[key] = previousState[key];
       }
 
+      // Drop any pending coalesced stream chunks before we tear down the thread.
+      // Without this, a hidden-window coalesce timer (200ms) could fire after the
+      // thread/runtime is deleted, and patchThreadRuntime would resurrect a zombie
+      // threadRuntimeById entry that nobody references (memory leak + stale writes).
+      get().flushThreadTimelineCoalesce(threadId);
       await conversations.dispose(threadId);
       set((state) => {
         const threadsById = { ...state.threadsById };

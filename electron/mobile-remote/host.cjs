@@ -382,9 +382,14 @@ class MobileRemoteHost {
     } catch (_) {
       return { ok: false, error: 'invalid device public key' };
     }
-    // Verify the client proves possession of the device secret key by signing
-    // the device-auth challenge (serverId, deviceId, connectionId, issuedAt).
-    if (signedChallenge) {
+    // The client MUST prove possession of the device secret key by signing the
+    // device-auth challenge (serverId, deviceId, connectionId, issuedAt). This
+    // is mandatory: without it, a stolen QR + pairingToken + forged publicKeyB64
+    // could pair without proving key ownership and hijack an existing deviceId.
+    if (!signedChallenge) {
+      return { ok: false, error: 'signedChallenge required' };
+    }
+    {
       const skew = Math.abs(Date.now() - Number(issuedAt));
       if (!Number.isFinite(issuedAt) || skew > 60 * 1000) {
         return { ok: false, error: 'issuedAt out of range' };

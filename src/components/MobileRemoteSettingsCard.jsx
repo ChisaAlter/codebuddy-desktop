@@ -99,12 +99,18 @@ export default function MobileRemoteSettingsCard({ t }) {
       const result = await api.mobileRemoteSetConfig({ ...config, enabled });
       setConfig(result.config);
       setStatus(result.status);
-      if (enabled) await loadOffer();
-      else {
+      if (result.startError) {
+        // The host failed to start and the config was rolled back to enabled=false
+        // by the main process — surface the reason rather than silently showing off.
+        setError(result.startError);
+      } else if (result.config.enabled) {
+        await loadOffer();
+        setError('');
+      } else {
         setOfferUrl('');
         setQrDataUrl('');
+        setError('');
       }
-      setError('');
     } catch (e) {
       setError(e?.message || String(e));
     } finally {
@@ -123,8 +129,14 @@ export default function MobileRemoteSettingsCard({ t }) {
       });
       setConfig(result.config);
       setStatus(result.status);
-      if (result.config.enabled) await loadOffer();
-      setError('');
+      if (result.startError) {
+        setError(result.startError);
+      } else if (result.config.enabled) {
+        await loadOffer();
+        setError('');
+      } else {
+        setError('');
+      }
     } catch (e) {
       setError(e?.message || String(e));
     } finally {
@@ -203,11 +215,15 @@ export default function MobileRemoteSettingsCard({ t }) {
           onClick={() => {
             const next = { ...config, relayUseTls: !config?.relayUseTls };
             setConfig(next);
-            api.mobileRemoteSetConfig(next).then((result) => {
-              setConfig(result.config);
-              setStatus(result.status);
-              if (result.config.enabled) loadOffer();
-            });
+            api
+              .mobileRemoteSetConfig(next)
+              .then((result) => {
+                setConfig(result.config);
+                setStatus(result.status);
+                if (result.startError) setError(result.startError);
+                else if (result.config.enabled) loadOffer();
+              })
+              .catch((e) => setError(e?.message || String(e)));
           }}
         />
       </div>
