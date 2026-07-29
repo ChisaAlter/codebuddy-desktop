@@ -649,6 +649,17 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
     return pushSystemEvent(timeline, eventType, payload);
   }
 
+  // compact 上下文压缩流程条目：payload.phase ∈ 'compacting' | 'compacted' | 'cancelled'。
+  // compacting 去重：若时间线末尾已有 phase=compacting 的 compact 条目，不重复追加。
+  if (eventType === 'compact' || payload?.type === 'compact') {
+    const phase = payload?.phase || payload?.meta?.phase;
+    if (phase === 'compacting') {
+      const last = timeline[timeline.length - 1];
+      if (last && last.type === 'compact' && last.meta?.phase === 'compacting') return timeline;
+    }
+    return pushSystemEvent(timeline, 'compact', { ...payload, type: 'compact', phase });
+  }
+
   if (eventType === 'question_answered' || payload?.type === 'question_answered') {
     return [
       ...timeline,

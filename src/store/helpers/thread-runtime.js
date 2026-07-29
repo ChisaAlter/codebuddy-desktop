@@ -21,6 +21,11 @@ export function emptyThreadRuntime() {
     teamState: null,
     agentPhase: null,
     progress: null,
+    // compact 流程状态：null | 'compacting' | 'compacted' | 'cancelled'。
+    // compacting 由 codebuddy.ai/progress.type==='compacting' 置位，终态由
+    // progress 转非 compacting 或 codebuddy.ai/compact-cancelled 写入时间线后清空。
+    compactState: null,
+    compactCancelled: false,
     historyReplayActive: false,
     models: [],
     modes: [],
@@ -135,6 +140,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'teamState',
   'agentPhase',
   'progress',
+  'compactState',
+  'compactCancelled',
   'historyReplayActive',
   'models',
   'modes',
@@ -154,6 +161,9 @@ export function responseTerminalRuntimePatch(patch = {}) {
     historyReplayActive: false,
     agentPhase: null,
     progress: null,
+    // 终态时清掉 compacting 中态；compacted/cancelled 终态由时间线条目承载，
+    // 不依赖此字段，故一律清空避免残留。
+    compactState: null,
     ...patch,
   };
 }

@@ -119,7 +119,17 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
 
     if (su === 'usage_update') {
-      set({ usage: { used: update.used, size: update.size, meta: update._meta || null } });
+      const meta = update._meta || null;
+      set({
+        usage: {
+          used: update.used,
+          size: update.size,
+          cost: update.cost ?? null,
+          meta,
+          usageByCategory: meta?.['codebuddy.ai/usageByCategory'] ?? null,
+          updatedAt: Date.now(),
+        },
+      });
       return;
     }
 
@@ -166,7 +176,32 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (metadata['codebuddy.ai/historyReplay'] === 'start') runtimePatch.historyReplayActive = true;
     if (metadata['codebuddy.ai/historyReplay'] === 'end') runtimePatch.historyReplayActive = false;
+
+    // compact 流程：progress.type==='compacting' 进入压缩中；progress 转非 compacting
+    // 且当前为 compacting → 压缩完成；codebuddy.ai/compact-cancelled → 取消。
+    // 时间线条目由 reduceAcpEvent('compact', ...) 去重追加。
+    const progressMeta = metadata['codebuddy.ai/progress'];
+    const progressType = typeof progressMeta === 'string' ? progressMeta : progressMeta?.type;
+    const prevCompactState = runtime.compactState;
+    let compactTimelinePayload = null;
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/compact-cancelled')) {
+      runtimePatch.compactCancelled = true;
+      runtimePatch.compactState = 'cancelled';
+      compactTimelinePayload = { phase: 'cancelled' };
+    } else if (progressType === 'compacting') {
+      if (prevCompactState !== 'compacting') {
+        runtimePatch.compactState = 'compacting';
+        compactTimelinePayload = { phase: 'compacting' };
+      }
+    } else if (prevCompactState === 'compacting' && progressType && progressType !== 'compacting') {
+      // progress 转为其他类型且此前在 compacting → 视为完成。
+      runtimePatch.compactState = 'compacted';
+      compactTimelinePayload = { phase: 'compacted' };
+    }
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
+    if (compactTimelinePayload) {
+      get().appendThreadTimelineEvent(threadId, 'compact', compactTimelinePayload);
+    }
 
     if (metadata['codebuddy.ai/sessionReset'] && metadata['codebuddy.ai/newSessionId']) {
       get()
@@ -216,8 +251,16 @@ export function createSessionsChatSlice(set, get, ctx) {
       return;
     }
     if (su === 'usage_update') {
+      const meta = update._meta || null;
       get().patchThreadRuntime(threadId, {
-        usage: { used: update.used, size: update.size, meta: update._meta || null },
+        usage: {
+          used: update.used,
+          size: update.size,
+          cost: update.cost ?? null,
+          meta,
+          usageByCategory: meta?.['codebuddy.ai/usageByCategory'] ?? null,
+          updatedAt: Date.now(),
+        },
       });
       return;
     }

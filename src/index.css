@@ -45,6 +45,7 @@
     --color-accent-yellow: #fbbf24;
     --color-accent-orange: #f97316;
     --color-accent-purple: #8b7dff;
+    --color-accent-teal: #2dd4bf;
 
     /* Distinct slate bubble so user turns stay visible on pure-black chat canvas */
     --color-bg-user: #243044;
@@ -124,6 +125,7 @@
     --color-accent-blue: #1677ff;
     --color-accent-yellow: #faad14;
     --color-accent-purple: #6c4dff;
+    --color-accent-teal: #14b8a6;
 
     /* Indigo-tint bubble with clear contrast on light canvas */
     --color-bg-user: #e0e7ff;
