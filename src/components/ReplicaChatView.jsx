@@ -4,8 +4,9 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
 import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Square, Check, Ban } from 'lucide-react';
 import { useStore } from '../store';
+import ContextUsageIndicator from './ContextUsageIndicator';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
   getSlashCommandSuggestions,
@@ -1234,6 +1235,33 @@ function ActivityTimelineCard({ item }) {
   );
 }
 
+function CompactTimelineCard({ item }) {
+  const t = useUiTranslate();
+  const phase = item.meta?.phase || item.raw?.phase || '';
+  const labels = {
+    compacting: t('chat.compacting'),
+    compacted: t('chat.compacted'),
+    cancelled: t('chat.compactCancelled'),
+  };
+  const label = labels[phase] || labels.compacted;
+  return (
+    <div className="my-2 flex items-center gap-2 border-l-2 border-[var(--color-border-default)] py-1 pl-3">
+      {phase === 'compacting' ? (
+        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--color-border-default)] border-t-[var(--color-text-primary)]" />
+      ) : phase === 'cancelled' ? (
+        <Ban size={12} className="shrink-0 text-[var(--color-text-muted)]" />
+      ) : (
+        <Check size={12} className="shrink-0 text-[var(--color-accent-green)]" />
+      )}
+      <span
+        className={`text-[10px] text-[var(--color-text-muted)] ${phase === 'cancelled' ? 'line-through decoration-[var(--color-text-muted)]' : ''}`}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
 function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
   const t = useUiTranslate();
   const phase = typeof agentPhase === 'string' ? agentPhase : agentPhase?.type || agentPhase?.phase || '';
@@ -1704,6 +1732,10 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <ArtifactTimelineCard item={item} />;
   }
 
+  if (item.type === 'compact') {
+    return <CompactTimelineCard item={item} />;
+  }
+
   if (
     ['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)
   ) {
@@ -1900,6 +1932,7 @@ export default function ReplicaChatView() {
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
   const usage = useStore((s) => s.usage);
+  const compactState = useStore((s) => s.compactState);
   const showTokensCounter = useStore((s) => Boolean(s.guiSettings?.showTokensCounter));
   const pasteImageEnabled = useStore((s) => Boolean(s.guiSettings?.enablePasteImageFromClipboard));
   // CLI setting enables runtime suggestions; GUI setting controls input-area display (either on is enough).
@@ -2474,6 +2507,13 @@ export default function ReplicaChatView() {
     scrollTranscriptToBottom('smooth');
   }, [scrollTranscriptToBottom]);
 
+  const handleCompact = useCallback(async () => {
+    // 与 /effort ultracode 同款：直接走 sendPrompt('/compact')，不经过输入框。
+    // CLI 侧 /compact 命令负责实际压缩，进度通过 codebuddy.ai/progress.type=compacting 回传。
+    if (compactState === 'compacting') return;
+    await sendPrompt('/compact');
+  }, [sendPrompt, compactState]);
+
   const onSubmit = useCallback(async () => {
     const value = input.trim();
     if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
@@ -2960,8 +3000,10 @@ export default function ReplicaChatView() {
         cancelBusy={cancelBusy}
         cancelActiveSession={cancelActiveSession}
         onSubmit={onSubmit}
+        onCompact={handleCompact}
         showTokensCounter={showTokensCounter}
         usage={usage}
+        compactState={compactState}
       />
     </div>
   );
@@ -3040,8 +3082,10 @@ const ChatComposer = React.memo(function ChatComposer({
   cancelBusy,
   cancelActiveSession,
   onSubmit,
+  onCompact,
   showTokensCounter,
   usage,
+  compactState,
 }) {
   const t = useUiTranslate();
   const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
@@ -3706,8 +3750,13 @@ const ChatComposer = React.memo(function ChatComposer({
         </div>
 
         {showTokensCounter && usage && (
-          <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
-            {t('composer.usage')}: {usage.used ?? '-'} / {usage.size ?? '-'}
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <ContextUsageIndicator
+              usage={usage}
+              onCompact={onCompact}
+              disabled={!canSend || isStreaming || sessionResponseBusy}
+              compactState={compactState}
+            />
           </div>
         )}
       </div>
