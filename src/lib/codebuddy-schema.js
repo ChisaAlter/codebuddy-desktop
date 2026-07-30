@@ -3,7 +3,7 @@ export const NAV_GROUPS = [
     id: 'primary',
     title: 'Primary',
     items: [
-      { id: 'instances', label: '实例' },
+      { id: 'instances', label: '实例列表' },
       { id: 'remote-control', label: '远程控制' },
     ],
   },
@@ -14,8 +14,9 @@ export const NAV_GROUPS = [
       { id: 'tasks', label: '任务' },
       { id: 'archived', label: '已归档' },
       { id: 'terminal', label: '终端' },
-      { id: 'editor', label: '编辑器' },
+      { id: 'editor', label: '代码编辑器' },
       { id: 'changes', label: '变更' },
+      { id: 'canvas', label: '无限画布' },
       { id: 'plugins', label: '插件' },
       { id: 'skills', label: '技能' },
       { id: 'agents', label: 'Agents' },
@@ -28,18 +29,18 @@ export const NAV_GROUPS = [
     title: '可观测',
     items: [
       { id: 'stats', label: '统计' },
-      { id: 'traces', label: '链路' },
+      { id: 'traces', label: '链路追踪' },
       { id: 'monitor', label: '监控' },
-      { id: 'metrics', label: '指标' },
-      { id: 'logs', label: '日志' },
-      { id: 'workers', label: 'Workers' },
+      { id: 'metrics', label: '系统监控' },
+      { id: 'logs', label: '日志查看器' },
+      { id: 'workers', label: 'Agent 实例管理' },
     ],
   },
   {
     id: 'preferences',
     title: '配置',
     items: [
-      { id: 'docs', label: '文档' },
+      { id: 'docs', label: '文档中心' },
       // 自定义模型入口已并入设置页「模型选择」；不再在侧栏底部放独立「模型」页
       { id: 'settings', label: '设置' },
       { id: 'keybindings', label: '快捷键' },
@@ -61,6 +62,9 @@ export const SETTINGS_GROUPS = [
       { key: 'enablePasteImageFromClipboard', label: '允许剪贴板贴图', type: 'boolean', scope: 'gui' },
       { key: 'showTokensCounter', label: '显示 Token 计数', type: 'boolean', scope: 'gui' },
       { key: 'desktopNotificationsEnabled', label: '桌面通知', type: 'boolean', scope: 'gui' },
+      { key: 'doNotDisturb', label: '免打扰', type: 'boolean', scope: 'gui' },
+      { key: 'sessionAutoAllowFileEdits', label: '本会话自动通过文件编辑权限', type: 'boolean', scope: 'gui' },
+      { key: 'requestPermissionOnFirstToolUse', label: '每次首次使用工具时都请求权限', type: 'boolean', scope: 'gui' },
     ],
   },
   {

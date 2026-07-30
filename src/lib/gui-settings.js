@@ -16,6 +16,12 @@ export const DEFAULT_GUI_SETTINGS = {
   enablePasteImageFromClipboard: false,
   showTokensCounter: false,
   desktopNotificationsEnabled: true,
+  // Do not disturb: suppress task notifications regardless of desktopNotificationsEnabled.
+  doNotDisturb: false,
+  // Auto-allow file-edit permission requests for the active session without showing the dialog.
+  sessionAutoAllowFileEdits: false,
+  // Request permission on the first tool use of each session (behavior hint label).
+  requestPermissionOnFirstToolUse: false,
   // Cloud account login site: cn (China) | global (international).
   // Default global = same as bare CLI (no INTERNET_ENVIRONMENT), so disk OAuth survives GUI restart.
   accountLoginSite: 'global',
@@ -41,6 +47,9 @@ export function normalizeGuiSettings(value) {
     enablePasteImageFromClipboard: source.enablePasteImageFromClipboard === true,
     showTokensCounter: source.showTokensCounter === true,
     desktopNotificationsEnabled: source.desktopNotificationsEnabled !== false,
+    doNotDisturb: source.doNotDisturb === true,
+    sessionAutoAllowFileEdits: source.sessionAutoAllowFileEdits === true,
+    requestPermissionOnFirstToolUse: source.requestPermissionOnFirstToolUse === true,
     accountLoginSite: normalizeAccountLoginSite(source.accountLoginSite),
     lastAccountUser: normalizeLastAccountUser(source.lastAccountUser),
   };
@@ -91,6 +100,9 @@ const STRIP_FROM_BACKEND_SETTINGS = Object.freeze([
   'enablePasteImageFromClipboard',
   'showTokensCounter',
   'desktopNotificationsEnabled',
+  'doNotDisturb',
+  'sessionAutoAllowFileEdits',
+  'requestPermissionOnFirstToolUse',
   'accountLoginSite',
   'lastAccountUser',
 ]);

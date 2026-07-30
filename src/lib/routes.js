@@ -12,6 +12,7 @@ export const ROUTES = [
   'sandboxes',
   'editor',
   'changes',
+  'canvas',
   'stats',
   'traces',
   'monitor',

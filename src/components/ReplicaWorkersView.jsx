@@ -335,7 +335,7 @@ export default function ReplicaWorkersView() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Workers</h1>
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Agent 实例管理</h1>
             {!loading ? <span className="rounded bg-[var(--color-bg-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]">{workersList.length}</span> : null}
           </div>
           <button

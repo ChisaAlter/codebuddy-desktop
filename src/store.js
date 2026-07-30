@@ -260,6 +260,8 @@ function mergeAttachmentSelection(runtime, selection) {
   const imageSupported = Boolean(
     runtime.capabilities?.promptCapabilities?.image || runtime.capabilities?.prompt_capabilities?.image,
   );
+  const MAX_IMAGES = 5;
+  const MAX_FILES = 10;
   const accepted = [];
   const rejected = [];
   for (const attachment of selection || []) {
@@ -269,10 +271,27 @@ function mergeAttachmentSelection(runtime, selection) {
     else accepted.push(attachment);
   }
   const pendingAttachments = [...runtime.pendingAttachments];
+  const currentImageCount = pendingAttachments.filter((item) => item.kind === 'image').length;
+  const currentFileCount = pendingAttachments.filter((item) => item.kind !== 'image').length;
+  let nextImageCount = currentImageCount;
+  let nextFileCount = currentFileCount;
   const added = [];
   for (const attachment of accepted) {
     const duplicate = pendingAttachments.some((item) => item.path === attachment.path && item.kind === attachment.kind);
     if (duplicate) continue;
+    if (attachment.kind === 'image') {
+      if (nextImageCount >= MAX_IMAGES) {
+        rejected.push(`${attachment.name}: 最多添加 ${MAX_IMAGES} 张图片`);
+        continue;
+      }
+      nextImageCount += 1;
+    } else {
+      if (nextFileCount >= MAX_FILES) {
+        rejected.push(`${attachment.name}: 最多添加 ${MAX_FILES} 个文件`);
+        continue;
+      }
+      nextFileCount += 1;
+    }
     pendingAttachments.push(attachment);
     added.push(attachment);
   }
@@ -997,7 +1016,7 @@ export const useStore = create((set, get) => {
 
   notifyThreadResult(threadId, outcome) {
     const state = get();
-    if (!state.guiSettings?.desktopNotificationsEnabled || !window.electronAPI?.showTaskNotification) return false;
+    if (!state.guiSettings?.desktopNotificationsEnabled || state.guiSettings?.doNotDisturb || !window.electronAPI?.showTaskNotification) return false;
     const thread = state.threadsById[threadId];
     const project = thread ? state.projectsById[thread.projectId] : null;
     if (!thread) return false;

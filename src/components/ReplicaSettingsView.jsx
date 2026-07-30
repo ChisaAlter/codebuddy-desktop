@@ -115,6 +115,7 @@ function buildSettingsTocSections(t, { isDesktop = true } = {}) {
       { id: 'settings-section-mobile-remote', label: t('settings.mobileRemote'), desktopOnly: true },
       { id: 'settings-section-cli', label: t('settings.cliMaintenance'), desktopOnly: true },
       { id: 'settings-section-desktop-app', label: t('settings.desktopApp'), desktopOnly: true },
+      { id: 'settings-section-about', label: t('settings.about'), desktopOnly: true },
     );
   }
   return sections;
@@ -757,6 +758,27 @@ export default function ReplicaSettingsView() {
       await window.electronAPI.openReleasePage(updateStatus?.releaseUrl);
     } catch (error) {
       if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: current?.type || 'error', message: error?.message || '打开发布页失败' }));
+    }
+  };
+
+  const openGuiChangelog = async () => {
+    try {
+      if (!window.electronAPI?.openReleasePage) throw new Error('发布页打开接口不可用');
+      // Changelog lives on the releases page; open it directly.
+      await window.electronAPI.openReleasePage(
+        updateStatus?.releaseUrl || 'https://github.com/ChisaAlter/codebuddy-desktop/releases',
+      );
+    } catch (error) {
+      if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: current?.type || 'error', message: error?.message || '打开更新日志失败' }));
+    }
+  };
+
+  const openAboutLink = async (url) => {
+    try {
+      if (!window.electronAPI?.openReleasePage) throw new Error('链接打开接口不可用');
+      await window.electronAPI.openReleasePage(url);
+    } catch (error) {
+      if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: current?.type || 'error', message: error?.message || '打开链接失败' }));
     }
   };
 
@@ -1530,6 +1552,27 @@ export default function ReplicaSettingsView() {
                 feedback={rowFeedback.desktopNotificationsEnabled}
                 control={<Toggle value={guiSettings?.desktopNotificationsEnabled !== false} onChange={(v) => updateGuiSetting('desktopNotificationsEnabled', v)} />}
               />
+              <SettingRow
+                t={t}
+                label={t('desktop.doNotDisturb')}
+                desc={t('desktop.doNotDisturb.desc')}
+                feedback={rowFeedback.doNotDisturb}
+                control={<Toggle value={guiSettings?.doNotDisturb === true} onChange={(v) => updateGuiSetting('doNotDisturb', v)} />}
+              />
+              <SettingRow
+                t={t}
+                label={t('settings.item.sessionAutoAllowFileEdits')}
+                desc={t('settings.item.sessionAutoAllowFileEdits.desc')}
+                feedback={rowFeedback.sessionAutoAllowFileEdits}
+                control={<Toggle value={guiSettings?.sessionAutoAllowFileEdits === true} onChange={(v) => updateGuiSetting('sessionAutoAllowFileEdits', v)} />}
+              />
+              <SettingRow
+                t={t}
+                label={t('settings.item.requestPermissionOnFirstToolUse')}
+                desc={t('settings.item.requestPermissionOnFirstToolUse.desc')}
+                feedback={rowFeedback.requestPermissionOnFirstToolUse}
+                control={<Toggle value={guiSettings?.requestPermissionOnFirstToolUse === true} onChange={(v) => updateGuiSetting('requestPermissionOnFirstToolUse', v)} />}
+              />
             </div>
           </div>
         ) : null}
@@ -1666,6 +1709,7 @@ export default function ReplicaSettingsView() {
 
         {/* Electron-only: desktop app version / updates / diagnostics (not in WebUI system card) */}
         {isDesktop ? (
+          <>
           <div id="settings-section-desktop-app" className="settings-group" data-desktop-only="true">
             <h2 className="settings-group-title">{t('settings.desktopApp')}</h2>
             <div className="settings-card">
@@ -1708,6 +1752,9 @@ export default function ReplicaSettingsView() {
                     <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={openGuiReleasePage}>
                       {t('desktop.releases')}
                     </button>
+                    <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={openGuiChangelog}>
+                      {t('desktop.changelog')}
+                    </button>
                   </div>
                 }
               />
@@ -1749,6 +1796,53 @@ export default function ReplicaSettingsView() {
             </div>
             {appInfoError ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{appInfoError}</div> : null}
           </div>
+
+          <div id="settings-section-about" className="settings-group" data-desktop-only="true">
+            <h2 className="settings-group-title">{t('settings.about')}</h2>
+            <div className="settings-card">
+              <SettingRow
+                t={t}
+                label={t('about.version')}
+                control={
+                  <span className="settings-value">
+                    {appInfoError ? '—' : appInfo?.version ? `v${appInfo.version}` : t('settings.loading')}
+                  </span>
+                }
+              />
+              <SettingRow
+                t={t}
+                label={t('about.license')}
+                desc={t('about.license.desc')}
+                control={
+                  <div className="flex items-center gap-1">
+                    <span className="settings-value">MIT</span>
+                    <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={openGuiReleasePage}>
+                      {t('about.viewLicense')}
+                    </button>
+                  </div>
+                }
+              />
+              <SettingRow
+                t={t}
+                label={t('about.terms')}
+                control={
+                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-gui/releases')}>
+                    {t('about.openExternal')}
+                  </button>
+                }
+              />
+              <SettingRow
+                t={t}
+                label={t('about.privacy')}
+                control={
+                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-gui/releases')}>
+                    {t('about.openExternal')}
+                  </button>
+                }
+              />
+            </div>
+          </div>
+          </>
         ) : null}
 
         </>)}

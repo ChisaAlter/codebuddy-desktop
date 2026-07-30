@@ -57,6 +57,7 @@ export function ProjectSessionTree({
   const [deleteError, setDeleteError] = React.useState('');
   const [actionError, setActionError] = React.useState('');
   const [expandedSessionProjects, setExpandedSessionProjects] = React.useState({});
+  const [sessionSearch, setSessionSearch] = React.useState('');
 
   React.useEffect(() => {
     if (!contextMenu) return undefined;
@@ -111,6 +112,10 @@ export function ProjectSessionTree({
 
   const confirmDelete = async () => {
     if (!pendingDelete || deleteBusy) return;
+    if (pendingDelete.id === activeThreadId) {
+      setDeleteError('无法删除当前会话');
+      return;
+    }
     setDeleteBusy(true);
     setDeleteError('');
     try {
@@ -126,8 +131,60 @@ export function ProjectSessionTree({
 
   return (
     <div className="space-y-1" data-project-session-tree>
+      <div className="px-1 pb-1">
+        <input
+          type="text"
+          className="w-full rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-blue)]"
+          placeholder="搜索会话"
+          value={sessionSearch}
+          onChange={(event) => setSessionSearch(event.target.value)}
+          aria-label="搜索会话"
+        />
+      </div>
       {projectOrder.length === 0 ? (
         <div className="px-2 py-1 text-xs text-[var(--color-text-muted)]">尚未打开项目</div>
+      ) : sessionSearch.trim() ? (
+        (() => {
+          const term = sessionSearch.trim().toLowerCase();
+          const matched = [];
+          projectOrder.forEach((projectId) => {
+            const project = projectsById[projectId];
+            if (!project) return;
+            const projectThreads = visibleProjectThreads(projectId, threadOrderByProject, threadsById);
+            const hits = projectThreads.filter((thread) => {
+              const title = String(thread?.title || '新对话').toLowerCase();
+              const projectName = String(project?.name || '').toLowerCase();
+              return title.includes(term) || projectName.includes(term);
+            });
+            if (hits.length > 0) matched.push({ projectId, project, threads: hits });
+          });
+          if (matched.length === 0) {
+            return <div className="px-2 py-1 text-xs text-[var(--color-text-muted)]">未找到匹配的会话</div>;
+          }
+          return matched.map(({ projectId, project, threads }) => (
+            <div key={projectId} data-project-id={projectId}>
+              <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-[var(--color-text-secondary)]">
+                <span className="text-[var(--color-text-muted)]"><FolderIcon /></span>
+                <span className="truncate">{project.name}</span>
+              </div>
+              <div className="ml-3 space-y-0.5">
+                {threads.map((thread) => {
+                  const isActive = thread.id === activeThreadId;
+                  return (
+                    <button
+                      key={thread.id}
+                      type="button"
+                      className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs transition-colors ${isActive ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                      onClick={() => onActivateThread(thread.id)}
+                    >
+                      <span className="truncate">{thread.title || '新对话'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ));
+        })()
       ) : projectOrder.map((projectId) => {
         const project = projectsById[projectId];
         if (!project) return null;
@@ -323,8 +380,19 @@ export function ProjectSessionTree({
             type="button"
             role="menuitem"
             data-action="delete"
-            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
-            onClick={() => { setPendingDelete(contextMenu.thread); setContextMenu(null); setDeleteError(''); }}
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={contextMenu.thread?.id === activeThreadId}
+            title={contextMenu.thread?.id === activeThreadId ? '无法删除当前会话' : undefined}
+            onClick={() => {
+              if (contextMenu.thread?.id === activeThreadId) {
+                setActionError('无法删除当前会话');
+                setContextMenu(null);
+                return;
+              }
+              setPendingDelete(contextMenu.thread);
+              setContextMenu(null);
+              setDeleteError('');
+            }}
           >删除</button>
         </div>
       ) : null}

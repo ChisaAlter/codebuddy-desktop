@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { previewPluginDependencyPrune, prunePluginDependencies } from '../lib/plugin-maintenance';
+import { browseMarketplace } from '../lib/ops';
 import {
   PLUGIN_KIND_OPTIONS,
   filterPlugins,
@@ -92,6 +93,12 @@ export default function ReplicaPluginsView() {
   const [newMktAutoUpdate, setNewMktAutoUpdate] = React.useState(true);
   const [mktBusy, setMktBusy] = React.useState(false);
   const [mktMsg, setMktMsg] = React.useState(null);
+  // 市场浏览态
+  const [browseMarket, setBrowseMarket] = React.useState(null); // { id, label }
+  const [browseResults, setBrowseResults] = React.useState([]);
+  const [browseLoading, setBrowseLoading] = React.useState(false);
+  const [browseError, setBrowseError] = React.useState(null);
+  const [browseQuery, setBrowseQuery] = React.useState('');
   const projectGenerationRef = React.useRef(0);
   const refreshRequestRef = React.useRef(0);
   const refreshInFlightRef = React.useRef(null);
@@ -133,6 +140,61 @@ export default function ReplicaPluginsView() {
     }
   }, [activeProjectId, refreshMarketplaces, refreshPlugins]);
 
+  const openBrowseMarketplace = React.useCallback(async (marketplaceId, label) => {
+    setBrowseMarket({ id: marketplaceId, label });
+    setBrowseQuery('');
+    setBrowseResults([]);
+    setBrowseError(null);
+    setBrowseLoading(true);
+    try {
+      const results = await browseMarketplace(marketplaceId, '');
+      setBrowseResults(Array.isArray(results) ? results : []);
+    } catch (error) {
+      setBrowseError(error?.message || '浏览市场失败');
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, []);
+
+  const closeBrowseMarketplace = React.useCallback(() => {
+    setBrowseMarket(null);
+    setBrowseResults([]);
+    setBrowseError(null);
+    setBrowseQuery('');
+  }, []);
+
+  const runBrowseQuery = React.useCallback(async (marketplaceId, query) => {
+    setBrowseLoading(true);
+    setBrowseError(null);
+    try {
+      const results = await browseMarketplace(marketplaceId, query);
+      setBrowseResults(Array.isArray(results) ? results : []);
+    } catch (error) {
+      setBrowseError(error?.message || '浏览市场失败');
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, []);
+
+  const installFromBrowse = React.useCallback(async (pluginId, marketplaceId) => {
+    if (!pluginId) return;
+    setInstalling(true);
+    setInstallMsg(null);
+    try {
+      const ok = await installPluginByName(pluginId, marketplaceId);
+      if (ok) {
+        setInstallMsg('安装请求已提交');
+        await Promise.allSettled([refreshPlugins(), refreshMarketplaces?.()]);
+      } else {
+        setInstallMsg(useStore.getState().pluginError || '安装插件失败');
+      }
+    } catch (error) {
+      setInstallMsg(error?.message || '安装插件失败');
+    } finally {
+      setInstalling(false);
+    }
+  }, [installPluginByName, refreshPlugins, refreshMarketplaces]);
+
   React.useEffect(() => {
     projectGenerationRef.current += 1;
     refreshRequestRef.current += 1;
@@ -151,6 +213,7 @@ export default function ReplicaPluginsView() {
     setMaintenanceNotice(null);
     setMaintenanceOutput(null);
     setRestartNeeded(false);
+    closeBrowseMarketplace();
     setNewMktId('');
     setNewMktUrl('');
     setNewMktAutoUpdate(true);
@@ -961,6 +1024,13 @@ export default function ReplicaPluginsView() {
                     ) : null}
                     <button
                       disabled={mktBusy || pluginOperationActive}
+                      className="btn-ghost shrink-0 text-xs"
+                      onClick={() => openBrowseMarketplace(id, mkt.name || id)}
+                    >
+                      浏览
+                    </button>
+                    <button
+                      disabled={mktBusy || pluginOperationActive}
                       className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
                       onClick={() => openActionDialog({
                         type: 'remove-marketplace',
@@ -978,6 +1048,71 @@ export default function ReplicaPluginsView() {
           )}
         </div>
       </div>
+
+      {/* 市场浏览 Modal */}
+      {browseMarket ? (
+        <div className="overlay" onClick={(e) => { if (!browseLoading && !installing && e.target === e.currentTarget) closeBrowseMarketplace(); }}>
+          <div className="modal-content w-[560px] max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border-default)]">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">浏览市场 · {browseMarket.label}</h3>
+              <button className="btn-icon" onClick={closeBrowseMarketplace} disabled={browseLoading || installing}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M4 4l8 8M12 4l-8 8" />
+                </svg>
+              </button>
+            </div>
+            <div className="px-5 py-3 border-b border-[var(--color-border-muted)]">
+              <input
+                className="input-field"
+                type="text"
+                placeholder="搜索插件名称或描述"
+                value={browseQuery}
+                onChange={(e) => setBrowseQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') runBrowseQuery(browseMarket.id, browseQuery); }}
+              />
+              <div className="mt-2 flex justify-end">
+                <button className="btn-ghost text-xs" disabled={browseLoading} onClick={() => runBrowseQuery(browseMarket.id, browseQuery)}>
+                  {browseLoading ? '搜索中...' : '搜索'}
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              {browseError ? (
+                <div className="text-xs text-[var(--color-error)]">{browseError}</div>
+              ) : browseLoading ? (
+                <div className="py-8 text-center text-xs text-[var(--color-text-muted)]">加载中...</div>
+              ) : browseResults.length === 0 ? (
+                <div className="py-8 text-center text-xs text-[var(--color-text-muted)]">该市场暂无可用插件</div>
+              ) : (
+                <div className="space-y-2">
+                  {browseResults.map((plugin, index) => {
+                    const pid = plugin.id || plugin.name || plugin.pluginId || `plugin-${index}`;
+                    const name = plugin.name || pid;
+                    const desc = plugin.description || plugin.summary || '';
+                    const alreadyInstalled = (plugins || []).some((p) => p.name === name || p.id === pid);
+                    return (
+                      <div key={pid} className="flex items-start gap-3 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-3 py-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{name}</div>
+                          {desc ? <div className="mt-0.5 text-[11px] text-[var(--color-text-muted)] line-clamp-2">{desc}</div> : null}
+                        </div>
+                        <button
+                          className="btn-ghost shrink-0 text-xs"
+                          disabled={installing || alreadyInstalled}
+                          onClick={() => installFromBrowse(pid, browseMarket.id)}
+                        >
+                          {alreadyInstalled ? '已安装' : '安装'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {installMsg ? <div className="mt-3 text-xs text-[var(--color-text-secondary)]">{installMsg}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -66,6 +66,9 @@ describe('gui-settings', () => {
       // missing key → soft default global (runtime still re-resolves from disk OAuth)
       accountLoginSite: 'global',
       lastAccountUser: null,
+      doNotDisturb: false,
+      sessionAutoAllowFileEdits: false,
+      requestPermissionOnFirstToolUse: false,
     });
   });
 

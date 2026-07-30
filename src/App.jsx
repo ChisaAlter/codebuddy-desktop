@@ -14,6 +14,7 @@ const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
 const ReplicaWorkspaceView = lazy(() => import('./components/ReplicaWorkspaceView'));
 const ReplicaChangesView = lazy(() => import('./components/ReplicaChangesView'));
+const ReplicaCanvasView = lazy(() => import('./components/ReplicaCanvasView'));
 const ReplicaWorkersView = lazy(() => import('./components/ReplicaWorkersView'));
 const ReplicaMetricsView = lazy(() => import('./components/ReplicaMetricsView'));
 const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'));
@@ -574,6 +575,9 @@ function MainContent() {
       break;
     case 'changes':
       content = <ReplicaChangesView />;
+      break;
+    case 'canvas':
+      content = <ReplicaCanvasView />;
       break;
     case 'workers':
       content = <ReplicaWorkersView />;

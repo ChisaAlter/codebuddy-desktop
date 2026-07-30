@@ -156,7 +156,7 @@ export default function ReplicaTasksView() {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-3xl px-8 py-8">
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">任务</h1>
+          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">定时任务</h1>
           <button className="btn-ghost text-xs" disabled={refreshing} onClick={handleRefresh}>{refreshing ? '刷新中...' : '刷新'}</button>
         </div>
 
@@ -179,6 +179,26 @@ export default function ReplicaTasksView() {
                 placeholder="0 9 * * *"
                 className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-focus-ring)]"
               />
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {[
+                  { label: '每天', cron: '0 9 * * *' },
+                  { label: '每 2 天', cron: '0 9 */2 * *' },
+                  { label: '每 3 天', cron: '0 9 */3 * *' },
+                  { label: '每周', cron: '0 9 * * 1' },
+                  { label: '每 2 周', cron: '0 9 * * 1/2' },
+                  { label: '每月', cron: '0 9 1 * *' },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setCron(preset.cron)}
+                    className="rounded border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                    title={preset.cron}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div>
               <label className="mb-1 block text-xs text-[var(--color-text-secondary)]">提示词</label>
@@ -197,7 +217,8 @@ export default function ReplicaTasksView() {
         </div>
 
         {/* Task list */}
-        <h2 className="mb-3 text-sm font-medium text-[var(--color-text-primary)]">任务列表</h2>
+        <h2 className="mb-1 text-sm font-medium text-[var(--color-text-primary)]">定时任务</h2>
+        <p className="mb-3 text-xs text-[var(--color-text-muted)]">当前会话中的活跃定时任务</p>
 
         {loading ? (
           <div className="space-y-2">
@@ -250,7 +271,7 @@ export default function ReplicaTasksView() {
         {/* 任务模板分区（对照源 GET/POST /api/v1/tasks/templates[/refresh]） */}
         <div className="mt-8">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-[var(--color-text-primary)]">任务模板</h2>
+            <h2 className="text-sm font-medium text-[var(--color-text-primary)]">推荐模版</h2>
             <button
               onClick={handleRefreshTemplates}
               disabled={refreshingTemplates || taskTemplatesLoading}
@@ -265,7 +286,7 @@ export default function ReplicaTasksView() {
                 <path d="M1 8a7 7 0 0113.29-4M15 8a7 7 0 01-13.29 4" />
                 <path d="M13 1v4h-4M3 15v-4h4" />
               </svg>
-              {refreshingTemplates || taskTemplatesLoading ? '刷新中...' : '刷新模板'}
+              {refreshingTemplates || taskTemplatesLoading ? '刷新中...' : '刷新推荐'}
             </button>
           </div>
 
@@ -287,8 +308,8 @@ export default function ReplicaTasksView() {
             </div>
           ) : templatesList.length === 0 ? (
             <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-10 text-center">
-              <p className="text-sm text-[var(--color-text-muted)]">暂无任务模板</p>
-              <p className="mt-1 text-xs text-[var(--color-text-muted)]">点击右上"刷新模板"从后端拉取可用模板</p>
+              <p className="text-sm text-[var(--color-text-muted)]">暂无推荐模版</p>
+              <p className="mt-1 text-xs text-[var(--color-text-muted)]">点击右上"刷新推荐"从后端拉取可用模板</p>
             </div>
           ) : (
             <div className="space-y-2">

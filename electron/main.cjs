@@ -2689,8 +2689,8 @@ async function readAttachmentFiles(filePaths) {
         continue;
       }
       if (ATTACHMENT_IMAGE_TYPES[ext]) {
-        if (stat.size > 20 * 1024 * 1024) {
-          attachments.push({ ...base, kind: 'unsupported', error: '超过 20MB 图片限制' });
+        if (stat.size > 10 * 1024 * 1024) {
+          attachments.push({ ...base, kind: 'unsupported', error: '图片不能超过 10MB' });
           continue;
         }
         const data = await fs.promises.readFile(filePath);
@@ -2707,8 +2707,8 @@ async function readAttachmentFiles(filePaths) {
         attachments.push({ ...base, kind: 'unsupported', error: '该文件类型无法作为文本发送' });
         continue;
       }
-      if (stat.size > 5 * 1024 * 1024) {
-        attachments.push({ ...base, kind: 'unsupported', error: '超过 5MB 文本文件限制' });
+      if (stat.size > 1 * 1024 * 1024) {
+        attachments.push({ ...base, kind: 'unsupported', error: '文件不能超过 1MB' });
         continue;
       }
       const content = await fs.promises.readFile(filePath, 'utf8');
@@ -2745,10 +2745,10 @@ ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => 
   const extension = ATTACHMENT_IMAGE_EXTENSIONS[mimeType];
   if (!extension) throw new Error('剪贴板图片格式不受支持');
   const encoded = String(payload.dataBase64 || '').replace(/^data:[^;]+;base64,/, '');
-  if (encoded.length > 28 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+  if (encoded.length > 14 * 1024 * 1024) throw new Error('剪贴板图片超过 10MB 限制');
   const data = Buffer.from(encoded, 'base64');
   if (!data.length) throw new Error('剪贴板图片为空');
-  if (data.length > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+  if (data.length > 10 * 1024 * 1024) throw new Error('剪贴板图片超过 10MB 限制');
   await fs.promises.mkdir(CLIPBOARD_ATTACHMENT_DIR, { recursive: true });
   await pruneClipboardAttachments();
   const fileName = `clipboard-image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extension}`;

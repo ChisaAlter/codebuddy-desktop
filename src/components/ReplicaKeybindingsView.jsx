@@ -38,6 +38,35 @@ export function normalizeConfig(value) {
   };
 }
 
+// Map known CLI context names to the localized labels/descriptions used by the
+// real WebUI. Falls back to the backend-provided name/description when unknown.
+const CONTEXT_LABELS = {
+  chat_input: { label: '聊天输入框处于活跃状态时', desc: '聊天输入框获得焦点时' },
+  chat: { label: '聊天输入框处于活跃状态时', desc: '聊天输入框获得焦点时' },
+  terminal: { label: '终端视图处于活跃状态时', desc: '终端视图处于活跃状态时' },
+  settings: { label: '设置面板打开时', desc: '设置面板打开时' },
+  help: { label: '帮助页面打开时', desc: '帮助页面打开时' },
+  palette: { label: '命令面板打开时', desc: '命令面板打开时' },
+  command_palette: { label: '命令面板打开时', desc: '命令面板打开时' },
+  plugins: { label: '插件对话框打开时', desc: '插件对话框打开时' },
+  plugin_dialog: { label: '插件对话框打开时', desc: '插件对话框打开时' },
+  permission: { label: '工具权限对话框显示时', desc: '工具权限对话框显示时' },
+  permission_dialog: { label: '工具权限对话框显示时', desc: '工具权限对话框显示时' },
+  autocomplete: { label: '自动补全菜单显示时', desc: '自动补全菜单显示时' },
+  message_selector: { label: '消息选择器 (rewind) 打开时', desc: '消息选择器 (rewind) 打开时' },
+  rewind: { label: '消息选择器 (rewind) 打开时', desc: '消息选择器 (rewind) 打开时' },
+};
+
+export function contextLabel(name) {
+  const key = String(name || '').toLowerCase().replace(/[-\s]/g, '_');
+  return CONTEXT_LABELS[key]?.label || name;
+}
+
+export function contextDescription(name, fallback = '') {
+  const key = String(name || '').toLowerCase().replace(/[-\s]/g, '_');
+  return CONTEXT_LABELS[key]?.desc || fallback || '';
+}
+
 export function cloneBindings(groups) {
   return groups.map((group) => ({
     context: group.context,
@@ -439,7 +468,7 @@ export default function ReplicaKeybindingsView() {
             />
             <select className="input-field max-w-[220px]" value={contextFilter} onChange={(event) => setContextFilter(event.target.value)}>
               <option value="all">全部上下文</option>
-              {contextNames.map((name) => <option key={name} value={name}>{name}</option>)}
+              {contextNames.map((name) => <option key={name} value={name}>{contextLabel(name)}</option>)}
             </select>
           </div>
 
@@ -467,7 +496,7 @@ export default function ReplicaKeybindingsView() {
                 <label className="text-xs text-[var(--color-text-secondary)]">
                   <span className="mb-1 block">上下文</span>
                   <select className="input-field" value={editor.context} onChange={(event) => setEditor((current) => ({ ...current, context: event.target.value }))}>
-                    {contextNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                    {contextNames.map((name) => <option key={name} value={name}>{contextLabel(name)}</option>)}
                   </select>
                 </label>
                 <label className="text-xs text-[var(--color-text-secondary)]">
@@ -485,7 +514,10 @@ export default function ReplicaKeybindingsView() {
                   <button className="btn-ghost text-xs" disabled={saving} onClick={() => { if (!writeInFlightRef.current) setEditor(null); }}>取消</button>
                 </div>
               </div>
-              {contextDescriptions.get(editor.context) ? <div className="mt-2 text-[11px] text-[var(--color-text-muted)]">{contextDescriptions.get(editor.context)}</div> : null}
+              {(() => {
+                const desc = contextDescriptions.get(editor.context) || contextDescription(editor.context);
+                return desc ? <div className="mt-2 text-[11px] text-[var(--color-text-muted)]">{desc}</div> : null;
+              })()}
             </div>
           ) : null}
 
@@ -514,7 +546,7 @@ export default function ReplicaKeybindingsView() {
                     ))
                   ) : filteredRows.length ? filteredRows.map((row) => (
                     <tr key={`${row.context}-${row.shortcut}`} className="border-t border-[var(--color-border-muted)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]">
-                      <td className="px-4 py-3" title={contextDescriptions.get(row.context) || ''}>{row.context}</td>
+                      <td className="px-4 py-3" title={contextDescriptions.get(row.context) || contextDescription(row.context)}>{contextLabel(row.context)}</td>
                       <td className="px-4 py-3"><kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 font-mono text-[var(--color-text-primary)]">{row.shortcut}</kbd></td>
                       <td className="px-4 py-3 font-mono text-[var(--color-text-primary)]">{row.action}</td>
                       <td className="px-4 py-3">{row.custom ? <span className="text-[var(--color-accent-blue)]">用户覆盖</span> : '默认'}</td>

@@ -168,7 +168,7 @@ export default function ReplicaInstancesView() {
       <div className="page-header flex-wrap">
         <div className="flex items-center gap-3">
           <div>
-            <h2 className="page-header-title">实例</h2>
+            <h2 className="page-header-title">实例列表</h2>
             <div className="page-header-desc">管理项目运行时与后台会话</div>
           </div>
           <div className="flex items-center rounded-md border border-[var(--color-border-default)] p-0.5" role="tablist" aria-label="实例视图">

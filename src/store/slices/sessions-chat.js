@@ -318,6 +318,23 @@ export function createSessionsChatSlice(set, get, ctx) {
         )
       )
         return;
+      // 本会话自动通过文件编辑权限：当 GUI 设置开启且该中断属于文件编辑类工具时，
+      // 直接以 allow 响应，不弹出权限对话框（与 WebUI「本会话自动通过文件编辑权限」语义一致）。
+      const autoAllowFileEdits = get().guiSettings?.sessionAutoAllowFileEdits === true;
+      if (autoAllowFileEdits && toolName !== 'AskUserQuestion') {
+        const lowerTool = String(toolName || '').toLowerCase();
+        const isFileEdit = /edit|write|create|str_replace|file|apply.*patch|update.*file/.test(lowerTool);
+        if (isFileEdit) {
+          const autoInterruptionId = update.interruptionId || requestIds[0] || null;
+          const autoToolCallId = update.toolCallId || null;
+          // Append a brief timeline entry so the auto-allow is visible, then resolve.
+          get().appendThreadTimelineEvent(threadId, su, { ...update, _autoAllowed: true });
+          queueMicrotask(() => {
+            get().respondToInterruption(autoInterruptionId, 'allow', autoToolCallId).catch(() => null);
+          });
+          return;
+        }
+      }
       get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
       get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
@@ -2156,6 +2173,54 @@ export function createSessionsChatSlice(set, get, ctx) {
         refusalError.promptAccepted = !authFailed;
         refusalError.category = authFailed ? 'auth' : refusalKind;
         throw refusalError;
+      }
+
+      // max_tokens: the model hit the token cap and the response was truncated.
+      // The body is still usable, so this is NOT a hard error — append a notice
+      // card to the timeline and complete the turn as idle (matches WebUI
+      // chat.error.maxTokens behavior, which warns instead of failing).
+      if (result?.stopReason === 'max_tokens' || result?.stopReason === 'maxTokens') {
+        if (runIsCurrent()) {
+          get().flushThreadTimelineCoalesce?.(threadId);
+          const truncatedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+          const truncatedTimeline = closeAssistantStream([
+            ...truncatedRuntime.timeline,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              type: 'notice',
+              role: 'system',
+              kind: 'max_tokens',
+              content: '',
+              streaming: false,
+              createdAt: Date.now(),
+              completedAt: Date.now(),
+              raw: null,
+              meta: {
+                title: 'chat.maxTokens.title',
+                message: 'chat.maxTokens.message',
+              },
+              messageId: null,
+              toolCallId: null,
+              status: null,
+              title: null,
+              rawInput: null,
+              rawOutput: null,
+              locations: null,
+              attachments: null,
+            },
+          ]);
+          get().patchThreadRuntime(
+            threadId,
+            responseTerminalRuntimePatch({ timeline: truncatedTimeline }),
+          );
+          await get().updateThreadRecord(threadId, {
+            status: 'idle',
+            unread: get().activeThreadId !== threadId,
+            timeline: truncatedTimeline.slice(-300),
+            metadata: { ...(get().threadsById[threadId]?.metadata || {}), lastError: null },
+          });
+        }
+        return false;
       }
 
       const graceDeadline = Date.now() + FINAL_RESPONSE_GRACE_MS;

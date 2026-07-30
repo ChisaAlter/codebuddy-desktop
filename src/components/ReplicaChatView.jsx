@@ -1094,6 +1094,38 @@ function ErrorTimelineCard({ item }) {
   );
 }
 
+function NoticeTimelineCard({ item }) {
+  const t = useUiTranslate();
+  const payload = item.meta || {};
+  const title = t(payload.title || 'chat.maxTokens.title');
+  const message = t(payload.message || 'chat.maxTokens.message');
+  return (
+    <div className="my-3 rounded-md border border-[rgba(234,179,8,0.35)] bg-[rgba(234,179,8,0.08)] px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <svg
+          className="mt-0.5 shrink-0 text-[var(--color-accent-yellow,#eab308)]"
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          aria-hidden="true"
+        >
+          <path d="M8 1.5l6.5 11.5H1.5L8 1.5z" />
+          <path d="M8 6v3M8 11v.1" />
+        </svg>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-[var(--color-accent-yellow,#eab308)]">{title}</div>
+          <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
+            {message}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ArtifactTimelineCard({ item }) {
   const t = useUiTranslate();
   const payload = item.meta || item.raw || {};
@@ -1726,6 +1758,10 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
 
   if (item.type === 'error') {
     return <ErrorTimelineCard item={item} />;
+  }
+
+  if (item.type === 'notice') {
+    return <NoticeTimelineCard item={item} />;
   }
 
   if (item.type === 'artifact') {

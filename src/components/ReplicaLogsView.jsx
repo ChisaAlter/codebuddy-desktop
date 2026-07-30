@@ -194,7 +194,7 @@ export default function ReplicaLogsView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
       <div className="flex h-12 items-center border-b border-[var(--color-border-default)] px-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">Logs</h2>
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">日志查看器</h2>
       </div>
 
       <div className="flex items-center flex-wrap gap-3 border-b border-[var(--color-border-default)] px-6 py-3">
