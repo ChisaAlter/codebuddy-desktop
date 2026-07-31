@@ -1615,6 +1615,28 @@ select {
 .sidebar-user-action--danger {
   color: var(--color-accent-red);
 }
+/* 登录中：浏览器未自动打开时的兜底链接（CLI rundll32 在 Windows 上会静默失败） */
+.sidebar-account-auth-url {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--color-accent-blue);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-account-auth-url:hover {
+  background: color-mix(in srgb, var(--color-bg-hover) 80%, transparent);
+  text-decoration: underline;
+}
 .sidebar-user-action--icon {
   width: 28px;
   height: 28px;

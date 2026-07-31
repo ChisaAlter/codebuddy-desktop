@@ -1577,6 +1577,16 @@ ipcMain.handle('app:openUpdateDownload', async (_event, downloadUrl) => {
   return { url: target };
 });
 
+// 登录链接兜底：CLI 推送 _codebuddy.ai/authUrl 时由 GUI 打开默认浏览器
+// （Windows 上 CLI 的 rundll32 url,OpenURL 静默失败，不能依赖它）。
+// 校验与渲染进程外链一致：仅 http/https、无内嵌凭据。
+ipcMain.handle('app:openExternal', async (_event, rawUrl) => {
+  const target = normalizeExternalHttpUrl(rawUrl);
+  if (!target) throw new Error('只允许打开 http/https 地址');
+  await shell.openExternal(target);
+  return { url: target };
+});
+
 ipcMain.handle('app:getInfo', () => ({
   name: app.getName(),
   version: app.getVersion(),

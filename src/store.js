@@ -2199,6 +2199,31 @@ export const useStore = create((set, get) => {
     return true;
   },
 
+  /**
+   * 处理 CLI 的 ACP 扩展通知 `_codebuddy.ai/authUrl`（登录链接推送）。
+   * 真实 Desktop 也依赖此机制打开登录页；Windows 上 CLI 自带的
+   * `rundll32 url,OpenURL` 打开浏览器会静默失败（退出码 0 但无窗口），
+   * 所以必须由 GUI 用 shell.openExternal 打开，并在侧栏保留可点击兜底链接。
+   * 仅登录进行中（authenticating）处理，避免把 /upgrade 等其他外部链接
+   * 误当成登录页打开。
+   */
+  handleAccountAuthUrl(detail = {}) {
+    const authUrl = String(detail?.authUrl || detail?.url || '').trim();
+    if (!/^https?:\/\//i.test(authUrl)) return false;
+    if (get().codeBuddyAccountAuthState !== 'authenticating') return false;
+    const previous = get().codeBuddyAccountAuthUrl;
+    set({
+      codeBuddyAccountAuthUrl: authUrl,
+      codeBuddyAccountAuthError: null,
+    });
+    // 同一 URL 重复推送不重复开浏览器（重试/通知重连时避免多开标签页）；
+    // 打开失败时侧栏仍有可点击的登录链接兜底。
+    if (authUrl !== previous && window.electronAPI?.openExternal) {
+      window.electronAPI.openExternal(authUrl).catch(() => {});
+    }
+    return true;
+  },
+
   async refreshInfo() {
     const request = beginScopedRequest('info', get());
     let payloadInfo = null;

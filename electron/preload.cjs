@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   openReleasePage: (releaseUrl) => ipcRenderer.invoke('app:openReleasePage', releaseUrl),
   openUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:openUpdateDownload', downloadUrl),
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   listMcpConfigs: (cwd) => ipcRenderer.invoke('mcp:listConfigs', cwd),
   listSandboxes: () => ipcRenderer.invoke('sandbox:list'),
   killSandbox: (sandboxId) => ipcRenderer.invoke('sandbox:kill', sandboxId),

@@ -646,14 +646,40 @@ function MainContent() {
 function GlobalErrorNotice() {
   const error = useStore((state) => state.error);
   const clearError = useStore((state) => state.clearError);
+
+  // Auto-dismiss so a sticky overlay can never permanently block the composer.
+  // Long network/proxy dumps previously had no practical close affordance.
+  useEffect(() => {
+    if (!error) return undefined;
+    const text = String(error);
+    const durationMs = text.length > 240 ? 10000 : 8000;
+    const timer = window.setTimeout(() => {
+      const current = useStore.getState().error;
+      if (current === error) clearError();
+    }, durationMs);
+    return () => window.clearTimeout(timer);
+  }, [error, clearError]);
+
   if (!error) return null;
+
+  const fullText = String(error);
+  // Keep the floating card compact; full detail stays available via title tooltip.
+  const displayText = fullText.length > 360 ? `${fullText.slice(0, 360).trimEnd()}…` : fullText;
+
   return (
     <div
-      className="fixed bottom-5 right-5 z-[100] flex max-w-[440px] items-start gap-3 rounded-md border border-[rgba(239,68,68,0.45)] bg-[var(--color-bg-secondary)] px-4 py-3 text-sm text-[var(--color-accent-red)] shadow-xl"
+      className="global-error-notice fixed bottom-5 right-5 z-[100] flex w-[min(420px,calc(100vw-1.5rem))] max-h-[min(40vh,280px)] items-start gap-2 rounded-md border border-[rgba(239,68,68,0.45)] bg-[var(--color-bg-secondary)] px-3 py-2.5 text-sm text-[var(--color-accent-red)] shadow-xl"
       role="alert"
     >
-      <span className="whitespace-pre-wrap break-words">{String(error)}</span>
-      <button className="btn-ghost shrink-0 px-2 py-1 text-xs" onClick={clearError} aria-label="关闭错误提示">
+      <span className="min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words pr-1" title={fullText}>
+        {displayText}
+      </span>
+      <button
+        type="button"
+        className="btn-ghost sticky top-0 shrink-0 px-2 py-1 text-xs"
+        onClick={clearError}
+        aria-label="关闭错误提示"
+      >
         关闭
       </button>
     </div>
@@ -666,26 +692,33 @@ function ToastStack() {
   if (!Array.isArray(toasts) || toasts.length === 0) return null;
   return (
     <div className="toast-container" role="status" aria-live="polite">
-      {toasts.map((toast) => (
-        <div
-          key={toast.id}
-          className={`toast ${
-            toast.type === 'error' ? 'toast-error' : toast.type === 'success' ? 'toast-success' : 'toast-info'
-          }`}
-        >
-          <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[var(--color-text-primary)]">
-            {toast.message}
-          </span>
-          <button
-            type="button"
-            className="btn-ghost shrink-0 px-2 py-1 text-xs"
-            onClick={() => dismissToast(toast.id)}
-            aria-label="关闭提示"
+      {toasts.map((toast) => {
+        const fullText = String(toast.message || '');
+        const displayText = fullText.length > 280 ? `${fullText.slice(0, 280).trimEnd()}…` : fullText;
+        return (
+          <div
+            key={toast.id}
+            className={`toast items-start ${
+              toast.type === 'error' ? 'toast-error' : toast.type === 'success' ? 'toast-success' : 'toast-info'
+            }`}
           >
-            关闭
-          </button>
-        </div>
-      ))}
+            <span
+              className="min-w-0 max-h-28 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-[var(--color-text-primary)]"
+              title={fullText}
+            >
+              {displayText}
+            </span>
+            <button
+              type="button"
+              className="btn-ghost shrink-0 px-2 py-1 text-xs"
+              onClick={() => dismissToast(toast.id)}
+              aria-label="关闭提示"
+            >
+              关闭
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

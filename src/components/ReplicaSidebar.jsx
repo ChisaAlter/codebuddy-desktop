@@ -57,6 +57,7 @@ export function SidebarAccountFooter({
     codeBuddyAccountAuthState,
     codeBuddyAccountUser,
     codeBuddyAccountAuthError,
+    codeBuddyAccountAuthUrl,
     guiSettings,
     authenticateCodeBuddyAccount,
     cancelCodeBuddyAccountAuth,
@@ -66,6 +67,7 @@ export function SidebarAccountFooter({
       codeBuddyAccountAuthState: state.codeBuddyAccountAuthState,
       codeBuddyAccountUser: state.codeBuddyAccountUser,
       codeBuddyAccountAuthError: state.codeBuddyAccountAuthError,
+      codeBuddyAccountAuthUrl: state.codeBuddyAccountAuthUrl,
       guiSettings: state.guiSettings,
       authenticateCodeBuddyAccount: state.authenticateCodeBuddyAccount,
       cancelCodeBuddyAccountAuth: state.cancelCodeBuddyAccountAuth,
@@ -334,6 +336,20 @@ export function SidebarAccountFooter({
           </button>
         )}
       </div>
+      {authenticating && codeBuddyAccountAuthUrl ? (
+        <button
+          type="button"
+          className="sidebar-account-auth-url"
+          title={codeBuddyAccountAuthUrl}
+          data-testid="sidebar-account-auth-url"
+          onClick={() => {
+            const opener = window.electronAPI?.openExternal;
+            if (opener) opener(codeBuddyAccountAuthUrl).catch(() => {});
+          }}
+        >
+          {t('account.openAuthUrl')}
+        </button>
+      ) : null}
       {menu}
     </div>
   );

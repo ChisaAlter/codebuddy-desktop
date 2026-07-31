@@ -520,7 +520,11 @@ describe('store prompt session selection', () => {
     expect(state.threadsById['thread-1'].status).toBe('error');
     expect(state.threadsById['thread-1'].draft).toBe('');
     expect(state.threadRuntimeById['thread-1'].pendingAttachments).toEqual([]);
-    expect(state.error).toContain('history recovery unavailable');
+    // Prompt errors stay on the timeline / lastError, not the fixed global overlay.
+    expect(state.error).toBeNull();
+    expect(String(state.threadsById['thread-1'].metadata?.lastError || '')).toContain(
+      'history recovery unavailable',
+    );
   });
 
   it('does not restore input when the transport received a matching prompt result before failing', async () => {
@@ -536,7 +540,10 @@ describe('store prompt session selection', () => {
     const state = useStore.getState();
     expect(state.threadsById['thread-1'].draft).toBe('');
     expect(state.threadRuntimeById['thread-1'].pendingAttachments).toEqual([]);
-    expect(state.error).toContain('history recovery unavailable');
+    expect(state.error).toBeNull();
+    expect(String(state.threadsById['thread-1'].metadata?.lastError || '')).toContain(
+      'history recovery unavailable',
+    );
   });
 
   it('restores draft and attachments when the prompt failed before any acceptance evidence', async () => {
@@ -552,7 +559,10 @@ describe('store prompt session selection', () => {
     const state = useStore.getState();
     expect(state.threadsById['thread-1'].draft).toBe('retry prompt');
     expect(state.threadRuntimeById['thread-1'].pendingAttachments).toEqual([attachment]);
-    expect(state.error).toContain('connection rejected prompt');
+    expect(state.error).toBeNull();
+    expect(String(state.threadsById['thread-1'].metadata?.lastError || '')).toContain(
+      'connection rejected prompt',
+    );
   });
 
   it('marks the thread as error when end_turn has no final response and history recovery is empty', async () => {
@@ -560,9 +570,11 @@ describe('store prompt session selection', () => {
 
     await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
 
-    expect(useStore.getState().threadsById['thread-1'].status).toBe('error');
-    expect(useStore.getState().error).toContain('最终正文未送达');
-    expect(useStore.getState().threadsById['thread-1'].draft).toBe('');
+    const state = useStore.getState();
+    expect(state.threadsById['thread-1'].status).toBe('error');
+    expect(state.error).toBeNull();
+    expect(String(state.threadsById['thread-1'].metadata?.lastError || '')).toContain('最终正文未送达');
+    expect(state.threadsById['thread-1'].draft).toBe('');
   });
 
   it('soft-succeeds when tools finish without a post-tool summary but pre-tool body already arrived', async () => {
@@ -634,7 +646,9 @@ describe('store prompt session selection', () => {
     expect(state.codeBuddyAccountAuthState).toBe('authenticated');
     expect(state.codeBuddyAccountUser).toMatchObject({ userNickname: 'Chisa' });
     expect(state.threadsById['thread-1'].metadata?.authRequired).not.toBe(true);
-    expect(String(state.error || state.threadsById['thread-1'].metadata?.lastError || '')).toMatch(
+    // Prompt failures stay on the timeline / lastError — not the global fixed overlay.
+    expect(state.error).toBeNull();
+    expect(String(state.threadsById['thread-1'].metadata?.lastError || '')).toMatch(
       /502|网络|代理|模型请求失败/,
     );
   });
@@ -665,7 +679,8 @@ describe('store prompt session selection', () => {
     const state = useStore.getState();
     expect(state.codeBuddyAccountAuthState).toBe('authenticated');
     expect(state.threadsById['thread-1'].metadata?.authRequired).not.toBe(true);
-    const err = String(state.error || state.threadsById['thread-1'].metadata?.lastError || '');
+    expect(state.error).toBeNull();
+    const err = String(state.threadsById['thread-1'].metadata?.lastError || '');
     expect(err).toMatch(/HTTP 502|502/);
     expect(err).toMatch(/不是登录失效|网络|代理|模型请求失败/);
     expect(err).not.toMatch(/请求被拒绝/);

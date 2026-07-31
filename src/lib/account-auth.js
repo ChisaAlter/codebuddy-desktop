@@ -226,6 +226,44 @@ export function unwrapPromptErrorPayload(value) {
 }
 
 /**
+ * Extract a single proxy URL from noisy CLI text / env dumps.
+ * Never keep `HTTP_PROXY=...; HTTPS_PROXY=...; NO_PROXY=...` blobs in UI.
+ */
+function extractProxyUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  // Prefer explicit URL after proxy labels; stop at whitespace / list separators.
+  const labeled =
+    text.match(
+      /(?:^|[^\w])(?:https?_?proxy|all_?proxy|proxy)\s*[:=]\s*(https?:\/\/[^\s"'<>;,+]+)/i,
+    )?.[1] ||
+    text.match(/\(proxy:\s*(https?:\/\/[^\s"'<>);,+]+)/i)?.[1] ||
+    text.match(/经代理\s+(https?:\/\/[^\s"'<>;,+]+)/i)?.[1] ||
+    null;
+  const bare = text.match(/https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?/i)?.[0] || null;
+  const candidate = labeled || bare || null;
+  if (!candidate) return null;
+  return candidate.replace(/[),.;]+$/, '').trim() || null;
+}
+
+/**
+ * Prefer the model/upstream endpoint over loopback proxy URLs.
+ */
+function extractUpstreamUrl(value, proxyUrl = null) {
+  const text = String(value || '');
+  const fromArrow =
+    text.match(/->\s*(https?:\/\/[^\s"'<>)+]+)/i)?.[1] ||
+    text.match(/\(proxy:\s*[^)]*?->\s*(https?:\/\/[^\s"'<>)+]+)/i)?.[1] ||
+    null;
+  const absolute =
+    text.match(/https?:\/\/(?!127\.0\.0\.1|localhost|\[::1\])[^\s"'<>]+/i)?.[0] || null;
+  const candidate = (fromArrow || absolute || null)?.replace(/[),.;]+$/, '').trim() || null;
+  if (!candidate) return null;
+  if (proxyUrl && candidate === proxyUrl) return null;
+  return candidate;
+}
+
+/**
  * Build a short UI-facing network/proxy failure summary from CLI text.
  * Strips nginx HTML pages and keeps proxy + HTTP status + upstream host.
  */
@@ -245,20 +283,15 @@ export function formatNetworkOrProxyFailureMessage(raw, extras = {}) {
       '。请把 models.json 里的 id 改成该端点 /v1/models 返回的真实模型名（例如 grok-4.5），保存后重启运行时再试。'
     );
   }
-  // CLI: "(proxy: http://127.0.0.1:10809 -> https://ayase.cn)"
+  // CLI: "(proxy: http://127.0.0.1:10809 -> https://ayase.cn)" — also tolerate env dumps.
   const proxyPair = text.match(/\(proxy:\s*([^)]+)\)/i)?.[1]?.trim() || null;
   const proxyLocal =
-    proxyPair?.split(/\s*->\s*/)[0]?.trim() ||
-    text.match(/proxy\s*[:=]\s*(https?:\/\/\S+|[\w.:+-]+)/i)?.[1]?.trim() ||
+    extractProxyUrl(proxyPair?.split(/\s*->\s*/)[0]) ||
+    extractProxyUrl(text) ||
     null;
   const upstream =
-    proxyPair?.split(/\s*->\s*/)[1]?.trim()?.replace(/[),.;]+$/, '') ||
-    text.match(/->\s*(https?:\/\/\S+)/i)?.[1]?.replace(/[),.;]+$/, '') ||
-    // Prefer non-loopback absolute URLs as the model endpoint.
-    (text.match(/https?:\/\/(?!127\.0\.0\.1|localhost)[^\s"'<>]+/i)?.[0] || null)?.replace(
-      /[),.;]+$/,
-      '',
-    ) ||
+    extractUpstreamUrl(proxyPair, proxyLocal) ||
+    extractUpstreamUrl(text, proxyLocal) ||
     null;
 
   const parts = ['模型请求失败'];

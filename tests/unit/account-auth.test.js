@@ -147,6 +147,24 @@ describe('account-auth helpers', () => {
     expect(summary).toMatch(/HTTP 502/);
   });
 
+  it('compacts env-style proxy dumps instead of pasting full NO_PROXY lists into UI', () => {
+    const dump =
+      '模型请求失败 · HTTP 502 · http://38.76.185.154:13001 · 经代理 ' +
+      'http_proxy=http://127.0.0.1:10809; https_proxy=http://127.0.0.1:10809; ' +
+      'HTTP_PROXY=http://127.0.0.1:10809; HTTPS_PROXY=http://127.0.0.1:10809; ' +
+      'NO_PROXY=localhost,127.0.0.1,::1,ispure.dynv6.net,api.longcat.chat,api5-normal.gl.doubao.com,' +
+      'www.doubao.com,*.doubao.com,*.zijieapi.com; ' +
+      'no_proxy=localhost,127.0.0.1,::1,ispure.dynv6.net。这不是登录失效；请检查代理、网络或自定义模型端点后重试。';
+    const summary = formatNetworkOrProxyFailureMessage(dump, { statusCode: 502 });
+    expect(summary).toMatch(/HTTP 502/);
+    expect(summary).toMatch(/38\.76\.185\.154:13001/);
+    expect(summary).toMatch(/经代理 http:\/\/127\.0\.0\.1:10809/);
+    expect(summary).toMatch(/不是登录失效/);
+    expect(summary).not.toMatch(/NO_PROXY=/i);
+    expect(summary).not.toMatch(/doubao\.com/);
+    expect(summary.length).toBeLessThan(220);
+  });
+
   it('classifies custom_model_auth 401 separately from cloud login failures', () => {
     const customAuth =
       '401 Authentication failed (401) for model "grok-4.5". The request was sent to http://ayase.cn:13001, which differs from the current product endpoint https://copilot.tencent.com. (token-length:1293)';

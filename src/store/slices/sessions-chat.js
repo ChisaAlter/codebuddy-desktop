@@ -469,6 +469,12 @@ export function createSessionsChatSlice(set, get, ctx) {
       get().handleThreadSessionUpdate(threadId, { ...(detail || {}), sessionUpdate: type });
       return;
     }
+    if (type === '_codebuddy.ai/authUrl') {
+      // CLI 推送登录链接（ACP 扩展通知）：Windows 上 CLI 自身的
+      // rundll32 url,OpenURL 静默失败，必须由 GUI 打开浏览器。
+      get().handleAccountAuthUrl(detail || {});
+      return;
+    }
     if (type === 'checkpoint') {
       // Live 2.125: checkpoint list may omit files[]; events carry absolute uri list.
       const payload = detail || {};
@@ -2333,7 +2339,10 @@ export function createSessionsChatSlice(set, get, ctx) {
         timeline: failedTimeline.slice(-300),
         metadata: { ...(currentThread.metadata || {}), lastError: error.message },
       });
-      if (get().activeThreadId === threadId) set({ error: error.message });
+      // Prompt failures already render as a timeline error card. Do NOT also set the
+      // global fixed overlay (GlobalErrorNotice): long proxy/env dumps block the
+      // composer send button and have no reliable close path for /compact etc.
+      if (get().activeThreadId === threadId) set({ error: null });
       get().notifyThreadResult(threadId, 'error');
       return false;
     }

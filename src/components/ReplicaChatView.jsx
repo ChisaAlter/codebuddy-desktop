@@ -1084,7 +1084,10 @@ function ErrorTimelineCard({ item }) {
         </svg>
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-[var(--color-accent-red)]">{t('execution.failedTitle')}</div>
-          <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
+          <div
+            className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]"
+            title={String(message || '')}
+          >
             {message}
           </div>
           <EventDetails value={payload} />
@@ -2943,18 +2946,23 @@ export default function ReplicaChatView() {
           {timeline.length > 0 ? recoveryNotice : null}
           {chatError && !(accountLoginNeeded && isAuthRelatedMessage(chatError)) ? (
             <div
-              className="mx-0 mb-4 p-3 rounded-lg flex items-center justify-between"
+              className="mx-0 mb-4 flex max-h-36 items-start gap-2 overflow-hidden rounded-lg p-3"
               style={{
                 background: 'var(--color-error-bg)',
                 border: '1px solid var(--color-error)',
                 color: 'var(--color-error)',
               }}
+              role="alert"
             >
-              <span className="text-sm">{chatError}</span>
+              <span className="min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-sm" title={String(chatError)}>
+                {chatError}
+              </span>
               <button
-                className="btn-ghost text-sm"
+                type="button"
+                className="btn-ghost shrink-0 text-sm"
                 style={{ color: 'var(--color-error)' }}
                 onClick={() => setChatError(null)}
+                aria-label={t('composer.closeError')}
               >
                 {t('composer.closeError')}
               </button>

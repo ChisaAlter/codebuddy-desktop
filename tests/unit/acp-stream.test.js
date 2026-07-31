@@ -896,3 +896,25 @@ describe('AcpClient GET SSE notification stream', () => {
     await client.disconnect();
   });
 });
+
+describe('AcpClient _codebuddy.ai/authUrl notification', () => {
+  it('emits the auth URL as a client event (GUI opens the browser from it)', () => {
+    const client = new AcpClient();
+    const received = [];
+    const off = client.on('_codebuddy.ai/authUrl', (event) => received.push(event.detail));
+
+    client.handleIncomingRpc(
+      {
+        jsonrpc: '2.0',
+        method: '_codebuddy.ai/authUrl',
+        params: { authUrl: 'https://www.codebuddy.cn/oauth/authorize?app=1', provider: 'external' },
+      },
+      'notification',
+    );
+    off();
+
+    expect(received).toEqual([
+      { authUrl: 'https://www.codebuddy.cn/oauth/authorize?app=1', provider: 'external' },
+    ]);
+  });
+});

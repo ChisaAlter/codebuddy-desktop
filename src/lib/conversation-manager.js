@@ -19,6 +19,7 @@ const FORWARDED_EVENTS = [
   'promptSuggestion',
   'teamUpdate',
   '_codebuddy.ai/artifact',
+  '_codebuddy.ai/authUrl',
   'checkpoint',
 ];
 
