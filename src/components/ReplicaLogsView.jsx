@@ -160,10 +160,14 @@ export default function ReplicaLogsView() {
     setCopyStatus('idle');
   }, [logs]);
 
+  // P1-7: only auto-scroll to the bottom when the user is already at (or near)
+  // the bottom. Auto-refresh polls every 5s; unconditionally snapping to the
+  // bottom makes it impossible to read earlier log lines while refreshing.
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
+    const el = containerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (atBottom) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
   const handleCopy = async () => {

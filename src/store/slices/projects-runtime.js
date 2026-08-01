@@ -418,7 +418,9 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
     });
     const runtimeUnavailable = ['stopped', 'error'].includes(runtime.status || '');
     if (runtimeUnavailable) {
-      conversations.disposeProject(get().threadOrderByProject[runtime.projectId] || []);
+      // P1-2: runtime is gone (crash/stop) — pending permission/question requests
+      // expire, but the threads are marked disconnected, not error.
+      conversations.disposeProject(get().threadOrderByProject[runtime.projectId] || [], 'runtime-lost');
       if (get().activeProjectId === runtime.projectId) {
         setAcpSessionToken(null);
         setAuthToken(null);
@@ -461,7 +463,14 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
           promptStartedAt: null,
           activePromptRunId: null,
           promptDispatched: false,
+          promptDispatchInFlight: false,
           teamState: null,
+          lastTeamState: null,
+          memberHistoriesByName: {},
+          subagentToolCalls: {},
+          workflowState: null,
+          lastWorkflowState: null,
+          rawExtensionEvents: [],
           agentPhase: null,
           progress: null,
           historyReplayActive: false,
@@ -520,7 +529,10 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
   async stopProjectRuntime(projectId = get().activeProjectId) {
     return queueProjectRuntimeOperation(projectId, async () => {
       if (!projectId || !window.electronAPI?.stopProjectRuntime) return false;
-      await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+      // P1-2: user-initiated stop — pending permission/question requests expire,
+      // but the threads are marked disconnected (not error) by
+      // disconnectProjectThreads below.
+      await conversations.disposeProject(get().threadOrderByProject[projectId] || [], 'project-stopped');
       await get().disconnectProjectThreads(projectId);
       if (projectId === get().activeProjectId) {
         setAcpSessionToken(null);

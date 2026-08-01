@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   timeline: [],
   promptStartedAt: null,
   activePromptRunId: null,
+  workflowRuntime: null,
 }));
 
 vi.mock('../../src/store', () => ({
@@ -22,6 +23,7 @@ vi.mock('../../src/store', () => ({
       threadsById: {
         'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '', status: mocks.threadStatus },
       },
+      threadRuntimeById: { 'thread-1': mocks.workflowRuntime || {} },
       guiSettings: { locale: 'zh' },
       capabilities: {},
       connectionState: mocks.connectionState,
@@ -102,6 +104,7 @@ describe('ReplicaChatView cancellation', () => {
     mocks.timeline = [];
     mocks.promptStartedAt = null;
     mocks.activePromptRunId = null;
+    mocks.workflowRuntime = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -241,9 +244,83 @@ describe('ReplicaChatView cancellation', () => {
     expect(container.querySelector('button[title="跳到最新"]')).toBeNull();
   });
 
+  it('renders a visible workflow panel for parallel subagents and preserves manual collapse', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'running';
+    mocks.activePromptRunId = 'run-workflow';
+    mocks.timeline = [
+      { id: 'user-workflow', type: 'message', role: 'user', content: '检查项目', createdAt: 1000 },
+    ];
+    mocks.workflowRuntime = {
+      timeline: mocks.timeline,
+      promptStartedAt: 1000,
+      activePromptRunId: mocks.activePromptRunId,
+      agentPhase: { phase: 'planning', startedAt: 1000 },
+      progress: { current: 2, total: 6, message: '正在并行探索' },
+      teamState: {
+        name: '探索工作流',
+        members: Array.from({ length: 6 }, (_, index) => ({
+          id: `agent-${index}`,
+          name: `子代理 ${index + 1}`,
+          task: `检查子系统 ${index + 1}`,
+          status: index < 2 ? 'running' : 'completed',
+        })),
+      },
+    };
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
+    expect(panel).toBeTruthy();
+    expect(panel.textContent).toContain('6 个子代理');
+    expect(panel.textContent).toContain('子代理 1');
+    expect(panel.textContent).toContain('2 个进行中');
+    expect(panel.textContent).toContain('2/6');
+    const header = panel.querySelector('button[aria-expanded="true"]');
+    expect(header).toBeTruthy();
+    await act(async () => header.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(panel.querySelector('button[aria-expanded="false"]')).toBeTruthy();
+  });
+
+  it('falls back to readable workflow copy for new ACP phases', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'running';
+    mocks.activePromptRunId = 'run-new-phase';
+    mocks.timeline = [{ id: 'user-new-phase', type: 'message', role: 'user', content: '启动工作流', createdAt: 1000 }];
+    mocks.workflowRuntime = {
+      timeline: mocks.timeline,
+      promptStartedAt: 1000,
+      activePromptRunId: mocks.activePromptRunId,
+      agentPhase: { phase: 'future_phase' },
+    };
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
+    expect(panel).toBeTruthy();
+    expect(panel.textContent).toContain('正在执行');
+    expect(panel.textContent).not.toContain('workflow.phase.future_phase');
+  });
+
+  it('keeps the workflow panel visible while permission is pending', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'idle';
+    mocks.workflowRuntime = {
+      promptStartedAt: 1000,
+      permissionRequests: [{ interruptionId: 'permission-1', status: 'pending', toolName: 'Bash' }],
+    };
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
+    expect(panel).toBeTruthy();
+    expect(panel.textContent).toContain('等待权限确认');
+    expect(panel.textContent).toContain('等待你的权限确认');
+  });
+
   it('keeps tool records manually collapsible without status updates reopening them', async () => {
     mocks.isAwaitingResponse = false;
     // WebUI: ≥2 finished tools auto-collapse into “N 个工具已执行”; single tools stay as light rows.
+
     mocks.timeline = [
       { id: 'user-1', type: 'message', role: 'user', content: '检查项目' },
       {

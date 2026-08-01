@@ -853,7 +853,246 @@ select {
   }
 }
 
-/* ── Thinking block (1:1 CodeBuddy WebUI) ── */
+/* ── Workflow status panel ── */
+.workflow-status-panel {
+  margin-bottom: 12px;
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border-muted);
+  padding-bottom: 10px;
+}
+.workflow-status-panel__header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 7px;
+  padding: 4px 2px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.workflow-status-panel__header:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.workflow-status-panel__title,
+.workflow-status-panel__summary,
+.workflow-status-panel__elapsed,
+.workflow-status-panel__status {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.workflow-status-panel__title {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+.workflow-status-panel__summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-panel__elapsed,
+.workflow-status-panel__status {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.workflow-status-panel__chevron {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  transition: transform 0.15s ease;
+}
+.workflow-status-panel__chevron.is-expanded {
+  transform: rotate(180deg);
+}
+.workflow-status-panel__body {
+  min-width: 0;
+  padding: 5px 0 0 22px;
+}
+.workflow-status-panel__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.workflow-status-panel__meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-panel__counts {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.workflow-status-panel__totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.workflow-status-panel__run-id {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-panel__capability {
+  margin-top: 7px;
+  border-left: 2px solid var(--color-accent-yellow);
+  padding-left: 8px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.workflow-status-panel__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+.workflow-status-panel__progress .progress-bar {
+  flex: 1;
+}
+.workflow-status-panel__progress > span {
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-panel__items {
+  display: flex;
+  max-height: 180px;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 7px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.workflow-status-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  min-height: 26px;
+  border-radius: 5px;
+  padding: 3px 5px;
+  color: var(--color-text-secondary);
+}
+.workflow-status-item:hover {
+  background: var(--color-bg-hover);
+}
+.workflow-status-item__name {
+  flex: 0 1 150px;
+  min-width: 70px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-item__detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-item__main {
+  min-width: 0;
+  flex: 1;
+}
+.workflow-status-item__line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.workflow-status-item__details-toggle {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-item__details-toggle:hover {
+  color: var(--color-text-primary);
+}
+.workflow-status-item__expanded {
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.workflow-status-item__ids {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-item__state {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+.workflow-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+.workflow-status-dot--running {
+  background: var(--color-accent-blue);
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+.workflow-status-dot--waiting {
+  background: var(--color-accent-yellow);
+}
+.workflow-status-dot--completed {
+  background: var(--color-accent-green);
+}
+.workflow-status-dot--failed {
+  background: var(--color-accent-red);
+}
+.workflow-status-dot--cancelled {
+  background: var(--color-text-muted);
+}
+.workflow-status-panel__empty {
+  padding: 8px 0 3px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+@media (max-width: 640px) {
+  .workflow-status-panel__summary,
+  .workflow-status-panel__elapsed {
+    display: none;
+  }
+  .workflow-status-panel__body {
+    padding-left: 14px;
+  }
+  .workflow-status-item__name {
+    flex-basis: 100px;
+  }
+}
+
+
 .thinking-block {
   margin-bottom: 12px;
   overflow: hidden;

@@ -16,9 +16,20 @@ export function emptyThreadRuntime() {
     lastPromptRunAt: 0,
     promptDispatched: false,
     promptQueue: [],
+    // P0-4: set while a queued prompt has been popped from promptQueue but its
+    // session/prompt dispatch has not completed. sendPrompt's busy check treats
+    // this as busy, closing the "queue item popped, isAwaitingResponse not yet
+    // set" window where a second sendPrompt could double-dispatch.
+    promptDispatchInFlight: false,
     pendingAttachments: [],
     promptSuggestion: null,
     teamState: null,
+    lastTeamState: null,
+    memberHistoriesByName: {},
+    subagentToolCalls: {},
+    workflowState: null,
+    lastWorkflowState: null,
+    rawExtensionEvents: [],
     agentPhase: null,
     progress: null,
     // compact 流程状态：null | 'compacting' | 'compacted' | 'cancelled'。
@@ -134,10 +145,17 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'lastPromptRunId',
   'lastPromptRunAt',
   'promptDispatched',
+  'promptDispatchInFlight',
   'promptQueue',
   'pendingAttachments',
   'promptSuggestion',
   'teamState',
+  'lastTeamState',
+  'memberHistoriesByName',
+  'subagentToolCalls',
+  'workflowState',
+  'lastWorkflowState',
+  'rawExtensionEvents',
   'agentPhase',
   'progress',
   'compactState',
@@ -155,12 +173,17 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
 export function responseTerminalRuntimePatch(patch = {}) {
   return {
     activePromptRunId: null,
+    promptDispatchInFlight: false,
     promptDispatched: false,
     isAwaitingResponse: false,
     promptStartedAt: null,
     historyReplayActive: false,
     agentPhase: null,
     progress: null,
+    teamState: null,
+    // A new prompt/session reset/disconnect explicitly clears these per-turn details.
+    // The active team/workflow objects are cleared below; final snapshots remain readable.
+    workflowState: null,
     // 终态时清掉 compacting 中态；compacted/cancelled 终态由时间线条目承载，
     // 不依赖此字段，故一律清空避免残留。
     compactState: null,

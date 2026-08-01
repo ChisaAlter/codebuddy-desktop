@@ -3,7 +3,14 @@ import {
   isAcpAuthenticationError,
   LATE_PROMPT_CORRELATION_MS,
 } from '../../lib/acp';
-import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent } from '../../lib/timeline';
+import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent, mergeMemberTimeline } from '../../lib/timeline';
+import {
+  appendRawExtensionEvent,
+  completedTeamSnapshot,
+  memberEventName,
+  subagentMetadata,
+  teamUpdateFromPayload,
+} from '../../lib/acp-workflow-events';
 import {
   activeProject,
   activeThread,
@@ -159,20 +166,95 @@ export function createSessionsChatSlice(set, get, ctx) {
     if (!su) return;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const metadata = update._meta && typeof update._meta === 'object' ? update._meta : {};
-    const contentEvent = ['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'].includes(su);
+    const contentEvent = ['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk', 'tool_call', 'tool_call_update'].includes(su);
+    const memberName = memberEventName(update);
+    const subagent = subagentMetadata(update);
     if (contentEvent && get().threadsById[threadId]?.status === 'cancelled') return;
     const runtimePatch = {};
+    if (memberName && contentEvent) {
+      const memberHistoriesByName = mergeMemberTimeline(
+        runtime.memberHistoriesByName,
+        memberName,
+        su,
+        update,
+        threadId,
+      );
+      const subagentToolCalls = subagent?.parentToolCallId && update.toolCallId
+        ? {
+            ...(runtime.subagentToolCalls || {}),
+            [update.toolCallId]: {
+              toolCallId: update.toolCallId,
+              parentToolCallId: subagent.parentToolCallId,
+              memberName,
+              subagentType: subagent.subagentType,
+              status: update.status || null,
+              updatedAt: Date.now(),
+            },
+          }
+        : runtime.subagentToolCalls;
+      get().patchThreadRuntime(threadId, { memberHistoriesByName, subagentToolCalls });
+      return;
+    }
+    if (contentEvent && subagent?.parentToolCallId && update.toolCallId) {
+      runtimePatch.subagentToolCalls = {
+        ...(runtime.subagentToolCalls || {}),
+        [update.toolCallId]: {
+          toolCallId: update.toolCallId,
+          parentToolCallId: subagent.parentToolCallId,
+          memberName: subagent.memberName,
+          subagentType: subagent.subagentType,
+          status: update.status || null,
+          updatedAt: Date.now(),
+        },
+      };
+    }
+
     if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/promptSuggestion')) {
       runtimePatch.promptSuggestion = metadata['codebuddy.ai/promptSuggestion'] || null;
     }
-    if (metadata['codebuddy.ai/teamUpdate']) {
-      runtimePatch.teamState = mergeTeamState(runtime.teamState, metadata['codebuddy.ai/teamUpdate']);
+    const teamUpdate = teamUpdateFromPayload(update);
+    if (teamUpdate) {
+      if (teamUpdate.type === 'team_deleted') {
+        runtimePatch.lastTeamState = completedTeamSnapshot(runtime.teamState || runtime.lastTeamState, teamUpdate);
+        runtimePatch.teamState = null;
+      } else {
+        runtimePatch.teamState = mergeTeamState(runtime.teamState, teamUpdate);
+      }
     }
     if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/agentPhase')) {
       runtimePatch.agentPhase = metadata['codebuddy.ai/agentPhase'] || null;
     }
     if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/progress')) {
       runtimePatch.progress = metadata['codebuddy.ai/progress'] || null;
+    }
+    const privateKeys = Object.keys(metadata).filter((key) => key.startsWith('codebuddy.ai/'));
+    const knownPrivateKeys = new Set([
+      'codebuddy.ai/promptSuggestion',
+      'codebuddy.ai/teamUpdate',
+      'codebuddy.ai/agentPhase',
+      'codebuddy.ai/progress',
+      'codebuddy.ai/historyReplay',
+      'codebuddy.ai/goalProgress',
+      'codebuddy.ai/goalStatus',
+      'codebuddy.ai/permissionResolved',
+      'codebuddy.ai/toolCallId',
+      'codebuddy.ai/compact-cancelled',
+      'codebuddy.ai/interruptionRequest',
+      'codebuddy.ai/memberEvent',
+      'codebuddy.ai/parentToolCallId',
+      'codebuddy.ai/isSubAgent',
+      'codebuddy.ai/subagentType',
+      'codebuddy.ai/description',
+      'codebuddy.ai/isBackground',
+      'codebuddy.ai/memberName',
+    ]);
+    const unknownPrivateKey = privateKeys.find((key) => !knownPrivateKeys.has(key));
+    if (unknownPrivateKey) {
+      runtimePatch.rawExtensionEvents = appendRawExtensionEvent(
+        runtime.rawExtensionEvents,
+        unknownPrivateKey,
+        { key: unknownPrivateKey, value: metadata[unknownPrivateKey], update },
+      );
     }
     if (metadata['codebuddy.ai/historyReplay'] === 'start') runtimePatch.historyReplayActive = true;
     if (metadata['codebuddy.ai/historyReplay'] === 'end') runtimePatch.historyReplayActive = false;
@@ -367,9 +449,16 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (!requestStillActive) {
           get().flushThreadTimelineCoalesce?.(threadId);
           const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
+          const terminalPatch = responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedRuntime.timeline) });
+          if (flushedRuntime.teamState) {
+            terminalPatch.lastTeamState = completedTeamSnapshot(
+              flushedRuntime.teamState,
+              { type: 'team_deleted', status: normalizedStatus === 'error' ? 'failed' : normalizedStatus === 'cancelled' ? 'cancelled' : 'completed' },
+            );
+          }
           get().patchThreadRuntime(
             threadId,
-            responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedRuntime.timeline) }),
+            terminalPatch,
           );
         }
       }
@@ -427,6 +516,11 @@ export function createSessionsChatSlice(set, get, ctx) {
       const promptRunId = detail?._client?.promptRunId || null;
       const sessionUpdate = update.sessionUpdate || update.session_update || update.type;
       const promptContentEvent = PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
+      const memberContentEvent = promptContentEvent && Boolean(memberEventName(update));
+      if (memberContentEvent && runtime.teamState) {
+        get().handleThreadSessionUpdate(threadId, update);
+        return;
+      }
       if (promptContentEvent && promptRunId && promptRunId !== runtime.activePromptRunId) {
         // H1: accept late content chunks for the just-finalized run. After a prompt
         // succeeds/is cancelled, `activePromptRunId` is cleared but the transport
@@ -545,6 +639,13 @@ export function createSessionsChatSlice(set, get, ctx) {
         timeline.some((item, index) => item !== runtime.timeline[index]);
       if (!changed) return;
       get().patchThreadRuntime(threadId, { permissionRequests, questions, timeline });
+      // P1-2: for a user-initiated project stop (or runtime loss) the pending
+      // requests simply expire — do NOT turn the thread into `error` with a
+      // misleading "连接已更换" lastError. `disconnectProjectThreads` marks the
+      // thread disconnected right after this. The genuine "connection replaced"
+      // case (switching projects / reconnecting) keeps the error marking.
+      const stoppedLike = detail?.reason === 'project-stopped' || detail?.reason === 'runtime-lost';
+      if (stoppedLike) return;
       const message = '连接已更换，之前待处理的权限或问题请求已失效。';
       set((state) => {
         const record = state.threadsById[threadId];
@@ -594,7 +695,27 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'teamUpdate') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      get().patchThreadRuntime(threadId, { teamState: mergeTeamState(runtime.teamState, detail) });
+      const teamUpdate = teamUpdateFromPayload({ _meta: { 'codebuddy.ai/teamUpdate': detail } }) || detail;
+      if (teamUpdate?.type === 'team_deleted') {
+        get().patchThreadRuntime(threadId, {
+          teamState: null,
+          lastTeamState: completedTeamSnapshot(runtime.teamState || runtime.lastTeamState, teamUpdate),
+        });
+      } else {
+        get().patchThreadRuntime(threadId, { teamState: mergeTeamState(runtime.teamState, teamUpdate) });
+      }
+      return;
+    }
+    if (type === 'raw_extension') {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        rawExtensionEvents: appendRawExtensionEvent(
+          runtime.rawExtensionEvents,
+          detail?.method || 'raw_extension',
+          detail?.params || detail,
+          'codebuddy-private',
+        ),
+      });
       return;
     }
     get().appendThreadTimelineEvent(threadId, type === '_codebuddy.ai/artifact' ? 'artifact' : type, detail);
@@ -819,7 +940,14 @@ export function createSessionsChatSlice(set, get, ctx) {
       currentMode = appliedMode;
       const resolvedModel = appliedModel;
 
-      if (stillActive) {
+      // P0-2: re-evaluate currency right before the global mirror `set()`. The
+      // `stillActive` computed above predates up to 3 awaited sync RPCs
+      // (set_mode/set_model/set_config_option); if the user switched threads
+      // while those were in flight, writing the OLD thread's sessionId/title/
+      // model/connectionState into the global active state would pollute the new
+      // active thread's UI. Thread-keyed state (threadRuntimeById / records) is
+      // safe — only the global mirror needs the fresh check.
+      if (isScopedRequestCurrent(request, get())) {
         // 会话 ACP 连接/加载成功：若此前误标 required/error，可清掉。
         // session/new|load 成功本身说明云端鉴权对当前 CLI 可用，优先恢复 authenticated
         //（尤其磁盘已有 lastAccountUser 时），避免侧栏一直「需要登录」。
@@ -1876,7 +2004,8 @@ export function createSessionsChatSlice(set, get, ctx) {
     if (
       (thread.status === 'running' || thread.status === 'cancelling') &&
       !liveBusy &&
-      runtime.promptQueue.length === 0
+      runtime.promptQueue.length === 0 &&
+      !runtime.promptDispatchInFlight
     ) {
       get().patchThreadRuntime(
         threadId,
@@ -1890,7 +2019,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     }
     const latestThread = get().threadsById[threadId] || thread;
-    if (RESPONSE_BUSY_STATUSES.has(latestThread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptQueue.length > 0) {
+    if (
+      RESPONSE_BUSY_STATUSES.has(latestThread.status) ||
+      runtime.isAwaitingResponse ||
+      runtime.activePromptRunId ||
+      runtime.promptDispatchInFlight ||
+      runtime.promptQueue.length > 0
+    ) {
       return queuePromptQueueOperation(threadId, async () => {
         const latestThread = get().threadsById[threadId];
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -1914,7 +2049,11 @@ export function createSessionsChatSlice(set, get, ctx) {
           get().setThreadPromptQueue(threadId, latestRuntime.promptQueue, { draft: draftText });
           return false;
         }
-        if (!RESPONSE_BUSY_STATUSES.has(latestThread.status) && !latestRuntime.isAwaitingResponse) {
+        if (
+          !RESPONSE_BUSY_STATUSES.has(latestThread.status) &&
+          !latestRuntime.isAwaitingResponse &&
+          !latestRuntime.promptDispatchInFlight
+        ) {
           setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
         }
         return { queued: true, id: queuedPrompt.id };
@@ -1979,6 +2118,14 @@ export function createSessionsChatSlice(set, get, ctx) {
       promptStartedAt,
       activePromptRunId,
       promptDispatched: false,
+      promptDispatchInFlight: false,
+      teamState: null,
+      lastTeamState: null,
+      memberHistoriesByName: {},
+      subagentToolCalls: {},
+      workflowState: null,
+      lastWorkflowState: null,
+      rawExtensionEvents: [],
     });
     await get().updateThreadRecord(threadId, {
       status: 'running',
@@ -2354,7 +2501,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const [next, ...rest] = runtime.promptQueue;
       if (!thread || !client || !next) return null;
-      if (RESPONSE_BUSY_STATUSES.has(thread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId) return null;
+      if (RESPONSE_BUSY_STATUSES.has(thread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptDispatchInFlight) return null;
 
       let attachments = Array.isArray(next.attachments) ? next.attachments : [];
       const requiresReload = attachments.some(
@@ -2392,10 +2539,20 @@ export function createSessionsChatSlice(set, get, ctx) {
         }
       }
 
-      get().patchThreadRuntime(threadId, { promptQueue: rest });
+      get().patchThreadRuntime(threadId, {
+        promptQueue: rest,
+        // P0-4: mark the dispatch window busy BEFORE the persist await below, so
+        // a sendPrompt arriving while the pop→dispatch gap is open (queue already
+        // empty, runThreadPrompt not yet started) queues instead of double-sending
+        // a second session/prompt against the same thread.
+        promptDispatchInFlight: true,
+      });
       const persisted = await get().persistThreadPromptQueue(threadId, rest);
       if (!persisted) {
-        get().patchThreadRuntime(threadId, { promptQueue: runtime.promptQueue });
+        get().patchThreadRuntime(threadId, {
+          promptQueue: runtime.promptQueue,
+          promptDispatchInFlight: false,
+        });
         get().setThreadPromptQueue(threadId, runtime.promptQueue);
         return null;
       }
@@ -2406,14 +2563,20 @@ export function createSessionsChatSlice(set, get, ctx) {
     // drainThreadPromptQueue calls (one from the success-path setTimeout and one
     // from a queued sendPrompt, both of which pass the queue lock that only guards
     // the pop) cannot each call runThreadPrompt and double-send session/prompt.
-    return runUniqueSessionAction(`${threadId}:prompt`, () =>
-      get().runThreadPrompt(
-        threadId,
-        prepared.next.text,
-        prepared.attachments,
-        prepared.next.draftText ?? prepared.next.text,
-      ),
-    );
+    try {
+      return await runUniqueSessionAction(`${threadId}:prompt`, () =>
+        get().runThreadPrompt(
+          threadId,
+          prepared.next.text,
+          prepared.attachments,
+          prepared.next.draftText ?? prepared.next.text,
+        ),
+      );
+    } finally {
+      // The dispatch window is over (success or failure); runThreadPrompt's own
+      // busy flags now cover the running prompt.
+      get().patchThreadRuntime(threadId, { promptDispatchInFlight: false });
+    }
   },
 
   async moveQueuedPrompt(threadId, promptId, direction) {

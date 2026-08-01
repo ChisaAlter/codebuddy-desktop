@@ -195,6 +195,8 @@ function Breadcrumbs() {
 function FileTree({ onContextMenu }) {
   const fileEntries = useStore((s) => s.fileEntries);
   const fileLoading = useStore((s) => s.fileLoading);
+  const fileLoadError = useStore((s) => s.fileLoadError);
+  const connectionState = useStore((s) => s.connectionState);
   const openDirectory = useStore((s) => s.openDirectory);
   const fileCwd = useStore((s) => s.fileCwd);
   const openFile = useStore((s) => s.openFile);
@@ -202,6 +204,27 @@ function FileTree({ onContextMenu }) {
 
   if (fileLoading) {
     return <div className="p-4 text-sm text-[var(--color-text-muted)]">加载文件中...</div>;
+  }
+  // P0-8: a failed directory load must show the real error (with a retry) instead
+  // of falling through to the "empty directory" state and misleading the user
+  // into thinking the project has no files.
+  if (fileLoadError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center">
+        <div className="text-sm text-[var(--color-error)]">文件列表加载失败</div>
+        <div className="max-w-full break-words px-4 text-xs text-[var(--color-text-secondary)]">{fileLoadError}</div>
+        <button className="btn-ghost mt-1 text-xs" onClick={() => openDirectory(fileCwd || '.')}>重试</button>
+      </div>
+    );
+  }
+  // P0-8: before the runtime is connected the tree has nothing real to show;
+  // distinguish "not ready yet" from "empty directory".
+  if (connectionState !== 'connected') {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-[var(--color-text-muted)]">
+        项目运行时未就绪，连接后自动加载文件
+      </div>
+    );
   }
   if (fileEntries.length === 0) {
     return <div className="flex flex-1 items-center justify-center p-4 text-sm text-[var(--color-text-muted)]">当前目录为空</div>;

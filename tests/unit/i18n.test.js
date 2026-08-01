@@ -88,6 +88,13 @@ describe('i18n', () => {
     );
   });
 
+  it('localizes workflow phases and never exposes an unknown translation key', () => {
+    expect(translate('zh', 'workflow.phase.preparing')).toBe('正在准备工作流');
+    expect(translate('en', 'workflow.phase.waiting_for_permission')).toBe('Waiting for permission');
+    expect(translate('zh', 'workflow.phase.unknown')).toBe('正在执行');
+    expect(translate('zh', 'workflow.waitingForPermission')).toBe('等待你的权限确认');
+    expect(translate('zh', 'workflow.phase.not_yet_known')).toBe('workflow.phase.not_yet_known');
+  });
   it('covers interruption/question keys aligned with WebUI 2.124', () => {
     expect(translate('zh', 'interruption.allow')).toBe('允许');
     expect(translate('zh', 'interruption.allowAll')).toBe('全部允许');

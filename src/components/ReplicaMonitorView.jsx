@@ -6,7 +6,7 @@ function StatCard({ title, value, subtitle }) {
   return (
     <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-5">
       <div className="text-xs text-[var(--color-text-muted)]">{title}</div>
-      <div className="mt-2 text-2xl font-bold text-white">{value}</div>
+      <div className="mt-2 text-2xl font-bold text-[var(--color-text-primary)]">{value}</div>
       {subtitle ? <div className="mt-1 text-xs text-[var(--color-text-secondary)]">{subtitle}</div> : null}
     </div>
   );
@@ -16,7 +16,7 @@ function WorkerCard({ worker }) {
   return (
     <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-sm font-medium text-white">{worker.kind || 'worker'}</div>
+        <div className="text-sm font-medium text-[var(--color-text-primary)]">{worker.kind || 'worker'}</div>
         <span className="rounded px-2 py-1 text-[10px]" style={{ background: worker.isCurrent ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)', color: worker.isCurrent ? '#22c55e' : '#9ca3af' }}>
           {worker.isCurrent ? 'current' : 'worker'}
         </span>
@@ -133,7 +133,7 @@ export default function ReplicaMonitorView() {
       </div>
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div>
-          <div className="text-lg font-semibold text-white">监控</div>
+          <div className="text-lg font-semibold text-[var(--color-text-primary)]">监控</div>
           <div className="mt-1 text-sm text-[var(--color-text-secondary)]">运行状态与实例健康</div>
         </div>
 

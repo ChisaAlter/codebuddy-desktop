@@ -510,7 +510,16 @@ export class AcpClient {
       return;
     }
 
-    if (message.method) this.emit(message.method, message.params || message);
+    if (message.method) {
+      if (String(message.method).startsWith('_codebuddy.ai/')) {
+        this.emit('raw_extension', {
+          method: message.method,
+          params: message.params || {},
+          source,
+        });
+      }
+      this.emit(message.method, message.params || message);
+    }
   }
 
   handlePermissionRequest(requestId, params) {

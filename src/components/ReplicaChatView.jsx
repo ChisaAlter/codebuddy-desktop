@@ -27,6 +27,8 @@ import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
+import { normalizeWorkflowStatus, workflowHasActivity } from '../lib/workflow-status';
+import WorkflowStatusPanel from './WorkflowStatusPanel';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -72,6 +74,10 @@ const COMPOSER_MENU_EXIT_MS = 320;
 
 /** 带进出动画的 composer 下拉菜单（模式 / 模型 / 思考强度） */
 function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-testid': dataTestId, ...rest }) {
+  // P1-6: the overlay left edge must follow the sidebar collapse state, else a
+  // collapsed (60px) sidebar leaves a dead click band that neither closes the
+  // menu nor reaches the content underneath.
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const [render, setRender] = useState(open);
   const [phase, setPhase] = useState(open ? 'enter' : 'exit');
   const exitTimerRef = useRef(null);
@@ -127,7 +133,7 @@ function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-t
     <>
       <div
         className="fixed inset-0 z-10"
-        style={{ left: 'var(--sidebar-width, 252px)' }}
+        style={{ left: sidebarCollapsed ? 60 : 'var(--sidebar-width, 252px)' }}
         onClick={onClose}
         aria-hidden="true"
       />
@@ -1321,67 +1327,6 @@ function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
   );
 }
 
-function TeamStatusPanel({ teamState }) {
-  const t = useUiTranslate();
-  if (!teamState) return null;
-  const members = Array.isArray(teamState.members) ? teamState.members : [];
-  const teamName = teamState.teamName || teamState.name || t('team.defaultName');
-  const statusLabels = {
-    working: t('team.status.working'),
-    running: t('team.status.working'),
-    in_progress: t('team.status.working'),
-    idle: t('team.status.idle'),
-    completed: t('team.status.completed'),
-    failed: t('team.status.failed'),
-    waiting: t('team.status.waiting'),
-  };
-  return (
-    <div className="mb-3 border-b border-[var(--color-border-muted)] pb-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium text-[var(--color-text-primary)]">{teamName}</span>
-        {teamState.isAutoTeam ? (
-          <span className="text-[10px] text-[var(--color-text-muted)]">{t('team.auto')}</span>
-        ) : null}
-        <span className="text-[10px] text-[var(--color-text-muted)]">
-          {t('team.memberCount', { n: members.length })}
-        </span>
-      </div>
-      {members.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {members.map((member, index) => {
-            const name = member.name || member.agentName || member.role || t('team.memberFallback', { n: index + 1 });
-            const status = member.status || member.state || 'idle';
-            const active = ['working', 'running', 'in_progress'].includes(status);
-            return (
-              <div
-                key={member.id || member.name || `member-${index}`}
-                className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-2 py-1 text-[10px]"
-              >
-                <span
-                  className={
-                    'h-1.5 w-1.5 shrink-0 rounded-full ' +
-                    (status === 'failed'
-                      ? 'bg-[var(--color-accent-red)]'
-                      : active
-                        ? 'bg-[var(--color-accent-blue)]'
-                        : status === 'completed'
-                          ? 'bg-[var(--color-accent-green)]'
-                          : 'bg-[var(--color-text-muted)]')
-                  }
-                />
-                <span className="truncate text-[var(--color-text-secondary)]" title={name}>
-                  {name}
-                </span>
-                <span className="shrink-0 text-[var(--color-text-muted)]">{statusLabels[status] || status}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function InterruptionCard({ item }) {
   const t = useUiTranslate();
   const respondToInterruption = useStore((s) => s.respondToInterruption);
@@ -1980,10 +1925,9 @@ export default function ReplicaChatView() {
   );
   const promptSuggestion = useStore((s) => s.promptSuggestion);
   const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
-  const teamState = useStore((s) => s.teamState);
-  const agentPhase = useStore((s) => s.agentPhase);
-  const progress = useStore((s) => s.progress);
-  const historyReplayActive = useStore((s) => s.historyReplayActive);
+  const agentPhase = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.agentPhase || null);
+  const progress = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.progress || null);
+  const historyReplayActive = useStore((s) => Boolean(s.threadRuntimeById?.[s.activeThreadId]?.historyReplayActive));
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -1992,6 +1936,7 @@ export default function ReplicaChatView() {
   const activePromptRunId = useStore((s) => s.activePromptRunId);
   const activeThreadId = useStore((s) => s.activeThreadId);
   const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
+  const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[s.activeThreadId] || null);
   const promptQueue = useStore((s) => s.promptQueue || []);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
@@ -2032,6 +1977,9 @@ export default function ReplicaChatView() {
   const queueActionInFlightRef = useRef(null);
   const recoveryInFlightRef = useRef(null);
   const sendLaunchInFlightRef = useRef(null);
+  // P1-4: visual mirror of the in-flight ref so the send button disables during
+  // the pre-stream dispatch window (refs do not trigger re-renders).
+  const [sendLaunchInFlight, setSendLaunchInFlight] = useState(false);
   const pasteImageInFlightRef = useRef(null);
   const dropAttachmentsInFlightRef = useRef(null);
   // Auto-dismiss error banner after 8 seconds
@@ -2326,14 +2274,22 @@ export default function ReplicaChatView() {
       connectionState === 'connected' &&
       (['running', 'waiting', 'cancelling'].includes(activeThreadStatus) ||
         isAwaitingResponse ||
-        Boolean(activePromptRunId)),
-    [activeThreadStatus, connectionState, isAwaitingResponse, activePromptRunId],
+        Boolean(activePromptRunId) ||
+        Boolean(activeThreadRuntime?.promptDispatchInFlight)),
+    [activeThreadStatus, connectionState, isAwaitingResponse, activePromptRunId, activeThreadRuntime?.promptDispatchInFlight],
   );
   const sessionResponseBusy =
-    ['running', 'waiting', 'cancelling'].includes(activeThreadStatus) || isAwaitingResponse || activePromptRunId;
+    ['running', 'waiting', 'cancelling'].includes(activeThreadStatus) ||
+    isAwaitingResponse ||
+    activePromptRunId ||
+    Boolean(activeThreadRuntime?.promptDispatchInFlight);
+  const workflowStatus = useMemo(
+    () => normalizeWorkflowStatus({ runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline }),
+    [activeThreadRuntime, activeThreadStatus, timeline],
+  );
   const responseActivityLabel = useMemo(
-    () =>
-      getResponseActivityLabel({
+    () => {
+      const baseLabel = getResponseActivityLabel({
         connectionState,
         historyReplayActive,
         activeThreadStatus,
@@ -2342,7 +2298,13 @@ export default function ReplicaChatView() {
         promptStartedAt,
         timeline,
         t,
-      }),
+      });
+      if (!workflowHasActivity(workflowStatus)) return baseLabel;
+      const workflowLabel = workflowStatus.source === 'team'
+        ? t('workflow.activityAgents', { count: workflowStatus.activeCount || workflowStatus.reportedCount })
+        : t('workflow.activitySteps', { count: workflowStatus.activeCount || workflowStatus.items.length });
+      return baseLabel ? `${workflowLabel} · ${baseLabel}` : workflowLabel;
+    },
     [
       connectionState,
       historyReplayActive,
@@ -2352,6 +2314,7 @@ export default function ReplicaChatView() {
       promptStartedAt,
       timeline,
       t,
+      workflowStatus,
     ],
   );
   const slashSuggestions = useMemo(
@@ -2439,7 +2402,6 @@ export default function ReplicaChatView() {
       persistScrollPosition();
     };
     // Intentionally not depending on timeline: streaming tokens must not re-trigger restore.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore on thread/route remount
   }, [activeThreadId, activeProjectId, persistScrollPosition]);
 
   // History / late layout: re-apply saved mid-scroll if content arrived after first paint at top.
@@ -2562,13 +2524,11 @@ export default function ReplicaChatView() {
     }
     const operation = {};
     sendLaunchInFlightRef.current = operation;
+    setSendLaunchInFlight(true);
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const isCurrent = () =>
       projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
-    const releaseTimer = setTimeout(() => {
-      if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
-    }, 0);
     setChatError(null);
     // Sending always re-engages follow-latest (even if user was reading older messages).
     shouldAutoScrollRef.current = true;
@@ -2590,7 +2550,10 @@ export default function ReplicaChatView() {
       if (isCurrent())
         setChatError(t('error.sendFailedDetail', { message: err.message || t('error.unknown') }));
     } finally {
-      clearTimeout(releaseTimer);
+      // P1-4: hold the in-flight lock until sendPrompt settles (the old 0ms
+      // release timer freed it before the dispatch completed, letting a second
+      // Enter/click re-submit the same prompt). Also clear the visual flag.
+      setSendLaunchInFlight(false);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }
   }, [
@@ -2786,6 +2749,10 @@ export default function ReplicaChatView() {
   const handleKeyDown = useCallback(
     (e) => {
       if (e.nativeEvent?.isComposing || e.isComposing) return;
+      // P1-4: a held-down Enter fires repeated keydown events; without this the
+      // second event lands after the in-flight ref is released and re-submits
+      // the same prompt (duplicate session/prompt, wasted tokens).
+      if (e.repeat) return;
       const commandAction = slashCommandKeyboardAction(e.key, slashSuggestions.length > 0);
       if (commandAction === 'next') {
         e.preventDefault();
@@ -2896,7 +2863,7 @@ export default function ReplicaChatView() {
             agentPhase={agentPhase}
             progress={progress}
           />
-          <TeamStatusPanel teamState={teamState} />
+          <WorkflowStatusPanel status={workflowStatus} />
           {timeline.length === 0 ? (
             connectionState === 'connecting' || runtimeStatus === 'starting' ? (
               <div className="flex items-center justify-center h-64">
@@ -3004,6 +2971,7 @@ export default function ReplicaChatView() {
         queueActionBusy={queueActionBusy}
         canSend={canSend}
         isStreaming={isStreaming}
+        sendLaunchInFlight={sendLaunchInFlight}
         resumePromptQueue={resumePromptQueue}
         movePromptInQueue={movePromptInQueue}
         removePromptFromQueue={removePromptFromQueue}
@@ -3086,6 +3054,7 @@ const ChatComposer = React.memo(function ChatComposer({
   queueActionBusy,
   canSend,
   isStreaming,
+  sendLaunchInFlight,
   resumePromptQueue,
   movePromptInQueue,
   removePromptFromQueue,
@@ -3135,6 +3104,8 @@ const ChatComposer = React.memo(function ChatComposer({
   const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showWorkspaceDirsMenu, setShowWorkspaceDirsMenu] = useState(false);
+  // P1-6: overlays must start after the actual (possibly collapsed) sidebar.
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || []);
   const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
   const workspaceDirsError = useStore((s) => s.workspaceDirsError);
@@ -3459,7 +3430,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   <>
                     <div
                       className="fixed inset-0 z-10"
-                      style={{ left: 'var(--sidebar-width, 252px)' }}
+                      style={{ left: sidebarCollapsed ? 60 : 'var(--sidebar-width, 252px)' }}
                       onClick={closeAttachMenu}
                       aria-hidden="true"
                     />
@@ -3532,7 +3503,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   <>
                     <div
                       className="fixed inset-0 z-10"
-                      style={{ left: 'var(--sidebar-width, 252px)' }}
+                      style={{ left: sidebarCollapsed ? 60 : 'var(--sidebar-width, 252px)' }}
                       onClick={closeWorkspaceDirsMenu}
                       aria-hidden="true"
                     />
@@ -3762,6 +3733,16 @@ const ChatComposer = React.memo(function ChatComposer({
                   </ComposerAnimatedMenu>
                 </div>
               </div>
+              {showTokensCounter && usage ? (
+                <div className="relative mr-1 shrink-0">
+                  <ContextUsageIndicator
+                    usage={usage}
+                    onCompact={onCompact}
+                    disabled={!canSend || isStreaming || sessionResponseBusy}
+                    compactState={compactState}
+                  />
+                </div>
+              ) : null}
               {isStreaming ? (
                 <button
                   type="button"
@@ -3782,7 +3763,11 @@ const ChatComposer = React.memo(function ChatComposer({
                   type="button"
                   className="composer-action-btn composer-action-btn--send ml-4 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] shadow-sm transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
                   onClick={onSubmit}
-                  disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
+                  disabled={
+                    !canSend ||
+                    sendLaunchInFlight ||
+                    (!input.trim() && pendingAttachments.length === 0)
+                  }
                   title={t('input.send')}
                   aria-label={t('input.send')}
                 >
@@ -3792,17 +3777,6 @@ const ChatComposer = React.memo(function ChatComposer({
             </div>
           </div>
         </div>
-
-        {showTokensCounter && usage && (
-          <div className="mt-2 flex items-center justify-end gap-2">
-            <ContextUsageIndicator
-              usage={usage}
-              onCompact={onCompact}
-              disabled={!canSend || isStreaming || sessionResponseBusy}
-              compactState={compactState}
-            />
-          </div>
-        )}
       </div>
     </div>
   );

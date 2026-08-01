@@ -82,7 +82,11 @@ export class PtySocket {
   }
 
   connect() {
-    if (this.socket || this._sseStream) return;
+    // P0-3: only block re-entry while a socket is actually alive. A CLOSED
+    // socket left behind by a server-side normal close (code 1000) must not
+    // wedge connect() forever — the server process may have restarted and a
+    // fresh socket is needed.
+    if ((this.socket && this.socket.readyState !== WebSocket.CLOSED) || this._sseStream) return;
     this._closedExplicitly = false;
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
       this._connectSse();
@@ -98,7 +102,11 @@ export class PtySocket {
     };
     socket.onclose = (event) => {
       this.emit('close', event);
-      // 非主动关闭时尝试重连
+      // P0-3: always release the socket reference on close (guarding against a
+      // newer socket replacing it mid-close). The old WS cannot come back to
+      // life, so a later connect() must be able to build a fresh one.
+      if (this.socket === socket) this.socket = null;
+      // 非主动关闭时尝试重连（code 1000 是服务端正常关闭，不重连但允许重建）
       if (!this._closedExplicitly && !this._reconnecting && event.code !== 1000) {
         this._tryReconnect();
       }
@@ -208,6 +216,9 @@ export class PtySocket {
 
         socket.onclose = (event) => {
           this.emit('close', event);
+          // P0-3: release the socket reference on any close so connect() can
+          // rebuild after a server-side normal close (code 1000).
+          if (this.socket === socket) this.socket = null;
           // 非主动关闭时尝试重连
           if (!this._closedExplicitly && !this._reconnecting && event.code !== 1000) {
             this._tryReconnect();

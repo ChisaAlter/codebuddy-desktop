@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-gui",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "Multi-project desktop client for CodeBuddy CLI (CodeBuddy Desktop)",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
@@ -42,9 +42,12 @@
     "format": "prettier --write \"electron/**/*.{js,cjs}\" \"src/**/*.{js,jsx}\" \"tests/**/*.{js,jsx}\""
   },
   "dependencies": {
+    "@codebuddy/mobile-remote-crypto": "0.1.0",
+    "@codebuddy/mobile-remote-protocol": "0.1.0",
     "@monaco-editor/react": "^4.7.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "base64-js": "^1.5.1",
     "electron-store": "^8.2.0",
     "express": "^4.21.2",
     "jsonc-parser": "^3.3.1",
@@ -52,6 +55,8 @@
     "monaco-editor": "^0.55.1",
     "node-fetch": "^2.7.0",
     "qrcode": "^1.5.4",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
@@ -100,6 +105,8 @@
     "files": [
       "out/**/*",
       "electron/**/*",
+      "packages/mobile-remote-protocol/**/*",
+      "packages/mobile-remote-crypto/**/*",
       "build/icon.png",
       "build/icon-mark.png",
       "build/icon.ico",

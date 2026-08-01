@@ -62,6 +62,7 @@ import {
   emptyProductState,
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
+import { mergeCodeBuddyTeamState } from './lib/acp-workflow-events';
 import {
   isGuiSettingKey,
   loadGuiSettings,
@@ -299,13 +300,7 @@ function mergeAttachmentSelection(runtime, selection) {
 }
 
 function mergeTeamState(current, update) {
-  if (!update || typeof update !== 'object') return current || null;
-  if (update.type === 'team_deleted') return null;
-  return {
-    ...(current || {}),
-    ...update,
-    members: Array.isArray(update.members) ? update.members : current?.members || [],
-  };
+  return mergeCodeBuddyTeamState(current, update);
 }
 
 const RESPONSE_BUSY_STATUSES = new Set(['running', 'waiting', 'cancelling']);
@@ -322,7 +317,7 @@ const FINAL_RESPONSE_GRACE_MS = 1500;
 function threadResponseInProgress(state, threadId) {
   const thread = state.threadsById[threadId];
   const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
-  return Boolean(RESPONSE_BUSY_STATUSES.has(thread?.status) || runtime.isAwaitingResponse || runtime.activePromptRunId);
+  return Boolean(RESPONSE_BUSY_STATUSES.has(thread?.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptDispatchInFlight);
 }
 
 function threadSelectionProtection(state, threadId) {
@@ -703,6 +698,12 @@ export const useStore = create((set, get) => {
   permissionRequests: [],
   questions: [],
   teamState: null,
+  lastTeamState: null,
+  memberHistoriesByName: {},
+  subagentToolCalls: {},
+  workflowState: null,
+  lastWorkflowState: null,
+  rawExtensionEvents: [],
   agentPhase: null,
   progress: null,
   historyReplayActive: false,
@@ -712,6 +713,10 @@ export const useStore = create((set, get) => {
   workspacePath: null,
   fileEntries: [],
   fileLoading: false,
+  // P0-8: last file-tree load failure (per-directory). Kept separate from the
+  // global `error` banner so the FileTree can render a real error state with a
+  // retry action instead of pretending the directory is empty.
+  fileLoadError: null,
   fileSearchQuery: '',
   fileSearchResults: [],
   fileSearching: false,
@@ -1124,12 +1129,12 @@ export const useStore = create((set, get) => {
     try {
       const entries = await fsList(path, 1);
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
-      set({ fileEntries: entries, fileLoading: false });
+      set({ fileEntries: entries, fileLoading: false, fileLoadError: null });
       if (!options.skipWorkspacePersist) get().scheduleWorkspaceStatePersist();
       return true;
     } catch (error) {
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
-      set({ fileEntries: [], fileLoading: false, error: error.message });
+      set({ fileEntries: [], fileLoading: false, fileLoadError: error.message, error: error.message });
       return false;
     }
   },
@@ -3136,12 +3141,12 @@ export const useStore = create((set, get) => {
     try {
       const entries = await fsList(cwd, 1);
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
-      set({ fileEntries: entries, fileLoading: false });
+      set({ fileEntries: entries, fileLoading: false, fileLoadError: null });
       return true;
     } catch (error) {
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
       if (options.silent) return false;
-      set({ fileEntries: [], fileLoading: false, error: error.message });
+      set({ fileEntries: [], fileLoading: false, fileLoadError: error.message, error: error.message });
       return false;
     }
   },

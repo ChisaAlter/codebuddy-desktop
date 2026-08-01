@@ -270,6 +270,10 @@ export default function CustomModelsModal({ onClose }) {
   useEffect(() => {
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
+      // P1-8: same busy guard as the overlay/X button — Escape must not dismiss
+      // the modal while a save/delete is running (user would think it was
+      // cancelled while the async flow keeps writing to disk).
+      if (saving) return;
       if (deleteTarget) {
         setDeleteTarget(null);
         return;
@@ -283,7 +287,7 @@ export default function CustomModelsModal({ onClose }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [deleteTarget, view, onClose]);
+  }, [deleteTarget, view, onClose, saving]);
 
   const openCreate = () => {
     setDraft({ ...EMPTY_DRAFT });
@@ -435,7 +439,10 @@ export default function CustomModelsModal({ onClose }) {
 
   return (
     <>
-      <div className="custom-models-overlay" onClick={onClose}>
+      {/* P1-8: while saving/deleting, closing the modal would let the async flow
+          keep running on an unmounted component and mislead the user into
+          thinking the operation was cancelled. Block close while busy. */}
+      <div className="custom-models-overlay" onClick={saving ? undefined : onClose}>
         <div
           className="custom-models-modal"
           role="dialog"
@@ -450,7 +457,8 @@ export default function CustomModelsModal({ onClose }) {
             <button
               type="button"
               className="custom-models-icon-btn"
-              onClick={onClose}
+              onClick={saving ? undefined : onClose}
+              disabled={saving}
               title={t('settings.customModels.close')}
               aria-label={t('settings.customModels.close')}
             >

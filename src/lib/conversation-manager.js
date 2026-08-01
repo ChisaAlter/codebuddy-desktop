@@ -21,6 +21,7 @@ const FORWARDED_EVENTS = [
   '_codebuddy.ai/artifact',
   '_codebuddy.ai/authUrl',
   'checkpoint',
+  'raw_extension',
 ];
 
 export class ConversationManager {
@@ -65,7 +66,7 @@ export class ConversationManager {
     return this.entries.get(threadId)?.client || null;
   }
 
-  async dispose(threadId) {
+  async dispose(threadId, reason = 'client-disposed') {
     const entry = this.entries.get(threadId);
     if (!entry) return;
     // M-ls10: only delete the map entry if it still points at THIS entry. A
@@ -74,13 +75,17 @@ export class ConversationManager {
     // new entry would leak a live WS connection and lose the new client. Also
     // capture the entry so the disconnect/disposers run against the right client.
     if (this.entries.get(threadId) === entry) this.entries.delete(threadId);
-    entry.client.invalidateInteractiveRequests('client-disposed');
+    // P1-2: the reason distinguishes a genuine connection replacement
+    // ('client-disposed', waiting threads become error) from a user-initiated
+    // project stop ('project-stopped' / 'runtime-lost', where pending requests
+    // just expire and the thread is marked disconnected instead of error).
+    entry.client.invalidateInteractiveRequests(reason);
     for (const dispose of entry.disposers) dispose();
     await entry.client.disconnect().catch(() => null);
   }
 
-  async disposeProject(threadIds) {
-    await Promise.allSettled((threadIds || []).map((threadId) => this.dispose(threadId)));
+  async disposeProject(threadIds, reason = 'client-disposed') {
+    await Promise.allSettled((threadIds || []).map((threadId) => this.dispose(threadId, reason)));
   }
 
   async disposeAll() {

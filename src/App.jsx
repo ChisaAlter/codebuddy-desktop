@@ -913,6 +913,12 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.repeat || event.defaultPrevented) return;
+      // P0-7: while a modal confirmation dialog is open (ActionConfirmDialog and
+      // similar), global shortcuts must not fire — switching routes with Ctrl+1..4
+      // or creating a new session with Ctrl+Alt+N would unmount the view and
+      // silently cancel the dangerous-operation confirm the user is about to
+      // accept. Mirrors the terminal view's M-rc9 dialog guard.
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const shortcut = shortcutFromKeyboardEvent(event);
       if (isShortcutInputTarget(event.target) && !guiShortcutAllowedInInput(shortcut)) return;
       const action = guiActionForShortcut(shortcut);

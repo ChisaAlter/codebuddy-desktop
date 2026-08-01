@@ -1,4 +1,5 @@
-// 历史回放使用 offset 作为稳定事件身份。实时 POST/GET 双流去重在 AcpClient 传输层完成，
+import { subagentMetadata } from './acp-workflow-events.js';
+
 // 这里不能再按文本去重，否则模型合法输出连续相同文本时会丢字。
 const MAX_DEDUPE_SCOPES = 100;
 const MAX_EVENTS_PER_SCOPE = 2000;
@@ -81,6 +82,14 @@ export function createTimelineEntry(partial = {}) {
     rawOutput: partial.rawOutput || null,
     locations: partial.locations || null,
     attachments: Array.isArray(partial.attachments) ? partial.attachments : null,
+    isSubAgent: Boolean(partial.isSubAgent),
+    subagentType: partial.subagentType || null,
+    description: partial.description || null,
+    isBackground: Boolean(partial.isBackground),
+    memberName: partial.memberName || null,
+    parentToolCallId: partial.parentToolCallId || null,
+    children: Array.isArray(partial.children) ? partial.children : [],
+    subagentTimeline: Array.isArray(partial.subagentTimeline) ? partial.subagentTimeline : [],
   };
 }
 
@@ -89,15 +98,6 @@ function findLastByMessageId(timeline, type, messageId) {
   for (let i = timeline.length - 1; i >= 0; i -= 1) {
     const item = timeline[i];
     if (item.type === type && item.messageId === messageId) return item;
-  }
-  return null;
-}
-
-function findLastByToolCallId(timeline, toolCallId) {
-  if (!toolCallId) return null;
-  for (let i = timeline.length - 1; i >= 0; i -= 1) {
-    const item = timeline[i];
-    if (item.type === 'tool_call' && item.toolCallId === toolCallId) return item;
   }
   return null;
 }
@@ -516,13 +516,105 @@ function mergeThinkingChunk(timeline, payload, dedupeScope) {
   return next;
 }
 
+function findToolCallLocation(timeline, toolCallId, prefix = []) {
+  if (!toolCallId) return null;
+  for (let index = 0; index < timeline.length; index += 1) {
+    const item = timeline[index];
+    if (item?.type !== 'tool_call') continue;
+    const path = [...prefix, index];
+    if (item.toolCallId === toolCallId) return path;
+    const childPath = findToolCallLocation(item.children || [], toolCallId, path.concat('children'));
+    if (childPath) return childPath;
+  }
+  return null;
+}
+
+function updateToolAtPath(timeline, path, updater) {
+  if (!path?.length) return timeline;
+  const [index, ...rest] = path;
+  const next = timeline.slice();
+  const item = next[index];
+  if (!item) return timeline;
+  if (rest[0] === 'children') {
+    next[index] = {
+      ...item,
+      children: updateToolAtPath(item.children || [], rest.slice(1), updater),
+    };
+    return next;
+  }
+  next[index] = updater(item);
+  return next;
+}
+
+function findToolByPath(timeline, path) {
+  let list = timeline;
+  let item = null;
+  for (const part of path || []) {
+    if (part === 'children') {
+      list = item?.children || [];
+      continue;
+    }
+    item = list?.[part] || null;
+  }
+  return item;
+}
+
+function attachChildTool(timeline, child) {
+  const parentId = child?.parentToolCallId;
+  if (!parentId || !child?.toolCallId || parentId === child.toolCallId) return timeline;
+  const parentPath = findToolCallLocation(timeline, parentId);
+  const childPath = findToolCallLocation(timeline, child.toolCallId);
+  if (!parentPath || !childPath || childPath.length !== 1) return timeline;
+  const parent = findToolByPath(timeline, parentPath);
+  const childItem = findToolByPath(timeline, childPath);
+  if (!parent || !childItem) return timeline;
+  const children = (parent.children || []).filter((item) => item?.toolCallId !== child.toolCallId);
+  const withoutChild = timeline.filter((_, index) => index !== childPath[0]);
+  const adjustedParentPath = parentPath[0] > childPath[0]
+    ? [parentPath[0] - 1, ...parentPath.slice(1)]
+    : parentPath;
+  return updateToolAtPath(withoutChild, adjustedParentPath, (current) => ({
+    ...current,
+    children: [...children, childItem],
+  }));
+}
+
+function attachChildTools(timeline) {
+  let next = timeline;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const child of next) {
+      if (!child?.parentToolCallId || child.type !== 'tool_call') continue;
+      const attached = attachChildTool(next, child);
+      if (attached !== next) {
+        next = attached;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return next;
+}
+
 function mergeToolCall(timeline, payload, isUpdate = false) {
   const next = closeThinkingStream(timeline);
   const toolCallId = payload?.toolCallId || null;
-  const target = findLastByToolCallId(next, toolCallId);
-  if (target) {
-    const index = next.lastIndexOf(target);
-    next[index] = {
+  const subagent = subagentMetadata(payload);
+  const parentToolCallId = subagent?.parentToolCallId || payload?._meta?.['codebuddy.ai/parentToolCallId'] || null;
+  const targetPath = findToolCallLocation(next, toolCallId);
+  const metadataPatch = subagent
+    ? {
+        isSubAgent: subagent.isSubagent,
+        subagentType: subagent.subagentType,
+        description: subagent.description || null,
+        isBackground: subagent.isBackground,
+        memberName: subagent.memberName,
+        parentToolCallId,
+      }
+    : {};
+  if (targetPath) {
+    const updatedTimeline = updateToolAtPath(next, targetPath, (target) => ({
       ...target,
       status: payload?.status || target.status,
       title: payload?.title || target.title,
@@ -533,27 +625,39 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
       locations: payload?.locations ?? target.locations,
       meta: { ...(target.meta || {}), ...(payload || {}) },
       raw: payload,
-    };
-    return next;
+      ...metadataPatch,
+    }));
+    return attachChildTools(updatedTimeline);
   }
-  next.push(
-    createTimelineEntry({
-      type: 'tool_call',
-      role: 'assistant',
-      raw: payload,
-      meta: payload,
-      messageId: payload?.messageId || null,
-      toolCallId,
-      status: payload?.status || (isUpdate ? 'update' : 'created'),
-      title: payload?.title || null,
-      kind: payload?.kind || null,
-      content: getText(payload?.content),
-      rawInput: payload?.rawInput || null,
-      rawOutput: payload?.rawOutput || null,
-      locations: payload?.locations || null,
-    }),
-  );
-  return next;
+  const entry = createTimelineEntry({
+    type: 'tool_call',
+    role: 'assistant',
+    raw: payload,
+    meta: payload,
+    messageId: payload?.messageId || null,
+    toolCallId,
+    status: payload?.status || (isUpdate ? 'update' : 'created'),
+    title: payload?.title || null,
+    kind: payload?.kind || null,
+    content: getText(payload?.content),
+    rawInput: payload?.rawInput || null,
+    rawOutput: payload?.rawOutput || null,
+    locations: payload?.locations || null,
+    ...metadataPatch,
+  });
+  next.push(entry);
+  return attachChildTools(next);
+}
+
+
+export function mergeMemberTimeline(memberHistories, memberName, eventType, payload, dedupeScope) {
+  const key = String(memberName || '').trim();
+  if (!key) return memberHistories || {};
+  const current = Array.isArray(memberHistories?.[key]) ? memberHistories[key] : [];
+  return {
+    ...(memberHistories || {}),
+    [key]: reduceAcpEvent(current, eventType, payload, `${dedupeScope || 'global'}:member:${key}`).slice(-300),
+  };
 }
 
 // context is accepted for call-site compatibility (e.g. tests); thinking duration no longer uses it.

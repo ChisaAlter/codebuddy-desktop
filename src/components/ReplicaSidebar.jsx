@@ -49,7 +49,6 @@ function accountAvatarGlyph(label) {
 /** Identity card: avatar + ID, full CLI/Desktop versions; click opens account popover. */
 export function SidebarAccountFooter({
   collapsed = false,
-  info = null,
   connectionState = 'disconnected',
 }) {
   const t = useSidebarTranslate();
@@ -521,7 +520,6 @@ export default function ReplicaSidebar() {
     route,
     setRoute,
     sidebarCollapsed,
-    info,
     connectionState,
     newSession,
     newSessionBusy,
@@ -551,7 +549,6 @@ export default function ReplicaSidebar() {
       route: state.route,
       setRoute: state.setRoute,
       sidebarCollapsed: state.sidebarCollapsed,
-      info: state.info,
       connectionState: state.connectionState,
       newSession: state.newSession,
       newSessionBusy: state.newSessionBusy,
@@ -954,7 +951,6 @@ export default function ReplicaSidebar() {
         <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
         <SidebarAccountFooter
           collapsed={sidebarCollapsed}
-          info={info}
           connectionState={connectionState}
         />
       </div>

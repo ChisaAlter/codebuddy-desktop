@@ -69,6 +69,123 @@ describe('store conversation event routing', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
   });
 
+  it('stores workflow metadata on the thread and clears the team snapshot at terminal status', () => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-workflow',
+      promptDispatched: true,
+      isAwaitingResponse: true,
+    });
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'session_info_update',
+          _meta: {
+            'codebuddy.ai/teamUpdate': {
+              name: '探索工作流',
+              members: [{ id: 'agent-1', name: '主进程', status: 'running' }],
+            },
+            'codebuddy.ai/agentPhase': { phase: 'planning', startedAt: 1000 },
+            'codebuddy.ai/progress': { current: 1, total: 6 },
+          },
+        },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
+      teamState: { name: '探索工作流' },
+      agentPhase: { phase: 'planning' },
+      progress: { current: 1, total: 6 },
+    });
+
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: { sessionUpdate: 'status_change', status: 'idle' },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
+      teamState: null,
+      agentPhase: null,
+      progress: null,
+    });
+  });
+
+  it('routes memberEvent chunks to member history without duplicating leader timeline', () => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-members',
+      isAwaitingResponse: true,
+      teamState: {
+        type: 'team_created',
+        teamName: '探索团队',
+        members: [{ name: '主进程', taskId: 'task-main', status: 'running' }],
+      },
+    });
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'member-message-1',
+          content: '主进程已完成目录扫描',
+          _meta: { 'codebuddy.ai/memberEvent': '主进程' },
+        },
+      },
+    });
+
+    const state = useStore.getState().threadRuntimeById['thread-1'];
+    expect(state.memberHistoriesByName['主进程'][0]).toMatchObject({
+      type: 'message',
+      content: '主进程已完成目录扫描',
+    });
+    expect(state.timeline).toEqual([]);
+  });
+
+  it('keeps a final team snapshot after team_deleted and terminal status', () => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-team-final',
+      isAwaitingResponse: true,
+      teamState: {
+        type: 'team_created',
+        teamName: '探索团队',
+        members: [{ name: '主进程', taskId: 'task-main', status: 'running' }],
+      },
+    });
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'session_info_update',
+          _meta: { 'codebuddy.ai/teamUpdate': { type: 'team_deleted' } },
+        },
+      },
+    });
+
+    const state = useStore.getState().threadRuntimeById['thread-1'];
+    expect(state.teamState).toBeNull();
+    expect(state.lastTeamState).toMatchObject({
+      teamName: '探索团队',
+      active: false,
+      status: 'completed',
+      members: [{ name: '主进程', status: 'completed' }],
+    });
+  });
+
+  it('mirrors prompt dispatch in-flight state for the active thread', () => {
+    useStore.getState().patchThreadRuntime('thread-1', { promptDispatchInFlight: true });
+    expect(useStore.getState().promptDispatchInFlight).toBe(true);
+    useStore.getState().patchThreadRuntime('thread-1', { promptDispatchInFlight: false });
+    expect(useStore.getState().promptDispatchInFlight).toBe(false);
+  });
   it('keeps thought chunks streaming after the initial response wait ends', () => {
     useStore.getState().patchThreadRuntime('thread-1', { isAwaitingResponse: true });
 
