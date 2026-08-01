@@ -3,7 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_MAX = 32;
+// M-mr6: keep the persisted cap identical to the runtime cap enforced in
+// host.cjs `_pairDevice` (64), otherwise devices 33-64 are silently dropped on
+// restart with no way to revoke them from the UI.
+const DEFAULT_MAX = 64;
 
 function devicesPath(userDataPath) {
   return path.join(userDataPath, 'mobile-remote-devices.json');

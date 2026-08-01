@@ -58,6 +58,11 @@ class MobileRemoteHost {
     this._protocol = null;
     this._transport = null;
     this._bridge = null;
+    // S3: single-flight for start() and a generation counter so a stop() that
+    // runs while start() is still connecting forces the late transport down.
+    this._startPromise = null;
+    this._startGeneration = null;
+    this._generation = 0;
     this._status = {
       running: false,
       relayConnected: false,
@@ -78,18 +83,25 @@ class MobileRemoteHost {
 
   async ensureMaterial() {
     await this._loadPackages();
+    let changed = false;
     if (!this.state.material) {
       this.state.material = this._crypto.generateHostKeyMaterial();
-      // H9: derive serverId from the relay-auth public key so it is bound to the
-      // host's keypair. An attacker using their own keypair gets a different
-      // serverId and cannot pre-emptively squat the legitimate host's serverId at
-      // the relay. Existing material keeps its already-issued random serverId for
-      // backward compatibility (no forced re-pair of already-paired devices).
-      const relayAuthPub = this.state.material.relayAuth.publicKeyB64;
-      this.state.serverId =
-        this.state.serverId || this._crypto.deriveServerId(relayAuthPub);
-      saveKeyState(this.userDataPath, this.state);
+      changed = true;
     }
+    // H9: serverId is derived from the relay-auth public key so it is bound to
+    // the host's keypair. The relay rejects any signed connection whose serverId
+    // does not derive from the presented public key, so an attacker using their
+    // own keypair gets a different serverId and cannot pre-emptively squat the
+    // legitimate host's serverId. Legacy random serverIds are migrated here
+    // (mobile-remote never shipped with the old format, so no forced re-pair).
+    const relayAuthPub = this.state.material.relayAuth.publicKeyB64;
+    const derived = this._crypto.deriveServerId(relayAuthPub);
+    if (this.state.serverId !== derived) {
+      if (this.state.serverId) this.log('migrating serverId to key-derived id (relay requires binding)');
+      this.state.serverId = derived;
+      changed = true;
+    }
+    if (changed) saveKeyState(this.userDataPath, this.state);
     this._status.serverId = this.state.serverId;
     return this.state;
   }
@@ -177,8 +189,38 @@ class MobileRemoteHost {
 
   /**
    * Build the bridge + transport and connect to the relay.
+   * S3: single-flight — two concurrent start() calls (e.g. `mobileRemote:start`
+   * IPC racing `mobileRemote:setConfig` with enabled=true) share one in-flight
+   * promise instead of each spawning a transport, and a stop() that lands while
+   * start() is still connecting is honored by _startInner's generation check.
    */
   async start() {
+    if (this._startPromise) {
+      // S3b: a stop() that landed since the in-flight start began means that
+      // promise will tear down its late transport and resolve with
+      // running=false. Returning it would silently lose THIS start request
+      // (user toggles enable on, nothing connects). Wait for the old work to
+      // settle, then start fresh with the current generation.
+      if (this._startGeneration !== this._generation) {
+        await this._startPromise.catch(() => {});
+        this._startPromise = null;
+        return this.start();
+      }
+      return this._startPromise;
+    }
+    const generation = this._generation;
+    this._startGeneration = generation;
+    const work = this._startInner(generation).finally(() => {
+      if (this._startPromise === work) {
+        this._startPromise = null;
+        this._startGeneration = null;
+      }
+    });
+    this._startPromise = work;
+    return work;
+  }
+
+  async _startInner(generation) {
     await this.ensureMaterial();
     const cfg = this.getConfig();
     if (!cfg.enabled) {
@@ -286,28 +328,49 @@ class MobileRemoteHost {
     });
 
     this._status.relayConnected = Boolean(this._transport?.getStats?.()?.controlOnline);
+    // S3: stop() ran while start() was connecting — the switch is off, so tear
+    // down the freshly connected transport instead of leaving it online.
+    if (this._generation !== generation) {
+      await this._transport.stop().catch(() => {});
+      this._transport = null;
+      this._status.running = false;
+      this._status.relayConnected = false;
+    }
     return this.getStatus();
   }
 
   async stop() {
+    // S3: bump the generation first so any start() still in flight tears down
+    // its late transport (see _startInner), then drop per-connection auth state
+    // so stale sockets cannot act authenticated after the stop.
+    this._generation += 1;
     this._status.running = false;
     this._status.relayConnected = false;
     this._status.clientCount = 0;
-    if (this._transport) {
-      await this._transport.stop().catch(() => {});
-      this._transport = null;
+    this.authenticatedConnections.clear();
+    this.connectionDeviceMap.clear();
+    const transport = this._transport;
+    this._transport = null;
+    if (transport) {
+      await transport.stop().catch(() => {});
     }
     this._status.lastError = null;
     return this.getStatus();
   }
 
   /**
-   * Broadcast a message to all connected, E2EE-ready clients.
+   * Broadcast a message to all connected clients that have passed device-auth.
+   * S2: the E2EE handshake alone (public QR key) must not grant access to task
+   * notifications — only connections that completed `device_auth` receive them.
    * @param {object} message
    */
   broadcast(message) {
     if (!this._transport) return;
-    try { this._transport.broadcast(message); } catch (_) {}
+    try {
+      this._transport.broadcast(message, (connectionId) =>
+        this.authenticatedConnections.has(connectionId),
+      );
+    } catch (_) {}
   }
 
   listDevices() {
@@ -340,11 +403,18 @@ class MobileRemoteHost {
     try { pub = this._crypto.importDevicePublicKey(device.publicKeyB64); } catch (_) {
       return { ok: false, error: 'invalid stored device public key' };
     }
-    const valid = this._crypto.verifyDeviceAuth(
-      { serverId: this.state.serverId, deviceId, connectionId, issuedAt: Number(issuedAt) },
-      signedChallenge,
-      pub,
-    );
+    let valid = false;
+    try {
+      valid = this._crypto.verifyDeviceAuth(
+        { serverId: this.state.serverId, deviceId, connectionId, issuedAt: Number(issuedAt) },
+        signedChallenge,
+        pub,
+      );
+    } catch (_) {
+      // Malformed (non-base64) signature from a hostile client must be a clean
+      // auth failure, not an exception that escapes the dispatch.
+      return { ok: false, error: 'auth_failed' };
+    }
     if (!valid) return { ok: false, error: 'auth_failed' };
     this.authenticatedConnections.add(connectionId);
     this.connectionDeviceMap.set(connectionId, deviceId);
@@ -368,12 +438,6 @@ class MobileRemoteHost {
     if (!publicKeyB64 || !connectionId) {
       return { ok: false, error: 'missing publicKey or connectionId' };
     }
-    // When devices already exist, a pairing token is required to authorize a new
-    // device (prevents a stolen QR from auto-pairing). The first device pairs free.
-    const requiresToken = this.devices.length > 0;
-    if (requiresToken && !this._consumePairingToken(pairingToken)) {
-      return { ok: false, error: 'invalid or expired pairing token' };
-    }
     let pub;
     let deviceId;
     try {
@@ -394,12 +458,26 @@ class MobileRemoteHost {
       if (!Number.isFinite(issuedAt) || skew > 60 * 1000) {
         return { ok: false, error: 'issuedAt out of range' };
       }
-      const valid = this._crypto.verifyDeviceAuth(
-        { serverId: this.state.serverId, deviceId, connectionId, issuedAt: Number(issuedAt) },
-        signedChallenge,
-        pub,
-      );
+      let valid = false;
+      try {
+        valid = this._crypto.verifyDeviceAuth(
+          { serverId: this.state.serverId, deviceId, connectionId, issuedAt: Number(issuedAt) },
+          signedChallenge,
+          pub,
+        );
+      } catch (_) {
+        // Malformed (non-base64) signature must fail cleanly, not throw.
+        return { ok: false, error: 'pair signature verification failed' };
+      }
       if (!valid) return { ok: false, error: 'pair signature verification failed' };
+    }
+    // When devices already exist, a pairing token is required to authorize a new
+    // device (prevents a stolen QR from auto-pairing). The first device pairs free.
+    // M-mr3: consume the token only AFTER the signature verified, so a token
+    // holder without the device secret key cannot burn the one-time token.
+    const requiresToken = this.devices.length > 0;
+    if (requiresToken && !this._consumePairingToken(pairingToken)) {
+      return { ok: false, error: 'invalid or expired pairing token' };
     }
     const now = Date.now();
     const existing = this.devices.find((d) => d.deviceId === deviceId);

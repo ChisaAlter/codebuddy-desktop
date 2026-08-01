@@ -54,7 +54,8 @@ describe('Host transport.cjs + bridge echo via relay', () => {
     try {
       const hostE2ee = crypto.generateKeyPair();
       const hostAuth = crypto.generateRelayAuthKeyPair();
-      const serverId = 'srv_host_transport_test';
+      // H9: relay requires the serverId to be derived from the relay-auth key.
+      const serverId = crypto.deriveServerId(crypto.exportRelayAuthPublicKey(hostAuth.publicKey));
 
       let receivedOp = null;
       const transport = await startHostRelayTransport({
@@ -187,7 +188,8 @@ describe('Host transport.cjs + bridge echo via relay', () => {
     try {
       const hostE2ee = crypto.generateKeyPair();
       const hostAuth = crypto.generateRelayAuthKeyPair();
-      const serverId = 'srv_device_pair_e2e';
+      // H9: relay requires the serverId to be derived from the relay-auth key.
+      const serverId = crypto.deriveServerId(crypto.exportRelayAuthPublicKey(hostAuth.publicKey));
 
       // Host bridge with a real pairDevice dep that verifies the client signature
       // and stores the device (empty trust store → first device pairs free).

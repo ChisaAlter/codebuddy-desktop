@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 /**
  * Minimal CJS key store for Desktop Host until packages are loaded via dynamic import.
@@ -33,9 +32,11 @@ function loadOrCreateKeyState(userDataPath) {
     /* recreate */
   }
 
-  // Placeholder material — real NaCl keys generated asynchronously via ensureCryptoMaterial
+  // Placeholder material — real NaCl keys generated asynchronously via ensureCryptoMaterial.
+  // serverId is intentionally null: it is derived from the relay-auth public key in
+  // ensureMaterial() (H9) so the id is cryptographically bound to the host keypair.
   const state = {
-    serverId: `srv_${crypto.randomBytes(16).toString('base64url')}`,
+    serverId: null,
     material: null,
     createdAt: new Date().toISOString(),
   };

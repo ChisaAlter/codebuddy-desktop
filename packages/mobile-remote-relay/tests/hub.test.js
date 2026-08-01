@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import {
+  deriveServerId,
   generateRelayAuthKeyPair,
   exportRelayAuthPublicKey,
   signRelayServerAuth,
@@ -39,13 +40,15 @@ describe('SessionHub auth', () => {
     assert.equal(ws.closed?.code, 1008);
   });
 
-  it('accepts signed server and bridges client frames', () => {
+  it('accepts signed server and rejects client_frame forwarding to control', () => {
     const kp = generateRelayAuthKeyPair();
     const pub = exportRelayAuthPublicKey(kp.publicKey);
     const issuedAt = Date.now();
     const nonce = 'nonce-abc';
+    // H9: serverId must be derived from the relay-auth public key.
+    const serverId = deriveServerId(pub);
     const fields = {
-      serverId: 'srv_1',
+      serverId,
       role: 'server',
       connectionId: '',
       nonce,
@@ -56,7 +59,7 @@ describe('SessionHub auth', () => {
     const hub = new SessionHub({ allowUnsignedServer: false });
     const serverWs = new FakeSocket();
     const serverQ = new URLSearchParams({
-      serverId: 'srv_1',
+      serverId,
       role: 'server',
       relayAuthNonce: nonce,
       relayAuthIssuedAt: String(issuedAt),
@@ -71,7 +74,7 @@ describe('SessionHub auth', () => {
     // server-side UUID. Capture the assigned id from the 'connected' control message.
     hub.attach(
       clientWs,
-      new URLSearchParams({ serverId: 'srv_1', role: 'client', connectionId: 'c1' }),
+      new URLSearchParams({ serverId, role: 'client', connectionId: 'c1' }),
     );
 
     const connected = serverWs.sent.map((s) => JSON.parse(String(s)));
@@ -81,12 +84,14 @@ describe('SessionHub auth', () => {
     // The client-supplied 'c1' must NOT be used (prevents squat/eviction).
     assert.notEqual(connectionId, 'c1');
 
+    // S4: client frames are buffered for the data socket and must NOT be
+    // forwarded to the control socket (a large frame would kill the control
+    // connection and disconnect every client).
     clientWs.emit('message', 'hello-from-client', false);
     const fromClient = serverWs.sent.map((s) => JSON.parse(String(s)));
     assert.ok(
-      fromClient.some(
-        (m) => m.type === 'client_frame' && m.connectionId === connectionId && m.payload === 'hello-from-client',
-      ),
+      !fromClient.some((m) => m.type === 'client_frame'),
+      'client frames must not be forwarded to the control socket',
     );
 
     serverWs.emit(
@@ -97,14 +102,44 @@ describe('SessionHub auth', () => {
     assert.ok(clientWs.sent.includes('hello-from-host'));
   });
 
+  it('rejects a signed server whose serverId is not derived from its key', () => {
+    const kp = generateRelayAuthKeyPair();
+    const pub = exportRelayAuthPublicKey(kp.publicKey);
+    const issuedAt = Date.now();
+    const nonce = 'nonce-squat';
+    // Attacker claims a serverId that is NOT derived from their own keypair
+    // (e.g. the victim's serverId seen in a QR offer).
+    const foreignServerId = 'srv_attacker_claims_victim_id';
+    const sig = signRelayServerAuth(
+      { serverId: foreignServerId, role: 'server', connectionId: '', nonce, issuedAt },
+      kp.secretKey,
+    );
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const ws = new FakeSocket();
+    hub.attach(
+      ws,
+      new URLSearchParams({
+        serverId: foreignServerId,
+        role: 'server',
+        relayAuthNonce: nonce,
+        relayAuthIssuedAt: String(issuedAt),
+        relayAuthSig: sig,
+        relayAuthPublicKeyB64: pub,
+      }),
+    );
+    assert.equal(ws.closed?.code, 1008);
+    assert.match(String(ws.closed?.reason || ''), /serverId/);
+  });
+
   it('data socket bridges client frames raw and flushes pending', () => {
     const kp = generateRelayAuthKeyPair();
     const pub = exportRelayAuthPublicKey(kp.publicKey);
     const issuedAt = Date.now();
     const nonce = 'nonce-data-1';
+    const serverId = deriveServerId(pub);
     // Control socket signs with empty connectionId (no connectionId query param).
     const ctrlSig = signRelayServerAuth(
-      { serverId: 'srv_2', role: 'server', connectionId: '', nonce, issuedAt },
+      { serverId, role: 'server', connectionId: '', nonce, issuedAt },
       kp.secretKey,
     );
 
@@ -113,7 +148,7 @@ describe('SessionHub auth', () => {
     hub.attach(
       serverCtrl,
       new URLSearchParams({
-        serverId: 'srv_2',
+        serverId,
         role: 'server',
         relayAuthNonce: nonce,
         relayAuthIssuedAt: String(issuedAt),
@@ -125,7 +160,7 @@ describe('SessionHub auth', () => {
     const clientWs = new FakeSocket();
     hub.attach(
       clientWs,
-      new URLSearchParams({ serverId: 'srv_2', role: 'client', connectionId: 'c-d' }),
+      new URLSearchParams({ serverId, role: 'client', connectionId: 'c-d' }),
     );
     // H11: capture the relay-assigned connectionId from the 'connected' message.
     const connectedMsg = serverCtrl.sent
@@ -135,24 +170,24 @@ describe('SessionHub auth', () => {
     const connectionId = connectedMsg.connectionId;
     assert.notEqual(connectionId, 'c-d');
 
-    // Client sends a frame before data socket opens -> buffered + forwarded to control
+    // Client sends a frame before data socket opens -> buffered for the data
+    // socket; S4: it must NOT be forwarded to the control socket.
     clientWs.emit('message', 'pre-data-hello', false);
     assert.ok(
-      serverCtrl.sent.map((s) => JSON.parse(String(s))).some(
-        (m) => m.type === 'client_frame' && m.payload === 'pre-data-hello',
-      ),
+      !serverCtrl.sent.map((s) => JSON.parse(String(s))).some((m) => m.type === 'client_frame'),
+      'client frames must not be forwarded to the control socket',
     );
 
     // Host opens data socket using the relay-assigned connectionId
     const dataSig = signRelayServerAuth(
-      { serverId: 'srv_2', role: 'server', connectionId, nonce: 'nonce-data-2', issuedAt },
+      { serverId, role: 'server', connectionId, nonce: 'nonce-data-2', issuedAt },
       kp.secretKey,
     );
     const dataWs = new FakeSocket();
     hub.attach(
       dataWs,
       new URLSearchParams({
-        serverId: 'srv_2',
+        serverId,
         role: 'server',
         connectionId,
         relayAuthNonce: 'nonce-data-2',
@@ -188,19 +223,20 @@ describe('SessionHub auth', () => {
     const pub = exportRelayAuthPublicKey(kp.publicKey);
     const issuedAt = Date.now();
     const nonce = 'nonce-shared';
+    const serverId = deriveServerId(pub);
 
     const hub = new SessionHub({ allowUnsignedServer: false });
 
     // Attacker uses the same (public) serverId + nonce but a bogus signature.
     const bogusSig = signRelayServerAuth(
-      { serverId: 'srv_h8', role: 'server', connectionId: '', nonce: 'other', issuedAt },
+      { serverId, role: 'server', connectionId: '', nonce: 'other', issuedAt },
       kp.secretKey,
     );
     const bogusWs = new FakeSocket();
     hub.attach(
       bogusWs,
       new URLSearchParams({
-        serverId: 'srv_h8',
+        serverId,
         role: 'server',
         relayAuthNonce: nonce,
         relayAuthIssuedAt: String(issuedAt),
@@ -212,14 +248,14 @@ describe('SessionHub auth', () => {
 
     // The legitimate host signs correctly with the same nonce and must succeed.
     const goodSig = signRelayServerAuth(
-      { serverId: 'srv_h8', role: 'server', connectionId: '', nonce, issuedAt },
+      { serverId, role: 'server', connectionId: '', nonce, issuedAt },
       kp.secretKey,
     );
     const goodWs = new FakeSocket();
     hub.attach(
       goodWs,
       new URLSearchParams({
-        serverId: 'srv_h8',
+        serverId,
         role: 'server',
         relayAuthNonce: nonce,
         relayAuthIssuedAt: String(issuedAt),

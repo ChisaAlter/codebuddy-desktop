@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  deriveServerId,
   importRelayAuthPublicKey,
   verifyRelayServerAuth,
 } from '@codebuddy/mobile-remote-crypto';
@@ -195,6 +196,13 @@ export class SessionHub {
     // Signature verified — now it is safe to bind the session and consume the
     // nonce. Creating the session here (rather than on every attempt) closes the
     // "random serverId spam → MAX_SESSIONS exhaustion" DoS.
+    // H9: the serverId must be derived from the presented relay-auth public key
+    // (deriveServerId). Without this, an attacker who sees a victim's serverId
+    // in a QR offer could connect first with their own keypair and squat it —
+    // the legitimate host would then be locked out with "key mismatch".
+    if (deriveServerId(pub) !== serverId) {
+      return { ok: false, reason: 'serverId does not match relay-auth key' };
+    }
     const session = this.getOrCreate(serverId);
     if (!session) return { ok: false, reason: 'relay full' };
     if (!this.consumeNonce(serverId, nonce)) return { ok: false, reason: 'nonce replay' };
@@ -373,12 +381,12 @@ export class SessionHub {
         this.log('pending overflow', serverId, connectionId);
       }
       clientState.pending.push(text);
-      // Also forward to control as client_frame (host ignores on control, but
-      // keeps the option open for single-socket hosts).
-      this.#safeSend(
-        s.server,
-        JSON.stringify({ type: 'client_frame', connectionId, payload: text }),
-      );
+      // S4: do NOT forward client frames to the control socket. The host's
+      // control socket has a lower/equal maxPayload and a single oversized frame
+      // would drop the control connection — which tears down every client's data
+      // socket (a global disconnect switch for any client's large frame). Frames
+      // only reach the host via the per-client data socket, which the relay
+      // rewires above when it opens.
     });
 
     ws.on('close', () => {

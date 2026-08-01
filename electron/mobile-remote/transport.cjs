@@ -7,8 +7,9 @@
  * Wire protocol with relay (see packages/mobile-remote-relay/session-hub.js):
  *   - Host control socket: receives { type: 'connected'|'disconnected', connectionId }
  *   - For each connected client, host opens data socket with connectionId,
- *     receives client text frames as { type:'client_frame', connectionId, payload },
- *     sends to client via { type:'server_frame', connectionId, payload }.
+ *     receives client text frames as raw payload (S4: the relay no longer
+ *     forwards client_frame to the control socket), sends to client via
+ *     { type:'server_frame', connectionId, payload }.
  *   - payload is the E2EE base64 bundle (or pre-handshake plaintext JSON).
  */
 
@@ -144,8 +145,8 @@ async function startHostRelayTransport(args) {
 
     ws.on('message', async (data, isBinary) => {
       if (isBinary) return;
-      // Relay forwards client frames to the host data socket as raw payload
-      // (the relay only wraps client_frame when routing to the control socket).
+      // S4: the relay forwards client frames to the host data socket as raw
+      // payload (client_frame routing to the control socket was removed).
       const text = typeof data === 'string' ? data : data.toString('utf8');
       await handleClientFrame(session, text);
     });
@@ -253,12 +254,26 @@ async function startHostRelayTransport(args) {
     const ws = new WebSocket(url, {
       handshakeTimeout: 8000,
       perMessageDeflate: false,
-      maxPayload: 1 * 1024 * 1024,
+      // S4: keep the control socket cap aligned with the relay (16MB). The
+      // relay no longer forwards client frames to the control socket, but a
+      // mismatched smaller cap would still turn any large inbound frame into a
+      // full control disconnect (which drops every client's data socket).
+      maxPayload: 16 * 1024 * 1024,
     });
     controlWs = ws;
 
     await new Promise((resolve, reject) => {
-      const onOpen = () => { cleanup(); resolve(); };
+      const onOpen = () => {
+        cleanup();
+        // S3: stop() may have closed this socket while it was still connecting;
+        // do not register the control handlers or ping timer for a dead socket.
+        if (stopped) {
+          try { ws.close(); } catch (_) {}
+          reject(new Error('transport stopped'));
+          return;
+        }
+        resolve();
+      };
       const onError = (err) => { cleanup(); reject(err); };
       const cleanup = () => {
         ws.removeListener('open', onOpen);
@@ -336,8 +351,17 @@ async function startHostRelayTransport(args) {
   return {
     /** @param {ClientSession} session @param {object} message */
     sendToClient,
-    broadcast(message) {
-      for (const s of clients.values()) sendToClient(s, message);
+    /**
+     * @param {object} message
+     * @param {(connectionId: string) => boolean} [filterFn] optional per-client
+     *   gate (S2: host.cjs passes an authenticated-connections filter so E2EE-only
+     *   handshakes do not receive broadcasts).
+     */
+    broadcast(message, filterFn) {
+      for (const [connectionId, s] of clients) {
+        if (filterFn && !filterFn(connectionId)) continue;
+        sendToClient(s, message);
+      }
     },
     getStats() {
       return {
