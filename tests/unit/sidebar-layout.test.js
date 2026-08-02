@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   replicaSidebarFooterItems,
+  replicaSidebarGroupForRoute,
   replicaSidebarGroupInitiallyExpanded,
   replicaSidebarMainGroups,
   replicaSidebarWidthStyle,
@@ -43,20 +44,73 @@ describe('ReplicaSidebar layout', () => {
     expect(cssSource).toMatch(/prefers-reduced-motion:\s*reduce/);
   });
 
-  it('keeps the long workspace and observability groups folded by default', () => {
+  it('keeps WebUI groups and desktop extensions folded by default', () => {
     expect(replicaSidebarGroupInitiallyExpanded('primary')).toBe(true);
     expect(replicaSidebarGroupInitiallyExpanded('workspace')).toBe(false);
     expect(replicaSidebarGroupInitiallyExpanded('observability')).toBe(false);
+    expect(replicaSidebarGroupInitiallyExpanded('desktop-extensions')).toBe(false);
   });
 
-  it('moves settings and keybindings out of the scrolling navigation into the footer', () => {
+  it('keeps the primary navigation focused on remote control', () => {
+    const primary = replicaSidebarMainGroups().find((group) => group.id === 'primary');
+    expect(primary.items.map((item) => item.id)).toEqual(['remote-control']);
+  });
+
+  it('matches the WebUI workspace and observability navigation order', () => {
+    expect(replicaSidebarMainGroups().map((group) => group.id)).toEqual([
+      'primary',
+      'workspace',
+      'observability',
+      'desktop-extensions',
+    ]);
+    expect(replicaSidebarMainGroups().find((group) => group.id === 'workspace')).toMatchObject({
+      title: '工作区',
+      items: [
+        { id: 'tasks', label: '任务' },
+        { id: 'terminal', label: '终端' },
+        { id: 'canvas', label: '画布' },
+        { id: 'editor', label: '编辑器' },
+        { id: 'changes', label: '变更' },
+        { id: 'plugins', label: '插件' },
+      ],
+    });
+    expect(replicaSidebarMainGroups().find((group) => group.id === 'observability')).toMatchObject({
+      title: '可观测',
+      items: [
+        { id: 'stats', label: '统计' },
+        { id: 'traces', label: '链路' },
+        { id: 'metrics', label: '监控' },
+        { id: 'logs', label: '日志' },
+      ],
+    });
+  });
+
+  it('keeps GUI-only pages discoverable in the collapsed desktop extension group', () => {
+    const extensions = replicaSidebarMainGroups().find((group) => group.id === 'desktop-extensions');
+    expect(extensions).toMatchObject({
+      title: '桌面扩展',
+      items: [
+        { id: 'archived', label: '已归档' },
+        { id: 'instances', label: '实例列表' },
+        { id: 'skills', label: '技能' },
+        { id: 'agents', label: 'Agents' },
+        { id: 'mcp', label: 'MCP' },
+        { id: 'sandboxes', label: 'Sandboxes' },
+        { id: 'workers', label: 'Agent 实例管理' },
+      ],
+    });
+    expect(replicaSidebarGroupForRoute('monitor')).toBeNull();
+    expect(replicaSidebarGroupForRoute('metrics')).toBe('observability');
+  });
+
+  it('keeps the settings footer in WebUI order', () => {
     expect(replicaSidebarMainGroups().map((group) => group.id)).not.toContain('preferences');
-    // models page removed from footer — custom models live under Settings → 模型选择
-    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['docs', 'settings', 'keybindings']);
+    // Models live under Settings → 模型选择; the legacy models route remains compatible.
+    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['settings', 'keybindings', 'docs']);
   });
 
   it('omits the redundant chat button from primary navigation', () => {
     const primary = replicaSidebarMainGroups().find((group) => group.id === 'primary');
-    expect(primary.items.map((item) => item.id)).toEqual(['instances', 'remote-control']);
+    expect(primary.items.map((item) => item.id)).toEqual(['remote-control']);
   });
 });

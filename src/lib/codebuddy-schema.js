@@ -2,26 +2,18 @@ export const NAV_GROUPS = [
   {
     id: 'primary',
     title: 'Primary',
-    items: [
-      { id: 'instances', label: '实例列表' },
-      { id: 'remote-control', label: '远程控制' },
-    ],
+    items: [{ id: 'remote-control', label: '远程控制' }],
   },
   {
     id: 'workspace',
     title: '工作区',
     items: [
       { id: 'tasks', label: '任务' },
-      { id: 'archived', label: '已归档' },
       { id: 'terminal', label: '终端' },
-      { id: 'editor', label: '代码编辑器' },
+      { id: 'canvas', label: '画布' },
+      { id: 'editor', label: '编辑器' },
       { id: 'changes', label: '变更' },
-      { id: 'canvas', label: '无限画布' },
       { id: 'plugins', label: '插件' },
-      { id: 'skills', label: '技能' },
-      { id: 'agents', label: 'Agents' },
-      { id: 'mcp', label: 'MCP' },
-      { id: 'sandboxes', label: 'Sandboxes' },
     ],
   },
   {
@@ -29,10 +21,21 @@ export const NAV_GROUPS = [
     title: '可观测',
     items: [
       { id: 'stats', label: '统计' },
-      { id: 'traces', label: '链路追踪' },
-      { id: 'monitor', label: '监控' },
-      { id: 'metrics', label: '系统监控' },
-      { id: 'logs', label: '日志查看器' },
+      { id: 'traces', label: '链路' },
+      { id: 'metrics', label: '监控' },
+      { id: 'logs', label: '日志' },
+    ],
+  },
+  {
+    id: 'desktop-extensions',
+    title: '桌面扩展',
+    items: [
+      { id: 'archived', label: '已归档' },
+      { id: 'instances', label: '实例列表' },
+      { id: 'skills', label: '技能' },
+      { id: 'agents', label: 'Agents' },
+      { id: 'mcp', label: 'MCP' },
+      { id: 'sandboxes', label: 'Sandboxes' },
       { id: 'workers', label: 'Agent 实例管理' },
     ],
   },
@@ -40,10 +43,9 @@ export const NAV_GROUPS = [
     id: 'preferences',
     title: '配置',
     items: [
-      { id: 'docs', label: '文档中心' },
-      // 自定义模型入口已并入设置页「模型选择」；不再在侧栏底部放独立「模型」页
       { id: 'settings', label: '设置' },
       { id: 'keybindings', label: '快捷键' },
+      { id: 'docs', label: '文档' },
     ],
   },
 ];

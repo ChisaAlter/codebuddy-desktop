@@ -3423,7 +3423,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('defines route coverage as route-specific visible controls rather than generic text length', () => {
-    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(21);
+    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(20);
     for (const route of driver.ROUTE_EXPECTATIONS) {
       expect(route).toMatchObject({
         route: expect.any(String),
@@ -3435,15 +3435,24 @@ describe('desktop E2E harness public contract', () => {
     }
     expect(new Set(driver.ROUTE_EXPECTATIONS.map((route) => route.route))).toEqual(new Set([
       'chat', 'instances', 'remote-control', 'tasks', 'archived', 'terminal', 'editor', 'changes',
-      'plugins', 'skills', 'agents', 'mcp', 'sandboxes', 'stats', 'traces', 'monitor', 'metrics', 'logs', 'workers',
+      'plugins', 'skills', 'agents', 'mcp', 'sandboxes', 'stats', 'traces', 'metrics', 'logs', 'workers',
       'settings', 'keybindings',
     ]));
     expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'models')).toBeUndefined();
-    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'instances')?.expected).toEqual({
-      role: 'button', name: '添加项目',
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'monitor')).toBeUndefined();
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'instances')).toMatchObject({
+      navLabel: '实例列表',
+      navGroup: '桌面扩展',
+      expected: { role: 'button', name: '添加项目' },
     });
-    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'workers')?.expected).toEqual({
-      role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...',
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'metrics')).toMatchObject({
+      navLabel: '监控',
+      navGroup: '可观测',
+    });
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'workers')).toMatchObject({
+      navLabel: 'Agent 实例管理',
+      navGroup: '桌面扩展',
+      expected: { role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...' },
     });
     expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'keybindings')?.expected).toEqual({
       role: 'textbox', name: '搜索快捷键、动作或上下文...',

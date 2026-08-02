@@ -430,11 +430,12 @@ function AuthLoadingView() {
 
 const ROUTE_TITLES = {
   chat: '对话',
-  instances: '实例',
+  instances: '实例列表',
   'remote-control': '远程控制',
   tasks: '任务',
   archived: '已归档',
   terminal: '终端',
+  canvas: '画布',
   editor: '编辑器',
   changes: '变更',
   plugins: '插件',
@@ -450,8 +451,8 @@ const ROUTE_TITLES = {
   models: '模型',
   settings: '设置',
   keybindings: '快捷键',
-  workers: 'Workers',
-  metrics: '指标',
+  workers: 'Agent 实例管理',
+  metrics: '监控',
 };
 
 function StatusBar() {

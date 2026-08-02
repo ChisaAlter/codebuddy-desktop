@@ -508,6 +508,10 @@ export function replicaSidebarMainGroups() {
   return NAV_GROUPS.filter((group) => group.id !== 'preferences');
 }
 
+export function replicaSidebarGroupForRoute(route) {
+  return replicaSidebarMainGroups().find((group) => group.items.some((item) => item.id === route))?.id || null;
+}
+
 export function replicaSidebarFooterItems() {
   // Models live under Settings → 模型选择; keep footer free of the old 模型 entry.
   return (NAV_GROUPS.find((group) => group.id === 'preferences')?.items || []).filter(
@@ -588,6 +592,14 @@ export default function ReplicaSidebar() {
   );
   const scopeGenerationRef = React.useRef(0);
   const projectActionInFlightRef = React.useRef(null);
+
+  React.useEffect(() => {
+    const groupId = replicaSidebarGroupForRoute(route);
+    if (!groupId) return;
+    setExpandedNavGroups((current) =>
+      current[groupId] ? current : { ...current, [groupId]: true },
+    );
+  }, [route]);
 
   const openProjectDialog = (mode, project) => {
     if (projectNavigationBusy || projectActionInFlightRef.current) return;
