@@ -56,6 +56,107 @@ function MarkdownTable(props) {
   );
 }
 
+const MAX_MARKDOWN_RENDER_CHARS = 200000;
+const MAX_MARKDOWN_URL_LENGTH = 4096;
+const MARKDOWN_UPDATE_DELAY_MS = 120;
+
+function normalizeHttpUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > MAX_MARKDOWN_URL_LENGTH) return null;
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+    return parsed.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function isSafeDataImageUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 2 * 1024 * 1024) return null;
+  const match = raw.match(/^data:(image\/(?:png|jpe?g|gif|webp|avif));base64,([A-Za-z0-9+/=]+)$/i);
+  return match ? `data:${match[1].toLowerCase()};base64,${match[2]}` : null;
+}
+
+function normalizeImageUrl(value) {
+  return normalizeHttpUrl(value) || isSafeDataImageUrl(value);
+}
+
+function MarkdownLink({ href, children, ...props }) {
+  const openRightPanel = useStore((s) => s.openRightPanel);
+  const safeHref = normalizeHttpUrl(href);
+  if (!safeHref) return <span {...props}>{children}</span>;
+  return (
+    <a
+      {...props}
+      href={safeHref}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(event) => {
+        event.preventDefault();
+        openRightPanel?.('browser', { url: safeHref });
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function MarkdownRenderFallback({ text }) {
+  return (
+    <div className="rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3">
+      <div className="mb-2 text-xs text-[var(--color-text-muted)]">消息渲染失败，已切换为纯文本</div>
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-[var(--color-text-secondary)]">{text}</pre>
+    </div>
+  );
+}
+
+class MarkdownRenderBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? <MarkdownRenderFallback text={this.props.text} /> : this.props.children;
+  }
+}
+
+function MarkdownMessage({ text, streaming }) {
+  const [renderedText, setRenderedText] = useState(() => text);
+
+  useEffect(() => {
+    if (!streaming) {
+      setRenderedText(text);
+      return undefined;
+    }
+    const timer = setTimeout(() => setRenderedText(text), MARKDOWN_UPDATE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [text, streaming]);
+
+  if (text.length > MAX_MARKDOWN_RENDER_CHARS) {
+    return <MarkdownRenderFallback text={text} />;
+  }
+
+  return (
+    <MarkdownRenderBoundary text={renderedText}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        components={MARKDOWN_COMPONENTS}
+      >
+        {renderedText}
+      </ReactMarkdown>
+    </MarkdownRenderBoundary>
+  );
+}
+
+
 /** 切换 mode/model/effort 时 pill 文案 3D 翻转，不依赖 framer-motion */
 function FlipLabel({ value, className = '', special = false }) {
   return (
@@ -251,6 +352,8 @@ function MarkdownCode({ className, children, ...props }) {
 function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
   const t = useUiTranslate();
   const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const safeSrc = normalizeImageUrl(src);
   // M-rc7: focus management for the lightbox dialog — move focus into the dialog
   // on open and restore it to the triggering image on close, so keyboard users and
   // screen readers land inside the dialog instead of staying on the thumbnail.
@@ -289,28 +392,35 @@ function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
       ? 'max-w-full h-auto rounded-lg cursor-pointer hover:opacity-80 transition-opacity'
       : 'markdown-image cursor-pointer hover:opacity-90 transition-opacity');
 
+  if (!safeSrc || failed) {
+    return <span className="inline-block rounded border border-[var(--color-border-muted)] px-2 py-1 text-xs text-[var(--color-text-muted)]">图片不可用</span>;
+  }
+
   return (
     <>
       <img
         ref={triggerRef}
-        src={src}
+        src={safeSrc}
         alt={alt || ''}
         className={imgClass}
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailed(true)}
         style={style || (variant === 'user' ? { maxHeight: 360 } : undefined)}
-        title={src ? t('message.clickToEnlarge') : undefined}
+        title={safeSrc ? t('message.clickToEnlarge') : undefined}
         tabIndex={0}
         onClick={(event) => {
           event.preventDefault();
-          if (src) setOpen(true);
+          if (safeSrc) setOpen(true);
         }}
-        onKeyDown={(event) => {
-          if (src && (event.key === 'Enter' || event.key === ' ')) {
+          onKeyDown={(event) => {
+            if (safeSrc && (event.key === 'Enter' || event.key === ' ')) {
             event.preventDefault();
             setOpen(true);
           }
         }}
       />
-      {open && src ? (
+      {open && safeSrc ? (
         <div
           ref={dialogRef}
           tabIndex={-1}
@@ -321,7 +431,7 @@ function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
           aria-label={alt || t('message.clickToEnlarge')}
         >
           <img
-            src={src}
+            src={safeSrc}
             alt={alt || ''}
             className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
             onClick={(event) => event.stopPropagation()}
@@ -348,6 +458,7 @@ const MARKDOWN_COMPONENTS = {
   pre: MarkdownPre,
   code: MarkdownCode,
   table: MarkdownTable,
+  a: MarkdownLink,
   img: MarkdownImage,
 };
 
@@ -1862,9 +1973,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
             {/* WebUI: markdown-body text-chat text-text-primary */}
             <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
               {hasText ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-                  {text}
-                </ReactMarkdown>
+                <MarkdownMessage text={text} streaming={Boolean(item.streaming)} />
               ) : (
                 '...'
               )}
@@ -2537,6 +2646,10 @@ export default function ReplicaChatView() {
     scrollTranscriptToBottom('auto');
     try {
       const sent = await sendPrompt(value);
+      if (isCurrent() && sent?.reason === 'cancelled') {
+        // User cancellation is a normal terminal action, not a send failure.
+        return;
+      }
       if (isCurrent() && !sent) {
         setChatError(consumeStoreError(t('error.sendFailedRestored')));
       } else if (isCurrent()) {

@@ -674,6 +674,7 @@ export const useStore = create((set, get) => {
   promptStartedAt: null,
   activePromptRunId: null,
   sidebarCollapsed: false,
+  rightPanel: null,
   changesCount: 0,
   leftTab: 'chat',
   terminalSessions: [],
@@ -1047,6 +1048,24 @@ export const useStore = create((set, get) => {
 
   setSidebarCollapsed(value) {
     set({ sidebarCollapsed: value });
+  },
+
+  openRightPanel(type, payload = null) {
+    const allowed = new Set(['files', 'browser']);
+    if (!allowed.has(type)) return false;
+    set({ rightPanel: { type, payload: payload && typeof payload === 'object' ? payload : null } });
+    return true;
+  },
+
+  closeRightPanel() {
+    set({ rightPanel: null });
+    return true;
+  },
+
+  toggleRightPanel(type, payload = null) {
+    const current = get().rightPanel;
+    if (current?.type === type) return get().closeRightPanel();
+    return get().openRightPanel(type, payload);
   },
 
   setActivePane(paneId) {

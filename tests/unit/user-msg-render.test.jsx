@@ -61,6 +61,7 @@ vi.mock('../../src/store', () => ({
       sessionToken: null,
       fileCwd: '.',
       workspacePath: 'C:/tmp',
+      openRightPanel: mocks.openRightPanel,
     }),
 }));
 
@@ -97,6 +98,69 @@ describe('user messages visible', () => {
     container.remove();
   });
 
+  it('renders assistant HTML as inert text without creating executable DOM nodes', async () => {
+    mocks.timeline = [
+      {
+        id: 'assistant-html',
+        type: 'message',
+        role: 'assistant',
+      content: '安全文本<script>window.__markdownPwned = true</script><iframe src="https://example.com" />',
+      },
+    ];
+    mocks.threadsById.t1.timeline = mocks.timeline;
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(container.querySelector('[data-chat-role="assistant"]')).toBeTruthy();
+    expect(container.textContent).toContain('安全文本');
+    expect(globalThis.__markdownPwned).toBeUndefined();
+  });
+
+  it('opens only safe markdown links in the right panel', async () => {
+    mocks.openRightPanel = vi.fn();
+    const originalStoreOpen = mocks.openRightPanel;
+    mocks.timeline = [
+      {
+        id: 'assistant-links',
+        type: 'message',
+        role: 'assistant',
+        content: '[安全链接](https://example.com/docs) [危险链接](javascript:alert(1)) [凭据链接](https://user:pass@example.com/)',
+      },
+    ];
+    mocks.threadsById.t1.timeline = mocks.timeline;
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    const links = Array.from(container.querySelectorAll('a'));
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute('href')).toBe('https://example.com/docs');
+
+    await act(async () => links[0].dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(mocks.openRightPanel).toHaveBeenCalledWith('browser', { url: 'https://example.com/docs' });
+    mocks.openRightPanel = originalStoreOpen;
+  });
+
+  it('keeps a data image attachment usable while rejecting non-image data URLs', async () => {
+    mocks.timeline = [
+      {
+        id: 'user-image',
+        type: 'message',
+        role: 'user',
+        content: '',
+        attachments: [
+          { kind: 'image', name: 'ok.png', data: 'data:image/png;base64,aGVsbG8=' },
+          { kind: 'image', name: 'bad', data: 'data:text/html;base64,PGh0bWw+' },
+        ],
+      },
+    ];
+    mocks.threadsById.t1.timeline = mocks.timeline;
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.querySelector('img[src^="data:image/png"]')).toBeTruthy();
+    expect(container.textContent).toContain('图片不可用');
+  });
   it('renders user bubbles from product-state timeline', async () => {
     const product = loadActiveProductTimeline();
     if (!product) {
@@ -135,6 +199,7 @@ describe('user messages visible', () => {
     expect(container.textContent).toContain(expectedUsers[0].content);
     expect(container.querySelector('[data-testid="chat-user-message"]')).toBeTruthy();
   });
+
 
   it('still shows disk user bubbles when live timeline is assistant/tools only', async () => {
     const product = loadActiveProductTimeline();

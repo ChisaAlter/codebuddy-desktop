@@ -232,9 +232,10 @@ export function createProductPersistSlice(set, get, ctx) {
     threadDraftPersistTimers.set(threadId, timer);
   },
 
-  async persistProductState() {
+  async persistProductState(options = {}) {
     const saveProductState = window.electronAPI?.saveProductState;
     if (!saveProductState) return false;
+    const silent = options?.silent === true;
     const operation = getProductStateSaveChain()
       .catch(() => false)
       .then(async () => {
@@ -250,7 +251,7 @@ export function createProductPersistSlice(set, get, ctx) {
           await saveProductState(snapshot);
           return true;
         } catch (error) {
-          set({ error: `保存项目状态失败: ${error.message}` });
+          if (!silent) set({ error: `保存项目状态失败: ${error.message}` });
           return false;
         }
       });

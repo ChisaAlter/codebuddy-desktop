@@ -170,7 +170,10 @@ describe('store prompt session selection', () => {
       return { stopReason: 'end_turn' };
     });
 
-    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toMatchObject({
+      ok: false,
+      reason: 'cancelled',
+    });
 
     expect(request).toHaveBeenCalledWith(
       'session/prompt',
@@ -758,7 +761,7 @@ describe('store prompt session selection', () => {
     await expect(useStore.getState().cancelSession()).resolves.toBe(true);
     releasePreflight();
 
-    await expect(running).resolves.toBe(false);
+    await expect(running).resolves.toMatchObject({ ok: false, reason: 'cancelled' });
     expect(request).not.toHaveBeenCalledWith('session/prompt', expect.anything());
   });
   it('blocks model and mode changes while the current response is active', async () => {

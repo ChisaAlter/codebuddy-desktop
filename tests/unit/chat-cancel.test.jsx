@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   promptStartedAt: null,
   activePromptRunId: null,
   workflowRuntime: null,
+  sendPrompt: vi.fn(),
+  draft: '',
 }));
 
 vi.mock('../../src/store', () => ({
@@ -21,7 +23,7 @@ vi.mock('../../src/store', () => ({
       activeThreadId: 'thread-1',
       projectsById: { 'project-1': { id: 'project-1', name: 'Project' } },
       threadsById: {
-        'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '', status: mocks.threadStatus },
+        'thread-1': { id: 'thread-1', projectId: 'project-1', draft: mocks.draft, status: mocks.threadStatus },
       },
       threadRuntimeById: { 'thread-1': mocks.workflowRuntime || {} },
       guiSettings: { locale: 'zh' },
@@ -32,7 +34,7 @@ vi.mock('../../src/store', () => ({
       sessionTitle: 'Test session',
       usage: null,
       availableCommands: [],
-      sendPrompt: vi.fn(),
+      sendPrompt: mocks.sendPrompt || vi.fn(),
       cancelSession: mocks.cancelSession,
       respondToInterruption: vi.fn(),
       bootstrap: vi.fn(),
@@ -105,6 +107,9 @@ describe('ReplicaChatView cancellation', () => {
     mocks.promptStartedAt = null;
     mocks.activePromptRunId = null;
     mocks.workflowRuntime = null;
+    mocks.sendPrompt.mockReset();
+    mocks.sendPrompt.mockResolvedValue(true);
+    mocks.draft = '';
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -115,6 +120,47 @@ describe('ReplicaChatView cancellation', () => {
     container.remove();
     Element.prototype.scrollIntoView = originalScrollIntoView;
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it('does not show a send failure when Stop cancels a pending send', async () => {
+    let resolveSend;
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'idle';
+    mocks.cancelSession.mockImplementationOnce(() => {
+      mocks.isAwaitingResponse = false;
+      mocks.threadStatus = 'cancelled';
+      return Promise.resolve(true);
+    });
+    mocks.sendPrompt.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    mocks.draft = '停止测试';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    await act(async () => {
+      container.querySelector('button[title="发送"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(mocks.sendPrompt).toHaveBeenCalledWith('停止测试');
+    mocks.isAwaitingResponse = true;
+    mocks.threadStatus = 'running';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    const stopButton = container.querySelector('button[title="停止"]');
+    expect(stopButton).toBeTruthy();
+
+    await act(async () => {
+      stopButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      resolveSend({ ok: false, reason: 'cancelled' });
+      await Promise.resolve();
+    });
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(mocks.cancelSession).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('button[title="发送"]')).toBeTruthy();
   });
 
   it('cancels the active CodeBuddy session when Stop is clicked', async () => {

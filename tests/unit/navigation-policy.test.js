@@ -31,5 +31,8 @@ describe('Electron renderer navigation policy', () => {
     expect(normalizeExternalHttpUrl('javascript:alert(1)')).toBeNull();
     expect(normalizeExternalHttpUrl('mailto:test@example.com')).toBeNull();
     expect(normalizeExternalHttpUrl('https://user:secret@example.com/')).toBeNull();
+    expect(normalizeExternalHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(normalizeExternalHttpUrl('blob:https://example.com/id')).toBeNull();
+    expect(normalizeExternalHttpUrl('https://example.com/%0A/malformed')).toBe('https://example.com/%0A/malformed');
   });
 });

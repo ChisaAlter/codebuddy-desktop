@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, net, dialog, session, screen, Tray, Menu, Notification } = require('electron');
+const { app, BrowserWindow, BrowserView, WebContentsView, ipcMain, shell, net, dialog, session, screen, Tray, Menu, Notification } = require('electron');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
@@ -94,6 +94,7 @@ let prodServerPort = null;
 let staticServer = null; // express 静态服务器引用：before-quit 时显式 close 避免端口残留
 
 let mainWindow = null;
+let rightBrowserView = null;
 let trustedRendererOrigin = null;
 let tray = null;
 let windowCreationPromise = null;
@@ -1979,6 +1980,7 @@ async function createWindow() {
     saveWindowState();
   });
   mainWindow.on('closed', () => {
+    closeRightBrowserView();
     mainWindow = null;
   });
 
@@ -2029,6 +2031,88 @@ async function createWindow() {
     });
   }
 }
+
+function closeRightBrowserView() {
+  if (!rightBrowserView) return false;
+  try {
+    if (rightBrowserView instanceof BrowserView) {
+      mainWindow?.removeBrowserView(rightBrowserView);
+    } else {
+      mainWindow?.contentView?.removeChildView?.(rightBrowserView);
+    }
+  } catch (_) {}
+  try {
+    rightBrowserView.webContents?.close?.();
+  } catch (_) {}
+  rightBrowserView = null;
+  return true;
+}
+
+function rightBrowserBounds(bounds = {}) {
+  const x = Number(bounds.x);
+  const y = Number(bounds.y);
+  const width = Number(bounds.width);
+  const height = Number(bounds.height);
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  if (x < 0 || y < 0 || width > 10000 || height > 10000) return null;
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+}
+
+function createRightBrowserView() {
+  if (rightBrowserView || !mainWindow || mainWindow.isDestroyed()) return rightBrowserView;
+  const BrowserSurface = WebContentsView || BrowserView;
+  if (!BrowserSurface) throw new Error('当前 Electron 不支持内置浏览器');
+  const browserSession = session.fromPartition('persist:codebuddy-right-browser');
+  rightBrowserView = new BrowserSurface({
+    webPreferences: {
+      session: browserSession,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  if (rightBrowserView instanceof BrowserView) {
+    mainWindow.setBrowserView(rightBrowserView);
+  } else {
+    mainWindow.contentView.addChildView(rightBrowserView);
+  }
+  rightBrowserView.webContents.setWindowOpenHandler(({ url }) => {
+    const target = normalizeExternalHttpUrl(url);
+    if (target) rightBrowserView.webContents.loadURL(target).catch(() => {});
+    return { action: 'deny' };
+  });
+  const guard = (_event, url) => {
+    if (normalizeExternalHttpUrl(url)) return;
+    try { _event.preventDefault(); } catch (_) {}
+  };
+  rightBrowserView.webContents.on('will-navigate', guard);
+  rightBrowserView.webContents.on('will-redirect', guard);
+  rightBrowserView.webContents.on('did-navigate', (_event, url) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('rightBrowser:state', { url });
+  });
+  rightBrowserView.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('rightBrowser:state', { errorCode, errorDescription, url: validatedURL });
+  });
+  return rightBrowserView;
+}
+
+ipcMain.handle('rightBrowser:open', async (_event, rawUrl) => {
+  const target = normalizeExternalHttpUrl(rawUrl);
+  if (!target) throw new Error('只允许打开无凭据的 http/https 地址');
+  const view = createRightBrowserView();
+  await view.webContents.loadURL(target);
+  return { url: target };
+});
+
+ipcMain.on('rightBrowser:setBounds', (_event, rawBounds) => {
+  const bounds = rightBrowserBounds(rawBounds);
+  if (!bounds || !rightBrowserView || !mainWindow || mainWindow.isDestroyed()) return;
+  if (rightBrowserView instanceof BrowserView) mainWindow.setBrowserView(rightBrowserView);
+  rightBrowserView.setBounds(bounds);
+});
+
+ipcMain.handle('rightBrowser:close', () => closeRightBrowserView());
 
 function showOrCreateMainWindow() {
   if (!app.isReady() || (!isDev && !prodServerPort)) return null;

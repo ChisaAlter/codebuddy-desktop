@@ -8,6 +8,7 @@ import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEv
 import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
+import RightPanelHost from './components/RightPanelHost';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
@@ -460,7 +461,7 @@ function StatusBar() {
   const sessionTitle = useStore((s) => s.sessionTitle);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
-
+  const toggleRightPanel = useStore((s) => s.toggleRightPanel);
   return (
     <div
       className="topbar titlebar-drag flex h-11 shrink-0 items-center gap-3 pl-3 text-xs"
@@ -487,6 +488,20 @@ function StatusBar() {
         ) : null}
       </div>
       <div className="titlebar-no-drag flex h-full items-stretch">
+        <button
+          type="button"
+          className="flex h-full items-center px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          onClick={() => toggleRightPanel('files')}
+          title="文件浏览"
+          aria-label="文件浏览"
+        >文件</button>
+        <button
+          type="button"
+          className="flex h-full items-center px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          onClick={() => toggleRightPanel('browser')}
+          title="浏览器"
+          aria-label="浏览器"
+        >浏览器</button>
         <WindowControls />
       </div>
     </div>
@@ -973,6 +988,7 @@ export default function App() {
             <StatusBar />
             <MainContent />
           </div>
+          <RightPanelHost />
           <GlobalErrorNotice />
           <ToastStack />
           {/* 启动检测 CodeBuddy CLI（对齐 pi-desktop onboarding step1） */}

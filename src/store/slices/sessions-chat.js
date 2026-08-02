@@ -447,6 +447,12 @@ export function createSessionsChatSlice(set, get, ctx) {
           latestRuntime.activePromptRunId && client?.hasActivePrompt?.(sessionId),
         );
         if (!requestStillActive) {
+          // A local user cancellation is terminal. Late backend status events may
+          // report idle/error after the stream was closed, but must not resurrect
+          // or recolor the cancelled turn.
+          if (get().threadsById[threadId]?.status === 'cancelled' && normalizedStatus !== 'cancelled') {
+            return;
+          }
           get().flushThreadTimelineCoalesce?.(threadId);
           const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
           const terminalPatch = responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedRuntime.timeline) });
@@ -1891,9 +1897,6 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (!hadPlannedRun && !hadActiveRequest && !waitingForInput && !responseBusy) return false;
       // H2: while `isAwaitingResponse` is true the POST stream may have already
       // landed on the backend even though `promptDispatched` has not been set yet.
-      // Treat that window as backend-may-be-running so we always emit session/cancel
-      // instead of leaving the turn silently executing (its later chunks would then
-      // be dropped by the H1 guard above).
       const preflightOnly =
         hadPlannedRun &&
         !currentRuntime.promptDispatched &&
@@ -1901,58 +1904,93 @@ export function createSessionsChatSlice(set, get, ctx) {
         !currentRuntime.isAwaitingResponse &&
         currentThread.status === 'running';
       const backendMayBeRunning =
-        !preflightOnly && (currentRuntime.promptDispatched || hadActiveRequest || responseBusy || currentRuntime.isAwaitingResponse);
+        !preflightOnly &&
+        (currentRuntime.promptDispatched || hadActiveRequest || responseBusy || currentRuntime.isAwaitingResponse);
 
+      // The local stop path must never wait for disk persistence or the remote
+      // session/cancel acknowledgement. Close the renderer stream first, then
+      // publish the terminal state synchronously so the Stop button disappears.
+      client.cancelActivePrompt?.(sessionId);
+      client.invalidateInteractiveRequests?.('session-cancelled');
+      get().flushThreadTimelineCoalesce?.(threadId);
+      const latestRuntime = get().threadRuntimeById[threadId] || currentRuntime;
+      const cancelledTimeline = cancelPendingTimelineActions(closeAssistantStream(latestRuntime.timeline));
+      const timeline = reduceAcpEvent(
+        cancelledTimeline,
+        'status_change',
+        { status: 'cancelled', role: 'system' },
+        threadId,
+      );
       get().patchThreadRuntime(
         threadId,
         responseTerminalRuntimePatch({
           lastPromptRunId: currentRuntime.activePromptRunId || null,
           lastPromptRunAt: currentRuntime.activePromptRunId ? Date.now() : 0,
-        }),
-      );
-      await get().updateThreadRecord(threadId, { status: 'cancelling' });
-
-      client.cancelActivePrompt?.(sessionId);
-      let backendCancelWarning = null;
-      if (backendMayBeRunning && client.notify && client.sessionCancelSupported !== false) {
-        try {
-          await client.notify('session/cancel', { sessionId });
-          client.sessionCancelSupported = true;
-        } catch (error) {
-          if (isMethodNotFoundError(error)) {
-            client.sessionCancelSupported = false;
-          } else {
-            backendCancelWarning = `后端取消确认失败，已关闭本地请求流: ${error?.message || '未知错误'}`;
-          }
-        }
-      }
-
-      client.invalidateInteractiveRequests?.('session-cancelled');
-      get().flushThreadTimelineCoalesce?.(threadId);
-      const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const cancelledTimeline = cancelPendingTimelineActions(closeAssistantStream(latestRuntime.timeline));
-      const timeline = reduceAcpEvent(cancelledTimeline, 'status_change', {
-        status: 'cancelled',
-        role: 'system',
-      }, threadId);
-      get().patchThreadRuntime(
-        threadId,
-        responseTerminalRuntimePatch({
           permissionRequests: [],
           questions: [],
           timeline,
         }),
       );
-      await get().updateThreadRecord(threadId, {
-        status: 'cancelled',
-        timeline: timeline.slice(-300),
-        metadata: {
-          ...(get().threadsById[threadId]?.metadata || {}),
-          lastError: null,
-          cancelWarning: backendCancelWarning,
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...state.threadsById[threadId],
+            status: 'cancelled',
+            timeline: timeline.slice(-300),
+            updatedAt: new Date().toISOString(),
+            metadata: {
+              ...(state.threadsById[threadId]?.metadata || {}),
+              lastError: null,
+              cancelWarning: null,
+            },
+          },
         },
-      });
-      if (get().activeThreadId === threadId) set({ error: null });
+        ...(state.activeThreadId === threadId ? { error: null } : {}),
+      }));
+
+      // Persistence is important, but it is not part of the user-visible stop
+      // critical path. `silent` prevents a slow/failed save from creating a red
+      // error banner immediately after a successful cancellation.
+      void get().persistProductState({ silent: true }).catch(() => {});
+
+      if (backendMayBeRunning && client.notify && client.sessionCancelSupported !== false) {
+        let cancelPromise;
+        try {
+          // Invoke immediately so the backend receives the cancellation even
+          // though the local action returns without awaiting its response.
+          cancelPromise = client.notify('session/cancel', { sessionId });
+        } catch (error) {
+          cancelPromise = Promise.reject(error);
+        }
+        Promise.resolve(cancelPromise)
+          .then(() => {
+            client.sessionCancelSupported = true;
+          })
+          .catch((error) => {
+            if (isMethodNotFoundError(error)) {
+              client.sessionCancelSupported = false;
+              return;
+            }
+            const backendCancelWarning = `后端取消确认失败，已关闭本地请求流: ${error?.message || '未知错误'}`;
+            const latest = get().threadsById[threadId];
+            if (!latest || latest.sessionId !== sessionId || latest.status !== 'cancelled') return;
+            set((state) => ({
+              threadsById: {
+                ...state.threadsById,
+                [threadId]: {
+                  ...state.threadsById[threadId],
+                  metadata: {
+                    ...(state.threadsById[threadId]?.metadata || {}),
+                    cancelWarning: backendCancelWarning,
+                  },
+                },
+              },
+            }));
+            void get().persistProductState({ silent: true }).catch(() => {});
+          });
+      }
+
       return true;
     });
   },
@@ -2150,6 +2188,28 @@ export function createSessionsChatSlice(set, get, ctx) {
       );
     };
 
+    // Stop can finish locally while the initial persistence is still in flight.
+    // That persistence may have written `running` after cancellation; restore the
+    // terminal state before returning so the stale send cannot leave the UI stuck.
+    if (!runIsCurrent()) {
+      const latestThread = get().threadsById[threadId];
+      const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      if (latestThread?.status === 'running' && latestRuntime.activePromptRunId !== activePromptRunId) {
+        set((state) => ({
+          threadsById: {
+            ...state.threadsById,
+            [threadId]: {
+              ...state.threadsById[threadId],
+              status: 'cancelled',
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        }));
+        void get().persistProductState({ silent: true }).catch(() => {});
+      }
+      return { ok: false, reason: 'cancelled' };
+    }
+
     const hasFinalResponse = () =>
       hasCompletePromptResponse(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
     const hasUsableBody = () =>
@@ -2178,7 +2238,9 @@ export function createSessionsChatSlice(set, get, ctx) {
       return hasFinalResponse() || hasUsableBody();
     };
     try {
-      if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) return false;
+      if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) {
+        return { ok: false, reason: 'cancelled' };
+      }
       const prompt = [{ type: 'text', text: content }];
       for (const attachment of attachments) {
         if (attachment.kind === 'image') {
@@ -2201,7 +2263,7 @@ export function createSessionsChatSlice(set, get, ctx) {
           { promptRunId: activePromptRunId },
         );
       } catch (requestError) {
-        if (!runIsCurrent()) return false;
+        if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
         const transportAccepted = requestError.promptAccepted === true;
         const activityBeforeRecovery = hasPromptRunActivity(
           get().threadRuntimeById[threadId]?.timeline,
@@ -2237,7 +2299,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         }
         result = { stopReason: 'recovered' };
       }
-      if (!runIsCurrent()) return false;
+      if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
 
       if (result?.stopReason === 'cancelled') {
         get().flushThreadTimelineCoalesce?.(threadId);
@@ -2251,7 +2313,7 @@ export function createSessionsChatSlice(set, get, ctx) {
           status: 'cancelled',
           timeline: cancelledTimeline.slice(-300),
         });
-        return false;
+        return { ok: false, reason: 'cancelled' };
       }
       if (result?.stopReason === 'refusal') {
         const message = promptResultErrorMessage(result);
@@ -2391,7 +2453,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody()) {
         await recoverPromptHistory();
       }
-      if (!runIsCurrent()) return false;
+      if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       if (!hasFinalResponse() && !hasUsableBody()) {
         const incompleteError = new Error('回复已结束，但最终正文未送达；自动历史恢复也未找到完整回答。');
         incompleteError.promptAccepted = true;
@@ -2402,7 +2464,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       // H3: re-check current-ness right before the terminal patch; a cancel that
       // arrived after the runIsCurrent() guard at line 2061 must not be overwritten
       // with `idle`/`success`.
-      if (!runIsCurrent()) return false;
+      if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const completedTimeline = closeAssistantStream(completedRuntime.timeline);
       get().patchThreadRuntime(
@@ -2450,9 +2512,9 @@ export function createSessionsChatSlice(set, get, ctx) {
             responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedFailed.timeline) }),
           );
         }
-        return false;
+        return { ok: false, reason: 'cancelled' };
       }
-      if (!runIsCurrent()) return false;
+      if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
 
       const restoreInput = error.promptAccepted !== true;
       const failedDraft = restoreInput ? String(draftText || '').trim() : '';

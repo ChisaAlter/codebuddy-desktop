@@ -118,8 +118,8 @@ describe('i18n', () => {
     expect(translate('en', 'composer.usage')).toBe('Usage');
     expect(translate('zh', 'composer.loadingModels')).toBe('加载中...');
     expect(translate('en', 'composer.loadingModels')).toBe('Loading...');
-    expect(translate('zh', 'composer.effort.ultracode')).toBe('超码');
-    expect(translate('en', 'composer.effort.ultracode')).toBe('Ultracode');
+    expect(translate('zh', 'composer.effort.ultracode')).toBe('ultracode');
+    expect(translate('en', 'composer.effort.ultracode')).toBe('ultracode');
     // instances stop confirm (M-rc3)
     expect(translate('zh', 'instances.stopTitle')).toBe('停止运行时？');
     expect(translate('en', 'instances.confirmStop')).toBe('Stop');

@@ -33,6 +33,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openReleasePage: (releaseUrl) => ipcRenderer.invoke('app:openReleasePage', releaseUrl),
   openUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:openUpdateDownload', downloadUrl),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  rightBrowserOpen: (url) => ipcRenderer.invoke('rightBrowser:open', url),
+  rightBrowserSetBounds: (bounds) => ipcRenderer.send('rightBrowser:setBounds', bounds),
+  rightBrowserClose: () => ipcRenderer.invoke('rightBrowser:close'),
+  onRightBrowserState: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('rightBrowser:state', listener);
+    return () => ipcRenderer.removeListener('rightBrowser:state', listener);
+  },
   listMcpConfigs: (cwd) => ipcRenderer.invoke('mcp:listConfigs', cwd),
   listSandboxes: () => ipcRenderer.invoke('sandbox:list'),
   killSandbox: (sandboxId) => ipcRenderer.invoke('sandbox:kill', sandboxId),
