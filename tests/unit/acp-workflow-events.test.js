@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendRawExtensionEvent,
+  classifyAcpUpdate,
   completedTeamSnapshot,
+  goalEventFromPayload,
   mergeCodeBuddyTeamState,
   normalizeTeamUpdate,
   subagentMetadata,
@@ -29,6 +31,21 @@ const teamMembers = [
 ];
 
 describe('CodeBuddy ACP workflow extensions', () => {
+  it('classifies standard state_update as workflow state', () => {
+    expect(classifyAcpUpdate({
+      sessionUpdate: 'state_update',
+      state: { phase: 'executing' },
+    })).toMatchObject({ kind: 'workflow', source: 'acp-standard' });
+  });
+
+  it('extracts bare goal events for runtime activity and auto-open', () => {
+    expect(goalEventFromPayload({
+      sessionUpdate: 'goal-progress',
+      goalId: 'goal-1',
+      percent: 25,
+    })).toMatchObject({ type: 'goal-progress', payload: { goalId: 'goal-1', percent: 25 } });
+  });
+
   it('merges team_created and incremental member_status_change snapshots', () => {
     const created = mergeCodeBuddyTeamState(null, {
       type: 'team_created',

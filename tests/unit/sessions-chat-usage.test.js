@@ -44,7 +44,10 @@ function createFakeStore() {
     activeThreadId: 'thread-1',
     activeProjectId: 'project-1',
     threadsById: { 'thread-1': { id: 'thread-1', projectId: 'project-1', status: 'idle', sessionId: 's1' } },
-    threadRuntimeById: { 'thread-1': undefined },
+    rightPanel: null,
+    workflowPanelDismissedRunId: null,
+    openRightPanel: vi.fn(),
+    threadRuntimeById: { 'thread-1': { activePromptRunId: 'run-1', timeline: [] } },
     usage: null,
     compactState: null,
     timeline: [],
@@ -184,6 +187,20 @@ describe('sessions-chat - compact meta 处理', () => {
       .filter((e) => e.type === 'compact')
       .map((e) => e.meta?.phase);
     expect(phases).toEqual(['compacting', 'compacted']);
+  });
+
+  it('terminal status clears a previous compactState', () => {
+    const { state, slice } = createFakeStore();
+    slice.handleThreadSessionUpdate('thread-1', {
+      sessionUpdate: 'status_change',
+      _meta: { 'codebuddy.ai/progress': { type: 'compacting' } },
+    });
+    expect(state.compactState).toBe('compacting');
+    slice.handleThreadSessionUpdate('thread-1', {
+      sessionUpdate: 'status_change',
+      status: 'completed',
+    });
+    expect(state.compactState).toBeNull();
   });
 
   it('codebuddy.ai/compact-cancelled → cancelled 终态 + 时间线条目', () => {

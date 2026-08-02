@@ -87,9 +87,9 @@ Windows 本地验证可能遇到以下环境问题：
 
 如果 `test:gate`、`build:dir`、unpackaged E2E 或 packaged E2E 中任一项因上述原因失败，提交报告必须分别列出实际命令、退出原因和未完成的门禁；只有全部命令真实成功时才能声明发布门禁通过。
 
-## 交付前 Git 检查
+- Packaged Electron harness 当前基础启动和 renderer 身份检查已通过，但导航回归项可能因历史选择器与当前导航文案不一致而失败。例如本次 `npm run test:packaged` 的实际失败是找不到名为 `实例` 的按钮（当前界面使用更新后的导航标签），不是打包产物启动失败；该项应记录为 E2E 选择器/产品文案契约待同步，不能标记为完整 packaged gate 通过。
 
-不要使用 `git add .`。只暂存本次功能、测试、门禁脚本和文档相关文件：
+## 交付前 Git 检查
 
 ```bash
 git status --short --branch
