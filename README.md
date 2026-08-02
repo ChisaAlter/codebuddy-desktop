@@ -2,7 +2,7 @@
 
 CodeBuddy Desktop 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
 
-**当前版本：[1.0.5](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.5)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-desktop/releases)
+**当前版本：[1.1.0](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.0)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-desktop/releases)
 
 仓库：[`ChisaAlter/codebuddy-desktop`](https://github.com/ChisaAlter/codebuddy-desktop)（产品名 **CodeBuddy Desktop**；安装包文件名仍为 `CodeBuddy-GUI-Setup-<version>.exe`）。
 
@@ -13,6 +13,7 @@ CodeBuddy Desktop 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向�
 - 聊天输入栏可切换会话 **模式 / 模型 / 思考强度**（含 Full Access、Delegate、effort `max`）：乐观更新、文案翻转与菜单进出动画；窄窗口下模型与思考强度贴近成组。
 - 发送 / 停止按钮对齐 CodeBuddy WebUI；附件入口支持 **图片 / 文件**、剪贴板粘贴与拖放；composer 可附加 **额外工作目录**（`workspace-dirs`），与 CLI 同步并按项目偏好持久化。
 - 流式会话更稳妥：迟到的 GET SSE `agent_message_chunk` 会关联最近一次 prompt；多工具回合若已有可用助手正文，不再误报「最终正文未送达」。
+- 工作流与 `/goal` 目标进度可在右侧面板持续查看：包括当前阶段、整体进度、子代理/团队成员状态、成员历史、耗时、tokens 与工具调用统计；工作流完成、失败或取消后仍保留最终快照，聊天区不再要求滚动到顶部查看。
 - 内置文件树和 Monaco 编辑器，支持创建、重命名、删除、编辑和保存；**Changes** 面板可预览 diff 并按路径 / 检查点回退（CLI 2.125 `/internal/file-changes`）。
 - 内置项目级终端，多面板输出和布局随项目持久化；标题栏快捷键帮助支持鼠标、键盘和外部点击关闭。
 - 提供 Git 状态、diff、暂存、提交、拉取、推送和分支操作。
@@ -63,12 +64,29 @@ Windows 打包若最终因 `rcedit`、`EBUSY` 或 `EPERM` 瞬时资源写入错�
 npm run build:dir
 ```
 
+## 测试与门禁
+
+提交前执行统一门禁：
+
+```bash
+npm run test:gate
+```
+
+涉及 Electron、渲染层或工作流面板的变更，还应执行：
+
+```bash
+npm run build:dir
+```
+
+发布级验证（包含 unpackaged 与 packaged Electron 检查）见 [`TESTING.md`](./TESTING.md)。
+
 ## 安装最新版
 
 从 GitHub Releases 下载 Windows 安装包：
 
-- 最新发行版：https://github.com/ChisaAlter/codebuddy-desktop/releases/latest  
-- 1.0.5：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.5  
+- 最新发行版：https://github.com/ChisaAlter/codebuddy-desktop/releases/latest
+- 1.1.0：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.0
+- 1.0.5：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.5
 - 1.0.4：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.4  
 - 1.0.3：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.3  
 - 1.0.2：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.2  

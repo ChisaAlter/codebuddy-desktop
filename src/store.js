@@ -675,6 +675,7 @@ export const useStore = create((set, get) => {
   activePromptRunId: null,
   sidebarCollapsed: false,
   rightPanel: null,
+  workflowPanelDismissedRunId: null,
   changesCount: 0,
   leftTab: 'chat',
   terminalSessions: [],
@@ -1051,14 +1052,23 @@ export const useStore = create((set, get) => {
   },
 
   openRightPanel(type, payload = null) {
-    const allowed = new Set(['files', 'browser']);
+    const allowed = new Set(['files', 'browser', 'workflow']);
     if (!allowed.has(type)) return false;
-    set({ rightPanel: { type, payload: payload && typeof payload === 'object' ? payload : null } });
+    set({
+      rightPanel: { type, payload: payload && typeof payload === 'object' ? payload : null },
+      ...(type === 'workflow' ? { workflowPanelDismissedRunId: null } : {}),
+    });
     return true;
   },
 
   closeRightPanel() {
-    set({ rightPanel: null });
+    const current = get().rightPanel;
+    set({
+      rightPanel: null,
+      ...(current?.type === 'workflow'
+        ? { workflowPanelDismissedRunId: get().activePromptRunId || get().lastPromptRunId || null }
+        : {}),
+    });
     return true;
   },
 

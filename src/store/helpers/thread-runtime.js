@@ -29,6 +29,8 @@ export function emptyThreadRuntime() {
     subagentToolCalls: {},
     workflowState: null,
     lastWorkflowState: null,
+    goalState: null,
+    lastGoalState: null,
     rawExtensionEvents: [],
     agentPhase: null,
     progress: null,
@@ -155,6 +157,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'subagentToolCalls',
   'workflowState',
   'lastWorkflowState',
+  'goalState',
+  'lastGoalState',
   'rawExtensionEvents',
   'agentPhase',
   'progress',
@@ -180,13 +184,16 @@ export function responseTerminalRuntimePatch(patch = {}) {
     historyReplayActive: false,
     agentPhase: null,
     progress: null,
+    compactState: null,
+    compactCancelled: false,
     teamState: null,
     // A new prompt/session reset/disconnect explicitly clears these per-turn details.
     // The active team/workflow objects are cleared below; final snapshots remain readable.
     workflowState: null,
-    // 终态时清掉 compacting 中态；compacted/cancelled 终态由时间线条目承载，
-    // 不依赖此字段，故一律清空避免残留。
-    compactState: null,
+    goalState: null,
+    // 终态保留最后一次 goal/workflow projection，供右侧面板查看结果。
+    lastWorkflowState: null,
+    lastGoalState: null,
     ...patch,
   };
 }

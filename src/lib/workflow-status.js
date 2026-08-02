@@ -1,3 +1,5 @@
+import { currentGoal, goalList, goalsFromTimeline } from './goal-state';
+
 const ACTIVE_STATUSES = new Set(['working', 'running', 'in_progress', 'pending', 'planning', 'waiting']);
 
 function firstValue(...values) {
@@ -181,11 +183,29 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     };
   });
   const steps = members.length ? [] : fallbackSteps(entries);
+  const projectedGoals = runtime.goalState || runtime.lastGoalState || goalsFromTimeline(entries);
+  const goals = goalList(projectedGoals);
+  const projectedGoal = currentGoal(projectedGoals);
+  if (!members.length && projectedGoal) {
+    const goalStep = {
+      id: `goal:${projectedGoal.goalId}`,
+      name: projectedGoal.title,
+      task: projectedGoal.message,
+      status: normalizeStatus(projectedGoal.status),
+      progress: projectedGoal.progress,
+      startedAt: projectedGoal.updatedAt,
+      completedAt: ['completed', 'failed', 'cancelled'].includes(projectedGoal.status) ? projectedGoal.updatedAt : null,
+      kind: 'goal',
+    };
+    const existingGoalIndex = steps.findIndex((item) => item.id === goalStep.id);
+    if (existingGoalIndex >= 0) steps[existingGoalIndex] = { ...steps[existingGoalIndex], ...goalStep };
+    else steps.push(goalStep);
+  }
   const items = members.length ? members : steps;
   const source = members.length
     ? 'team'
     : steps.length
-      ? 'timeline'
+      ? (projectedGoals.eventCount ? 'goal' : 'timeline')
       : runtime.teamState
         ? 'team'
         : runtime.workflowState
@@ -206,7 +226,7 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   const activeItems = items.filter((item) => isActive(item.status));
   const failedCount = items.filter((item) => item.status === 'failed').length;
   const completedCount = items.filter((item) => item.status === 'completed').length;
-  const progress = normalizeProgress(runtime.progress || runtime.workflowState?.progress);
+  const progress = normalizeProgress(runtime.progress || runtime.workflowState?.progress || projectedGoal?.progress);
   const phase = pendingPermission ? 'waiting_for_permission' : phaseValue(runtime.agentPhase, runtime.progress || runtime.workflowState);
   const startedAt = Number(
     firstValue(
@@ -277,6 +297,10 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     detailsAvailable: members.length > 0 || Boolean(runtime.memberHistoriesByName && Object.keys(runtime.memberHistoriesByName).length),
     inferred: source === 'timeline',
     capabilityMessage: source === 'workflow' && members.length === 0 ? 'aggregate-only' : null,
+    goals,
+    currentGoal: projectedGoal,
+    goalMode: projectedGoals.mode || null,
+    goalEventCount: Number(projectedGoals.eventCount || 0),
   };
 }
 

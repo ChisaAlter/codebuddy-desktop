@@ -28,7 +28,6 @@ import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import { normalizeWorkflowStatus, workflowHasActivity } from '../lib/workflow-status';
-import WorkflowStatusPanel from './WorkflowStatusPanel';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -1337,56 +1336,6 @@ function consumeStoreError(fallback) {
   if (state.error) state.clearError();
   return message;
 }
-function ActivityTimelineCard({ item }) {
-  const t = useUiTranslate();
-  const payload = item.meta || item.raw || {};
-  const source =
-    payload.checkpoint && typeof payload.checkpoint === 'object'
-      ? payload.checkpoint
-      : payload.task && typeof payload.task === 'object'
-        ? payload.task
-        : payload;
-  const labels = {
-    checkpoint: t('activity.checkpoint'),
-    taskCreated: t('activity.taskCreated'),
-    taskStatus: t('activity.taskStatus'),
-    'goal-progress': t('activity.goalProgress'),
-    'goal-status': t('activity.goalStatus'),
-    question_answered: t('activity.questionAnswered'),
-  };
-  const eventLabels = {
-    created: t('activity.created'),
-    updated: t('activity.updated'),
-    reverted: t('activity.reverted'),
-  };
-  const title =
-    item.type === 'checkpoint'
-      ? t('activity.checkpoint') + (eventLabels[payload.event] ? ' · ' + eventLabels[payload.event] : '')
-      : labels[item.type] || t('activity.fallback');
-  const summary =
-    item.content ||
-    source.title ||
-    source.name ||
-    source.subject ||
-    source.condition ||
-    source.reason ||
-    source.message ||
-    source.status ||
-    source.id ||
-    '';
-  return (
-    <div className="my-2 border-l-2 border-[var(--color-border-default)] py-1 pl-3">
-      <div className="text-[10px] font-medium text-[var(--color-text-muted)]">{title}</div>
-      {summary ? (
-        <div className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
-          {String(summary)}
-        </div>
-      ) : null}
-      <EventDetails value={payload} />
-    </div>
-  );
-}
-
 function CompactTimelineCard({ item }) {
   const t = useUiTranslate();
   const phase = item.meta?.phase || item.raw?.phase || '';
@@ -1812,7 +1761,13 @@ function getProtocolEventLabel(type, t) {
 const TimelineItem = React.memo(function TimelineItem({ item }) {
   const t = useUiTranslate();
   if (item.type === 'execution_group') {
-    return <ExecutionGroup items={item.items || []} autoCollapse={item.autoCollapse} />;
+    const visibleItems = (item.items || []).filter((entry) => !['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(entry?.type));
+    if (!visibleItems.length) return null;
+    return <ExecutionGroup items={visibleItems} autoCollapse={item.autoCollapse} />;
+  }
+
+  if (['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)) {
+    return null;
   }
 
   if (item.type === 'error') {
@@ -1834,7 +1789,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
   if (
     ['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)
   ) {
-    return <ActivityTimelineCard item={item} />;
+    return null;
   }
 
   if (item.type === 'thinking') {
@@ -2976,7 +2931,6 @@ export default function ReplicaChatView() {
             agentPhase={agentPhase}
             progress={progress}
           />
-          <WorkflowStatusPanel status={workflowStatus} />
           {timeline.length === 0 ? (
             connectionState === 'connecting' || runtimeStatus === 'starting' ? (
               <div className="flex items-center justify-center h-64">

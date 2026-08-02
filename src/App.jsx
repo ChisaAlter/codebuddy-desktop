@@ -462,6 +462,12 @@ function StatusBar() {
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
   const toggleRightPanel = useStore((s) => s.toggleRightPanel);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
+  const workflowVisible = Boolean(
+    activeThreadRuntime?.teamState || activeThreadRuntime?.lastTeamState || activeThreadRuntime?.workflowState ||
+    activeThreadRuntime?.lastWorkflowState || activeThreadRuntime?.goalState || activeThreadRuntime?.lastGoalState,
+  );
   return (
     <div
       className="topbar titlebar-drag flex h-11 shrink-0 items-center gap-3 pl-3 text-xs"
@@ -495,6 +501,16 @@ function StatusBar() {
           title="文件浏览"
           aria-label="文件浏览"
         >文件</button>
+        <button
+          type="button"
+          className={`flex h-full items-center gap-1 px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]${workflowVisible ? ' text-[var(--color-accent-blue)]' : ''}`}
+          onClick={() => toggleRightPanel('workflow', { threadId: activeThreadId })}
+          title="工作流与子代理"
+          aria-label="工作流与子代理"
+        >
+          {workflowVisible ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent-blue)]" aria-hidden="true" /> : null}
+          工作流
+        </button>
         <button
           type="button"
           className="flex h-full items-center px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"

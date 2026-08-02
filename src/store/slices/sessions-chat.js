@@ -10,6 +10,8 @@ import {
   memberEventName,
   subagentMetadata,
   teamUpdateFromPayload,
+  workflowStateFromPayload,
+  goalEventFromPayload,
 } from '../../lib/acp-workflow-events';
 import {
   activeProject,
@@ -33,6 +35,7 @@ import {
   sessionActionItemMatches,
   ACTIVE_THREAD_RUNTIME_KEYS,
 } from '../helpers/thread-runtime';
+import { normalizeGoalEvent, mergeGoalEvent, emptyGoalState } from '../../lib/goal-state';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
 
 /**
@@ -171,31 +174,48 @@ export function createSessionsChatSlice(set, get, ctx) {
     const subagent = subagentMetadata(update);
     if (contentEvent && get().threadsById[threadId]?.status === 'cancelled') return;
     const runtimePatch = {};
-    if (memberName && contentEvent) {
-      const memberHistoriesByName = mergeMemberTimeline(
+    const workflowState = workflowStateFromPayload(update);
+    if (workflowState) {
+      runtimePatch.workflowState = {
+        ...workflowState,
+        active: workflowState.active !== false,
+        updatedAt: Number(workflowState.updatedAt) || Date.now(),
+        runId: workflowState.runId || runtime.activePromptRunId || null,
+      };
+    }
+    const goalPayload = goalEventFromPayload(update);
+    if (goalPayload) {
+      const existingGoals = runtime.goalState || emptyGoalState(update._meta?.['codebuddy.ai/goalMode'] || null);
+      const normalizedGoal = normalizeGoalEvent(goalPayload.payload, goalPayload.type);
+      runtimePatch.goalState = mergeGoalEvent(existingGoals, normalizedGoal);
+      runtimePatch.progress = normalizedGoal.progress?.percent != null
+        ? normalizedGoal.progress
+        : runtime.progress;
+    }
+    const memberEvent = Boolean(memberName && contentEvent);
+    const workflowActivity = Boolean(teamUpdateFromPayload(update) || workflowState || goalPayload || subagent || memberName);
+    if (memberEvent) {
+      runtimePatch.memberHistoriesByName = mergeMemberTimeline(
         runtime.memberHistoriesByName,
         memberName,
         su,
         update,
         threadId,
       );
-      const subagentToolCalls = subagent?.parentToolCallId && update.toolCallId
-        ? {
-            ...(runtime.subagentToolCalls || {}),
-            [update.toolCallId]: {
-              toolCallId: update.toolCallId,
-              parentToolCallId: subagent.parentToolCallId,
-              memberName,
-              subagentType: subagent.subagentType,
-              status: update.status || null,
-              updatedAt: Date.now(),
-            },
-          }
-        : runtime.subagentToolCalls;
-      get().patchThreadRuntime(threadId, { memberHistoriesByName, subagentToolCalls });
-      return;
-    }
-    if (contentEvent && subagent?.parentToolCallId && update.toolCallId) {
+      if (subagent?.parentToolCallId && update.toolCallId) {
+        runtimePatch.subagentToolCalls = {
+          ...(runtime.subagentToolCalls || {}),
+          [update.toolCallId]: {
+            toolCallId: update.toolCallId,
+            parentToolCallId: subagent.parentToolCallId,
+            memberName,
+            subagentType: subagent.subagentType,
+            status: update.status || null,
+            updatedAt: Date.now(),
+          },
+        };
+      }
+    } else if (contentEvent && subagent?.parentToolCallId && update.toolCallId) {
       runtimePatch.subagentToolCalls = {
         ...(runtime.subagentToolCalls || {}),
         [update.toolCallId]: {
@@ -236,6 +256,9 @@ export function createSessionsChatSlice(set, get, ctx) {
       'codebuddy.ai/historyReplay',
       'codebuddy.ai/goalProgress',
       'codebuddy.ai/goalStatus',
+      'codebuddy.ai/goalMode',
+      'codebuddy.ai/workflowState',
+      'codebuddy.ai/workflowUpdate',
       'codebuddy.ai/permissionResolved',
       'codebuddy.ai/toolCallId',
       'codebuddy.ai/compact-cancelled',
@@ -281,6 +304,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       compactTimelinePayload = { phase: 'compacted' };
     }
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
+    if (workflowActivity && get().activeThreadId === threadId) {
+      const runId = runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
+      const currentPanel = get().rightPanel;
+      if (runId && currentPanel == null && get().workflowPanelDismissedRunId !== runId) {
+        get().openRightPanel('workflow', { threadId, runId });
+      }
+    }
     if (compactTimelinePayload) {
       get().appendThreadTimelineEvent(threadId, 'compact', compactTimelinePayload);
     }
@@ -308,14 +338,19 @@ export function createSessionsChatSlice(set, get, ctx) {
     ]) {
       const goalEvent = metadata[metadataKey];
       if (!goalEvent || typeof goalEvent !== 'object') continue;
+      const normalizedGoal = normalizeGoalEvent(goalEvent, eventType);
       const currentTimeline = get().threadRuntimeById[threadId]?.timeline || runtime.timeline;
-      const duplicate =
-        goalEvent.id &&
-        currentTimeline.some(
-          (item) => item.type === eventType && (item.meta?.id === goalEvent.id || item.raw?.id === goalEvent.id),
-        );
+      const duplicate = currentTimeline.some((item) => {
+        if (item.type !== eventType) return false;
+        const existing = normalizeGoalEvent(item.meta || item.raw || item, eventType);
+        return existing.eventKey === normalizedGoal.eventKey || (normalizedGoal.eventId && existing.eventId === normalizedGoal.eventId);
+      });
       if (!duplicate) get().appendThreadTimelineEvent(threadId, eventType, { ...goalEvent, type: eventType });
     }
+
+    // Member messages are kept in their per-agent history. Shared metadata above
+    // has already been applied, so do not duplicate the content in the leader timeline.
+    if (memberEvent) return;
 
     if (su === 'config_option_update') {
       const selectionProtection = threadSelectionProtection(get(), threadId);
@@ -1926,6 +1961,8 @@ export function createSessionsChatSlice(set, get, ctx) {
         responseTerminalRuntimePatch({
           lastPromptRunId: currentRuntime.activePromptRunId || null,
           lastPromptRunAt: currentRuntime.activePromptRunId ? Date.now() : 0,
+          lastWorkflowState: currentRuntime.workflowState || currentRuntime.lastWorkflowState || null,
+          lastGoalState: currentRuntime.goalState || currentRuntime.lastGoalState || null,
           permissionRequests: [],
           questions: [],
           timeline,
@@ -2163,6 +2200,8 @@ export function createSessionsChatSlice(set, get, ctx) {
       subagentToolCalls: {},
       workflowState: null,
       lastWorkflowState: null,
+      goalState: { ...emptyGoalState(), mode: /^\/goal(?:\s|$)/i.test(String(content || '').trim()) ? 'goal' : null },
+      lastGoalState: null,
       rawExtensionEvents: [],
     });
     await get().updateThreadRecord(threadId, {
@@ -2470,6 +2509,8 @@ export function createSessionsChatSlice(set, get, ctx) {
       get().patchThreadRuntime(
         threadId,
         responseTerminalRuntimePatch({
+          lastWorkflowState: completedRuntime.workflowState || completedRuntime.lastWorkflowState || null,
+          lastGoalState: completedRuntime.goalState || completedRuntime.lastGoalState || null,
           timeline: completedTimeline,
           // H1: remember the just-finished run so late SSE chunks still arriving
           // within LATE_PROMPT_CORRELATION_MS are appended instead of dropped.

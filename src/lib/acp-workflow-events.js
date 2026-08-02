@@ -9,6 +9,10 @@ const SUBAGENT_META_KEYS = {
   memberName: 'codebuddy.ai/memberName',
 };
 const MAX_RAW_EXTENSION_EVENTS = 100;
+const WORKFLOW_META_KEYS = {
+  state: 'codebuddy.ai/workflowState',
+  update: 'codebuddy.ai/workflowUpdate',
+};
 
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
@@ -154,6 +158,36 @@ export function completedTeamSnapshot(current, update, now = Date.now()) {
 export function teamUpdateFromPayload(update) {
   return normalizeTeamUpdate(update?._meta?.[TEAM_META_KEY]);
 }
+export function workflowStateFromPayload(update) {
+  const metadata = update?._meta && typeof update._meta === 'object' ? update._meta : {};
+  const explicit = metadata[WORKFLOW_META_KEYS.state] || metadata[WORKFLOW_META_KEYS.update];
+  if (explicit && typeof explicit === 'object') return explicit;
+  const type = update?.sessionUpdate || update?.session_update || update?.type;
+  if (!['workflow_update', 'workflow_state', 'state_update'].includes(type)) return null;
+  const payload = update?.workflow || update?.workflowState || update?.state || update;
+  return payload && typeof payload === 'object' ? payload : null;
+}
+
+export function goalEventFromPayload(update) {
+  const source = update && typeof update === 'object' ? update : {};
+  const metadata = source._meta && typeof source._meta === 'object' ? source._meta : {};
+  if (metadata['codebuddy.ai/goalProgress'] && typeof metadata['codebuddy.ai/goalProgress'] === 'object') {
+    return { type: 'goal-progress', payload: metadata['codebuddy.ai/goalProgress'] };
+  }
+  if (metadata['codebuddy.ai/goalStatus'] && typeof metadata['codebuddy.ai/goalStatus'] === 'object') {
+    return { type: 'goal-status', payload: metadata['codebuddy.ai/goalStatus'] };
+  }
+  const type = source.sessionUpdate || source.session_update || source.type;
+  if (type === 'goal-progress' || type === 'goal-status') {
+    const payload = source.goal && typeof source.goal === 'object'
+      ? source.goal
+      : source.payload && typeof source.payload === 'object'
+        ? source.payload
+        : source;
+    return { type, payload };
+  }
+  return null;
+}
 
 export function memberEventName(payload) {
   return firstValue(payload?._meta?.[MEMBER_EVENT_META_KEY], payload?.memberName, null);
@@ -197,6 +231,18 @@ export function classifyAcpUpdate(update = {}) {
   if (meta[TEAM_META_KEY]) {
     return { kind: 'team', source: 'codebuddy-private', payload: meta[TEAM_META_KEY] };
   }
+  const hasWorkflowMetadata = Boolean(meta[WORKFLOW_META_KEYS.state] || meta[WORKFLOW_META_KEYS.update]);
+  if (hasWorkflowMetadata || ['workflow_update', 'workflow_state', 'state_update'].includes(sessionUpdate)) {
+    return {
+      kind: 'workflow',
+      source: hasWorkflowMetadata ? 'codebuddy-private' : 'acp-standard',
+      payload: workflowStateFromPayload(update),
+    };
+  }
+  if (meta['codebuddy.ai/goalProgress'] || meta['codebuddy.ai/goalStatus'] || sessionUpdate === 'goal-progress' || sessionUpdate === 'goal-status') {
+    const goal = goalEventFromPayload(update);
+    return { kind: 'goal', source: 'codebuddy-private', payload: goal?.payload || update };
+  }
   if (memberEventName(update)) {
     return {
       kind: 'member_message',
@@ -230,6 +276,7 @@ export {
   TEAM_META_KEY,
   MEMBER_EVENT_META_KEY,
   SUBAGENT_META_KEYS,
+  WORKFLOW_META_KEYS,
   MAX_RAW_EXTENSION_EVENTS,
   normalizeMember,
   mergeMembers,

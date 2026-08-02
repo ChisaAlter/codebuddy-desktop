@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-
+import WorkflowRightPanel from './WorkflowRightPanel';
 function safeBrowserUrl(value) {
   const raw = String(value || '').trim();
   if (!raw || raw.length > 4096) return '';
@@ -193,12 +193,17 @@ export default function RightPanelHost() {
 
   if (!rightPanel) return null;
   return (
-    <aside className="flex h-full w-[min(420px,38vw)] min-w-[300px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]" data-testid="right-panel">
+    <aside className="right-panel-host flex h-full w-[min(420px,38vw)] min-w-[300px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]" data-testid="right-panel" data-panel-type={rightPanel.type} role="complementary">
       {rightPanel.type === 'files' ? (
         <FilePanel onClose={closeRightPanel} />
-      ) : (
+      ) : rightPanel.type === 'browser' ? (
         <BrowserPanel payload={rightPanel.payload} onClose={closeRightPanel} />
-      )}
+      ) : rightPanel.type === 'workflow' ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <PanelHeader title="工作流" onClose={closeRightPanel} />
+          <WorkflowRightPanel payload={rightPanel.payload} />
+        </div>
+      ) : null}
     </aside>
   );
 }

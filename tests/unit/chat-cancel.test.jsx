@@ -290,7 +290,7 @@ describe('ReplicaChatView cancellation', () => {
     expect(container.querySelector('button[title="跳到最新"]')).toBeNull();
   });
 
-  it('renders a visible workflow panel for parallel subagents and preserves manual collapse', async () => {
+  it('keeps workflow bookkeeping out of the chat transcript', async () => {
     mocks.isAwaitingResponse = false;
     mocks.threadStatus = 'running';
     mocks.activePromptRunId = 'run-workflow';
@@ -315,19 +315,13 @@ describe('ReplicaChatView cancellation', () => {
     };
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
-    expect(panel).toBeTruthy();
-    expect(panel.textContent).toContain('6 个子代理');
-    expect(panel.textContent).toContain('子代理 1');
-    expect(panel.textContent).toContain('2 个进行中');
-    expect(panel.textContent).toContain('2/6');
-    const header = panel.querySelector('button[aria-expanded="true"]');
-    expect(header).toBeTruthy();
-    await act(async () => header.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(panel.querySelector('button[aria-expanded="false"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
+    expect(container.querySelector('[data-response-activity]')).toBeTruthy();
+    expect(container.textContent).not.toContain('6 个子代理');
+    expect(container.textContent).not.toContain('子代理 1');
   });
 
-  it('falls back to readable workflow copy for new ACP phases', async () => {
+  it('keeps new ACP phases readable without rendering a transcript workflow card', async () => {
     mocks.isAwaitingResponse = false;
     mocks.threadStatus = 'running';
     mocks.activePromptRunId = 'run-new-phase';
@@ -341,13 +335,13 @@ describe('ReplicaChatView cancellation', () => {
 
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
-    expect(panel).toBeTruthy();
-    expect(panel.textContent).toContain('正在执行');
-    expect(panel.textContent).not.toContain('workflow.phase.future_phase');
+    expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
+    expect(container.querySelector('[data-response-activity]')).toBeTruthy();
+    expect(container.textContent).toContain('正在执行');
+    expect(container.textContent).not.toContain('workflow.phase.future_phase');
   });
 
-  it('keeps the workflow panel visible while permission is pending', async () => {
+  it('keeps permission requests out of the transcript workflow card', async () => {
     mocks.isAwaitingResponse = false;
     mocks.threadStatus = 'idle';
     mocks.workflowRuntime = {
@@ -357,10 +351,7 @@ describe('ReplicaChatView cancellation', () => {
 
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const panel = container.querySelector('[data-testid="workflow-status-panel"]');
-    expect(panel).toBeTruthy();
-    expect(panel.textContent).toContain('等待权限确认');
-    expect(panel.textContent).toContain('等待你的权限确认');
+    expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
   });
 
   it('keeps tool records manually collapsible without status updates reopening them', async () => {

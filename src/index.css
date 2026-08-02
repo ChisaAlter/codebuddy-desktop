@@ -853,7 +853,84 @@ select {
   }
 }
 
-/* ── Workflow status panel ── */
+/* ── Workflow right drawer ── */
+.workflow-right-panel {
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+.workflow-right-panel__body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+.workflow-right-panel__section {
+  margin-bottom: 10px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: var(--color-bg-primary);
+  padding: 10px;
+}
+.workflow-right-panel__overview-title,
+.workflow-right-panel__section-title,
+.workflow-right-panel__section-toggle,
+.workflow-right-panel__member-button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+.workflow-right-panel__overview-title,
+.workflow-right-panel__section-title,
+.workflow-right-panel__section-toggle {
+  width: 100%;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.workflow-right-panel__overview-title svg { color: var(--color-text-muted); }
+.workflow-right-panel__summary,
+.workflow-right-panel__muted,
+.workflow-right-panel__member-detail,
+.workflow-right-panel__stats {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+.workflow-right-panel__summary { margin-top: 7px; }
+.workflow-right-panel__stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
+.workflow-right-panel__progress { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--color-text-muted); font-size: 10px; }
+.workflow-right-panel__progress .progress-bar { flex: 1; }
+.workflow-right-panel__progress > span { flex-shrink: 0; }
+.workflow-right-panel__status { flex-shrink: 0; font-size: 10px; font-weight: 500; }
+.workflow-right-panel__count { margin-left: auto; color: var(--color-text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.workflow-right-panel__goal-title { margin-top: 8px; overflow: hidden; color: var(--color-text-primary); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-right-panel__goal .workflow-right-panel__muted { margin-top: 7px; line-height: 1.45; }
+.workflow-right-panel__members { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.workflow-right-panel__member { border-top: 1px solid var(--color-border-muted); padding-top: 6px; }
+.workflow-right-panel__member:first-child { border-top: 0; padding-top: 0; }
+.workflow-right-panel__member-button { width: 100%; padding: 3px 0; color: var(--color-text-secondary); text-align: left; }
+.workflow-right-panel__member-main { min-width: 0; flex: 1; }
+.workflow-right-panel__member-line { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.workflow-right-panel__member-name { min-width: 0; flex: 1; overflow: hidden; color: var(--color-text-primary); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-right-panel__member-detail { display: block; overflow: hidden; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-right-panel__member-detail-box { margin: 4px 0 3px 14px; color: var(--color-text-secondary); font-size: 10px; line-height: 1.5; }
+.workflow-right-panel__member-history { margin-top: 5px; border-left: 1px solid var(--color-border-default); padding-left: 7px; }
+.workflow-right-panel__history-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-right-panel__goal-log { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
+.workflow-right-panel__log-item { display: flex; align-items: flex-start; gap: 7px; color: var(--color-text-secondary); font-size: 11px; }
+.workflow-right-panel__log-dot { width: 6px; height: 6px; flex-shrink: 0; margin-top: 4px; border-radius: 999px; }
+.workflow-right-panel__notice { display: flex; align-items: center; gap: 7px; color: var(--color-accent-red); font-size: 11px; }
+.workflow-right-panel__empty { color: var(--color-text-muted); font-size: 11px; text-align: center; }
+.right-panel-host { position: relative; }
+@media (max-width: 640px) {
+  .right-panel-host { position: fixed; inset: 44px 0 0 auto; z-index: 80; width: min(420px, 100vw); min-width: 0; box-shadow: -12px 0 30px rgba(0, 0, 0, 0.2); }
+  .workflow-right-panel__body { padding: 9px; }
+}
+
 .workflow-status-panel {
   margin-bottom: 12px;
   min-width: 0;

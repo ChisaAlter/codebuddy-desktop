@@ -114,6 +114,27 @@ describe('workflow status normalization', () => {
     expect(status.status).toBe('waiting');
     expect(status.phase).toBe('waiting_for_permission');
   });
+  it('exposes a goal-only workflow step and projection', () => {
+    const status = normalizeWorkflowStatus({
+      threadStatus: 'running',
+      runtime: {
+        activePromptRunId: 'run-goal',
+        promptStartedAt: 1000,
+        goalState: {
+          mode: 'goal',
+          eventCount: 1,
+          activeGoalId: 'g1',
+          goalsById: {
+            g1: { goalId: 'g1', title: '完成目标', status: 'running', progress: { percent: 40 }, updatedAt: 1200 },
+          },
+        },
+      },
+      timeline: [],
+    });
+    expect(status.source).toBe('goal');
+    expect(status.currentGoal.title).toBe('完成目标');
+    expect(status.items[0]).toMatchObject({ kind: 'goal', status: 'running' });
+  });
   it('reports a completed team snapshot after the prompt reaches idle', () => {
     const status = normalizeWorkflowStatus({
       threadStatus: 'idle',

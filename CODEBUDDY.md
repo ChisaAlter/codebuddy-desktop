@@ -76,7 +76,10 @@ npm run format
 - **模式 / 模型 / 思考强度**：`setMode` / `setModel` / `setThoughtLevel` 采用 **乐观更新**——先写 runtime/store 再发 RPC；失败回滚。model/mode 的 `updateThreadRecord` 持久化不阻塞 UI。
 - **UI**：`FlipLabel` 负责选中值翻转入场；`ComposerAnimatedMenu` 负责下拉进出动画。切换时不要再加整栏 `busy` 禁用。
 - **布局**：模型与思考强度放在 `composer-picker-cluster` 中贴近排列，与发送键用 `ml-4` 拉开；窄窗依赖 `truncate` + `min-w-0`，发送键 `shrink-0`。
-- **发送 / 停止**：对齐 WebUI——圆形 `ArrowUp` 发送、圆形 `Square` 停止（`lucide-react`）。
+- **发送 / 停止**：对齐 WebUI——圆形 `ArrowUp` 发送、圆形 `Square` 停止（`lucide-react`）。用户点击 Stop 时必须先同步完成本地流关闭、运行态清理和 `cancelled` 终态；后端 `session/cancel` 仅作为异步 best-effort 通知，确认失败不能把正常取消变成发送失败或红色错误。取消后的迟到事件不得把线程重新改回 `running`、`idle` 或 `error`。
+- **AI 消息渲染**：assistant Markdown 必须使用 `skipHtml`，不得执行原始 HTML；链接只允许无凭据的绝对 HTTP(S)，不得让主 renderer 承载网页导航。超长或异常消息应按单条消息降级，不得卸载整个应用。受控图片只允许安全 HTTP(S) 或白名单 `data:image/*`。
+- **右侧面板**：文件、浏览器和工作流面板默认关闭，属于运行时 UI 状态，不写入项目或会话持久化。内置浏览器使用隔离的 Electron view，不能在主 renderer 中使用 iframe 承载外部网页；文件面板必须复用当前项目的真实文件状态和操作。
+- **思考强度**：`ultracode` 是保留的复合模式名称，中文和英文均显示原始小写字符串；切换仍通过现有 `/effort ultracode` 行为完成，不把它作为普通服务端 `thought_level` 发送。
 - **附件**：回形针菜单仅 **图片 / 文件** 两档；主进程 `attachment:choose` 按 `kind` 过滤。不做 WebUI 加号网格 / 右侧历史抽屉（见 `docs/composer-actions-decision.md`）。
 - **附加工作目录**（CLI 2.121+）：composer 旁文件夹按钮管理 `workspaceExtraDirs`（项目 `preferences` 持久化），经 `POST/DELETE /api/v1/workspace-dirs` 与 `PUT .../sync` 同步到运行时。
 - **插件更新**：优先 `POST /api/v1/plugins/update`，失败回落 `pluginMaintenance:update` CLI；市场支持 `autoUpdate`。
@@ -96,7 +99,51 @@ Electron 产品状态保存以下核心数据：
 产品状态使用临时文件原子替换，并保留最近一次有效的 `product-state.json.bak`。主文件损坏或缺失时优先恢复备份，主备份都不可用时才回到空状态。
 
 
-## CodeBuddy 通信
+## 工作流、Goal 与右侧面板
+
+工作流、团队/子代理和 `/goal` 状态使用同一条 thread runtime 链路归属。维护相关功能时遵守以下约定：
+
+- `src/components/WorkflowRightPanel.jsx` 是工作流状态的主要展示面板；`RightPanelHost` 只负责面板类型和生命周期，不在聊天组件中复制工作流 UI。
+- 右侧面板从当前 thread 的 runtime 与持久化 timeline 恢复状态。工作流 bookkeeping（checkpoint、task、Goal progress/status 等）不应重新渲染为聊天顶部的大卡片；普通消息、工具调用和权限/问题交互仍保留在聊天时间线。
+- Goal 事件必须经过归一化、稳定 identity 去重和 sequence 乱序保护。runtime projection 不完整时，应从 timeline 恢复目标进度，而不是显示空状态。
+- 成员消息写入对应的 `memberHistoriesByName`，不复制到 leader timeline；同一事件附带的 team、workflow、progress 或 Goal metadata 仍必须正常处理。
+- 运行中的 `workflowState`/`goalState` 与终态的 `lastWorkflowState`/`lastGoalState` 分离保存，使工作流完成、失败或取消后仍能从右侧面板查看最终快照。
+- 自动打开面板只针对当前活动线程本轮首次工作流活动；用户手动关闭后，同一 `runId` 不应再次自动打开。
+
+## 提交前测试门禁
+
+仓库当前没有启用 GitHub Actions，也没有自动 pre-commit/pre-push hook；提交者必须显式执行门禁并在提交或合并说明中报告结果。
+
+常规提交以及本次聊天、Markdown、右侧面板、工作流和 Goal 变更执行：
+
+```bash
+npm run test:gate
+git diff --check
+```
+
+`test:gate` 固化以下检查：
+
+```bash
+npm run lint
+git diff --check
+npm test
+npm run test:mobile-remote
+```
+
+涉及渲染层、Electron 或工作流面板的变更，还必须执行生产目录构建：
+
+```bash
+npm run build:dir
+```
+
+发布或跨 Electron 运行时的变更执行完整桌面门禁：
+
+```bash
+npm run test:release
+```
+
+该命令包含单元测试、unpackaged Electron E2E 和 packaged-style E2E。移动端 remote 变更另行执行 `npm run test:mobile-remote`。`npm run format` 和 `npm run lint:fix` 会修改文件，不属于只读门禁。
+
 
 `src/lib/acp.js` 提供 REST、SSE 和 ACP JSON-RPC 基础能力。正常 Electron 运行时不直接依赖浏览器跨域请求：
 
