@@ -64,3 +64,22 @@ export function hasUsableGoalTurn(timeline, promptEntryId, promptStartedAt, goal
   if (!turnEntries) return false;
   return turnEntries.some((item) => item?.type === 'goal-progress' || item?.type === 'goal-status');
 }
+
+/**
+ * Team/goal orchestration may finish with member conclusions only (no leader prose).
+ * tools-only turns must NOT use this path.
+ */
+export function hasUsableMemberConclusions(memberHistoriesByName = {}) {
+  const histories =
+    memberHistoriesByName && typeof memberHistoriesByName === 'object' ? Object.values(memberHistoriesByName) : [];
+  for (const history of histories) {
+    if (!Array.isArray(history)) continue;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const item = history[i];
+      if (item?.type === 'message' && item?.role === 'assistant' && String(item.content || '').trim()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

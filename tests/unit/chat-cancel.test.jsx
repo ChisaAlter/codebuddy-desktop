@@ -317,10 +317,11 @@ describe('ReplicaChatView cancellation', () => {
 
     expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
     expect(container.querySelector('[data-response-activity]')).toBeTruthy();
-    expect(container.textContent).not.toContain('6 个子代理');
-    expect(container.querySelector('[data-testid="subagent-report-card"]')).toBeTruthy();
-    expect(container.textContent).toContain('子代理报告');
-    expect(container.textContent).toContain('子代理 1');
+    // Chat must not dump the full team roster; activity may mention running agent count.
+    expect(container.textContent).not.toContain('检查子系统 1');
+    expect(container.querySelector('[data-testid="subagent-report-card"]')).toBeNull();
+    // Full report wall is gone; details live in the workflow panel (opened via strip after idle).
+    expect(container.textContent).not.toContain('子代理报告');
   });
 
   it('keeps new ACP phases readable without rendering a transcript workflow card', async () => {
@@ -340,6 +341,7 @@ describe('ReplicaChatView cancellation', () => {
     expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
     expect(container.querySelector('[data-response-activity]')).toBeTruthy();
     expect(container.textContent).toContain('正在执行');
+    expect(container.textContent).not.toContain('future_phase');
     expect(container.textContent).not.toContain('workflow.phase.future_phase');
   });
 

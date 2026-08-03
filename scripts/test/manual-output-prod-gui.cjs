@@ -223,11 +223,15 @@ async function injectFixtures(client) {
       api.getState().patchThreadRuntime(threadId, runtimePatch);
     }
     api.setState((state) => ({
+      // Bypass AuthLoadingView / login shell so fixture timeline can paint.
+      authViewState: 'authenticated',
       connectionState: 'connected',
       sessionId: 'session-prod',
       accountLoginNeeded: false,
       codeBuddyAccountAuthState: 'authenticated',
+      codeBuddyAccountAuthError: null,
       error: null,
+      route: 'chat',
       timeline,
       isAwaitingResponse: false,
       activePromptRunId: null,
@@ -279,10 +283,14 @@ async function readDom(client) {
     const goalStrip = document.querySelector('[data-testid="goal-chat-strip"]');
     const goalPanel = document.querySelector('[data-testid="workflow-current-goal"]');
     const report = document.querySelector('[data-testid="subagent-report-card"]');
+    const summaryStrip = document.querySelector('[data-testid="workflow-summary-strip"]');
+    const toolsOnlyPanel = document.querySelector('[data-testid="workflow-tools-only"]');
+    const floatingPanel = document.querySelector('[data-testid="workflow-floating-panel"]');
 
     // Count dense path-wall signatures in visible body (should be low when collapsed)
     const nmMatches = (body.match(/node_modules/gi) || []).length;
     const longPathLines = (body.match(/C:\\\\A\\\\ChisaTerminal\\\\node_modules/gi) || []).length;
+    const bareAgentIds = (body.match(/\\b\\d{10,}-[a-z0-9]{4,}\\b/gi) || []).length;
 
     // Expand first path-list / tool if collapsed: click tool rows
     return {
@@ -297,6 +305,11 @@ async function readDom(client) {
       goalPanelText: goalPanel?.innerText?.slice(0, 300) || '',
       hasReport: Boolean(report),
       reportText: report?.innerText?.slice(0, 400) || '',
+      hasSummaryStrip: Boolean(summaryStrip),
+      summaryStripText: summaryStrip?.innerText?.slice(0, 200) || '',
+      hasToolsOnlyPanel: Boolean(toolsOnlyPanel),
+      hasFloatingPanel: Boolean(floatingPanel),
+      bareAgentIdMentions: bareAgentIds,
       nodeModulesMentions: nmMatches,
       longPathMentions: longPathLines,
       bodyHasRawWall: longPathLines >= 12,
@@ -374,27 +387,40 @@ async function main() {
     await client.evaluate(`(() => {
       const api = window.__CODEBUDDY_STORE__;
       const gs = { ...(api.getState().guiSettings || {}), structuredOutputV1: true };
-      api.setState({ guiSettings: gs });
+      api.setState({
+        guiSettings: gs,
+        authViewState: 'authenticated',
+        connectionState: 'connected',
+        accountLoginNeeded: false,
+        codeBuddyAccountAuthState: 'authenticated',
+        route: 'chat',
+      });
       return true;
     })()`);
 
     let injected = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       injected = await injectFixtures(client);
       await wait(500);
-      // Re-assert timeline still present (bootstrap may race)
+      // Re-assert timeline still present (bootstrap may race) and auth shell is gone.
       const still = await client.evaluate(`(() => {
         const api = window.__CODEBUDDY_STORE__;
-        const id = api.getState().activeThreadId;
-        const tl = api.getState().threadRuntimeById?.[id]?.timeline || api.getState().timeline || [];
+        const s = api.getState();
+        const id = s.activeThreadId;
+        const tl = s.threadRuntimeById?.[id]?.timeline || s.timeline || [];
         return {
           len: tl.length,
           types: tl.map((x) => x.type + ':' + (x.role || '')),
-          rootLen: (api.getState().timeline || []).length,
+          rootLen: (s.timeline || []).length,
+          authViewState: s.authViewState,
+          connectionState: s.connectionState,
+          body: (document.body?.innerText || '').slice(0, 120),
         };
       })()`);
       console.log('post-inject', attempt, JSON.stringify(still));
-      if (still.len >= 3) break;
+      if (still.len >= 3 && still.authViewState === 'authenticated' && !/正在连接 CodeBuddy/.test(still.body || '')) {
+        break;
+      }
       await wait(1000);
     }
     console.log('injected', JSON.stringify(injected));
@@ -433,6 +459,22 @@ async function main() {
       strip: dom.hasGoalStrip,
       panel: dom.hasGoalPanel,
     }));
+    // Report wall removed: chat must not host subagent-report-card; summary strip is OK when idle.
+    check('chat has no subagent report wall', dom.hasReport !== true, `hasReport=${dom.hasReport}`);
+    check(
+      'no bare agent-id wall in chat body',
+      Number(dom.bareAgentIdMentions || 0) === 0,
+      `bareAgentIdMentions=${dom.bareAgentIdMentions}`,
+    );
+    check(
+      'workflow summary strip or floating panel available',
+      dom.hasSummaryStrip || dom.hasFloatingPanel || dom.hasGoalPanel,
+      JSON.stringify({
+        strip: dom.hasSummaryStrip,
+        floating: dom.hasFloatingPanel,
+        goalPanel: dom.hasGoalPanel,
+      }),
+    );
 
     const expand = await expandTools(client);
     console.log('expand', expand);
@@ -462,12 +504,24 @@ async function main() {
       dom.subagentChildren >= 1 || dom.subagentCards >= 1,
       `children=${dom.subagentChildren}`,
     );
-    check(
-      'report conclusion is not path wall',
-      !/C:\\\\A\\\\ChisaTerminal\\\\node_modules\\\\pkg1/.test(dom.reportText || '') ||
-        /paths|路径|扫描|完成/i.test(dom.reportText || ''),
-      (dom.reportText || '').slice(0, 200),
-    );
+    // Full report wall is intentionally gone; if a legacy node appears it must not dump paths.
+    if (dom.hasReport) {
+      check(
+        'report conclusion is not path wall',
+        !/C:\\\\A\\\\ChisaTerminal\\\\node_modules\\\\pkg1/.test(dom.reportText || '') ||
+          /paths|路径|扫描|完成/i.test(dom.reportText || ''),
+        (dom.reportText || '').slice(0, 200),
+      );
+    } else {
+      check('report wall omitted (panel owns details)', true, 'expected');
+    }
+    if (dom.hasSummaryStrip) {
+      check(
+        'summary strip is human readable',
+        /子代理|代理|workflow|完成|失败|查看/i.test(dom.summaryStripText || ''),
+        dom.summaryStripText,
+      );
+    }
     if (dom.hasGoalPanel) {
       check(
         'goal panel shows title/condition',

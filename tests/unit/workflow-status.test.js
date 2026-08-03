@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeWorkflowStatus } from '../../src/lib/workflow-status';
+import {
+  deriveWorkflowView,
+  normalizeWorkflowStatus,
+  presentWorkflowTopbarHighlight,
+} from '../../src/lib/workflow-status';
 
 const memberNames = ['主进程', '渲染层', 'preload/shared', '构建配置', '测试文档', 'git 历史'];
 
@@ -37,7 +41,7 @@ describe('workflow status normalization', () => {
     expect(status.items[0]).toMatchObject({ name: '主进程', task: '检查 主进程', status: 'running' });
   });
 
-  it('falls back to timeline steps without calling ordinary tools subagents', () => {
+  it('treats ordinary tools as tools-only and real task rows as steps', () => {
     const status = normalizeWorkflowStatus({
       threadStatus: 'running',
       runtime: { activePromptRunId: 'run-2', promptStartedAt: 2000 },
@@ -62,10 +66,89 @@ describe('workflow status normalization', () => {
 
     expect(status.source).toBe('timeline');
     expect(status.members).toEqual([]);
-    expect(status.steps).toHaveLength(2);
-    expect(status.items[0]).toMatchObject({ name: 'Read', task: 'src/App.jsx', kind: 'tool' });
-    expect(status.items[1]).toMatchObject({ name: '运行测试', status: 'pending', kind: 'task' });
-    expect(status.reportedCount).toBe(2);
+    expect(status.steps).toHaveLength(1);
+    expect(status.tools).toHaveLength(1);
+    expect(status.tools[0]).toMatchObject({ name: 'Read', task: 'src/App.jsx', kind: 'tool' });
+    expect(status.steps[0]).toMatchObject({ name: '运行测试', status: 'pending', kind: 'task' });
+    expect(status.shouldAutoOpen).toBe(false);
+  });
+
+  it('empty new session is idle with no fake running/completed chrome', () => {
+    const runtime = {
+      timeline: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: '<system-reminder>ultracode mode enabled</system-reminder>',
+          createdAt: 1000,
+        },
+      ],
+    };
+    const status = normalizeWorkflowStatus({
+      threadStatus: 'idle',
+      runtime,
+      now: 2000,
+    });
+    expect(status.visible).toBe(false);
+    expect(status.active).toBe(false);
+    expect(status.status).toBe('idle');
+    expect(status.shouldAutoOpen).toBe(false);
+    expect(status.phase).toBe('');
+    expect(status.members).toEqual([]);
+    expect(status.tools).toEqual([]);
+
+    const view = deriveWorkflowView({ threadStatus: 'idle', runtime, now: 2000 });
+    expect(view.kind).toBe('empty');
+    expect(view.empty).toBe(true);
+    expect(view.highlightTopbar).toBe(false);
+    expect(view.showStatus).toBe(false);
+    expect(view.showPhase).toBe(false);
+    expect(view.status).toBe('idle');
+    expect(view.phase).toBe('');
+    // Hard invariant: never completed chrome when empty
+    expect(view.status).not.toBe('completed');
+    expect(presentWorkflowTopbarHighlight(runtime, 'idle', runtime.timeline)).toBe(false);
+  });
+
+  it('deriveWorkflowView never pairs completed status with empty body', () => {
+    const view = deriveWorkflowView({
+      threadStatus: 'idle',
+      runtime: { lastTeamState: { members: [] }, agentPhase: null, progress: null },
+    });
+    expect(view.empty).toBe(true);
+    expect(view.showStatus).toBe(false);
+    expect(view.showPhase).toBe(false);
+    expect(view.highlightTopbar).toBe(false);
+  });
+
+  it('does not auto-open for tools-only TaskCreate spam', () => {
+    const status = normalizeWorkflowStatus({
+      threadStatus: 'running',
+      runtime: { activePromptRunId: 'run-tools', promptStartedAt: 2000 },
+      timeline: [
+        { type: 'message', role: 'user', content: '实现', createdAt: 2000 },
+        {
+          type: 'tool_call',
+          toolCallId: 't1',
+          title: 'TaskCreate',
+          status: 'completed',
+          rawInput: { description: '写 token' },
+          createdAt: 2100,
+        },
+        {
+          type: 'tool_call',
+          toolCallId: 't2',
+          title: 'TaskCreate',
+          status: 'in_progress',
+          rawInput: { description: '写样式' },
+          createdAt: 2200,
+        },
+      ],
+    });
+    expect(status.source).toBe('tools');
+    expect(status.shouldAutoOpen).toBe(false);
+    expect(status.toolsRunningCount).toBe(1);
+    expect(status.phase).toBe('tool_executing');
   });
 
   it('ignores stale execution events from an earlier user turn', () => {
@@ -80,6 +163,8 @@ describe('workflow status normalization', () => {
       ],
     });
 
+    // tools-only: items are tools from the current turn only
+    expect(status.source).toBe('tools');
     expect(status.items).toHaveLength(1);
     expect(status.items[0].id).toBe('new');
   });

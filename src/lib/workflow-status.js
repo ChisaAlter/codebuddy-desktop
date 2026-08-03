@@ -144,11 +144,13 @@ function taskStep(item, index) {
 function fallbackSteps(entries) {
   const steps = [];
   const taskIndex = new Map();
+  const tools = [];
   for (const [index, item] of entries.entries()) {
     if (item?.type === 'tool_call') {
-      steps.push(toolStep(item, index));
+      tools.push(toolStep(item, index));
       continue;
     }
+    // Only real task/goal bookkeeping counts as workflow "steps". Ordinary tools are tracked separately.
     if (!['taskCreated', 'taskStatus', 'goal-progress', 'goal-status'].includes(item?.type)) continue;
     const step = taskStep(item, index);
     const existingIndex = taskIndex.get(step.id);
@@ -159,7 +161,15 @@ function fallbackSteps(entries) {
       steps[existingIndex] = { ...steps[existingIndex], ...step };
     }
   }
-  return steps;
+  return { steps, tools };
+}
+
+function hasExplicitSubagentActivity(entries) {
+  return (Array.isArray(entries) ? entries : []).some(
+    (item) =>
+      item?.type === 'tool_call' &&
+      (item?.isSubAgent || item?.memberName || item?.subagentType),
+  );
 }
 
 function phaseValue(agentPhase, progress) {
@@ -184,7 +194,9 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
       historyAvailable: Boolean(runtime.memberHistoriesByName?.[normalized.name]?.length),
     };
   });
-  const steps = members.length ? [] : fallbackSteps(entries);
+  const fallback = members.length ? { steps: [], tools: [] } : fallbackSteps(entries);
+  const steps = fallback.steps;
+  const toolItems = fallback.tools;
   const projectedGoals = runtime.goalState || runtime.lastGoalState || goalsFromTimeline(entries);
   const goals = goalList(projectedGoals);
   const projectedGoal = currentGoal(projectedGoals);
@@ -203,18 +215,26 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     if (existingGoalIndex >= 0) steps[existingGoalIndex] = { ...steps[existingGoalIndex], ...goalStep };
     else steps.push(goalStep);
   }
+  // Panel/activity items: members > real steps > (tools only as tools source, not fake workflow steps)
   const items = members.length ? members : steps;
+  const explicitSubagent = hasExplicitSubagentActivity(entries);
   const source = members.length
     ? 'team'
-    : steps.length
-      ? (projectedGoals.eventCount ? 'goal' : 'timeline')
-      : runtime.teamState
-        ? 'team'
-        : runtime.workflowState
-          ? 'workflow'
-          : runtime.lastTeamState
+    : projectedGoal || Number(projectedGoals.eventCount || 0) > 0
+      ? 'goal'
+      : steps.length
+        ? 'timeline'
+        : toolItems.length
+          ? 'tools'
+          : runtime.teamState
             ? 'team'
-            : null;
+            : runtime.workflowState
+              ? 'workflow'
+              : runtime.lastTeamState
+                ? 'team'
+                : explicitSubagent
+                  ? 'team'
+                  : null;
   const pendingPermission =
     (Array.isArray(runtime.permissionRequests) &&
       runtime.permissionRequests.some((item) => !['resolved', 'expired', 'cancelled'].includes(item?.status))) ||
@@ -223,13 +243,17 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   const explicitCount = Number(
     firstValue(teamSnapshot?.memberCount, teamSnapshot?.agentCount, teamSnapshot?.totalMembers, runtime.workflowState?.agentCount),
   );
-  const reportedCount = Number.isFinite(explicitCount) && explicitCount > 0 ? explicitCount : items.length;
   const activeThread = ['running', 'waiting', 'cancelling'].includes(threadStatus);
+  const toolsRunningCount = toolItems.filter((item) => isActive(item.status)).length;
   const activeItems = items.filter((item) => isActive(item.status));
   const failedCount = items.filter((item) => item.status === 'failed').length;
   const completedCount = items.filter((item) => item.status === 'completed').length;
   const progress = normalizeProgress(runtime.progress || runtime.workflowState?.progress || projectedGoal?.progress);
-  const phase = pendingPermission ? 'waiting_for_permission' : phaseValue(runtime.agentPhase, runtime.progress || runtime.workflowState);
+  const phase = pendingPermission
+    ? 'waiting_for_permission'
+    : toolsRunningCount > 0 && !members.length && !steps.length
+      ? 'tool_executing'
+      : phaseValue(runtime.agentPhase, runtime.progress || runtime.workflowState);
   const startedAt = Number(
     firstValue(
       teamSnapshot?.startedAt,
@@ -238,36 +262,74 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
       runtime.progress?.startedAt,
       promptStartedAt,
       items.find((item) => item.startedAt)?.startedAt,
+      toolItems.find((item) => item.startedAt)?.startedAt,
     ),
   ) || null;
   const terminal = !activeThread && !runtime.activePromptRunId && !runtime.isAwaitingResponse && !pendingPermission;
+  // Visible only with real orchestration signal — not a bare phase string / leftover empty objects.
   const visible = Boolean(
-    source || phase || progress || runtime.historyReplayActive || pendingPermission || runtime.lastTeamState,
-  ) && (!terminal || source === 'team' || runtime.lastTeamState);
+    (source && (members.length > 0 || steps.length > 0 || toolItems.length > 0 || projectedGoal || source === 'workflow')) ||
+      pendingPermission ||
+      runtime.historyReplayActive ||
+      (source === 'team' && runtime.lastTeamState && members.length > 0) ||
+      (source === 'goal' && projectedGoal),
+  ) && (!terminal || source === 'team' || source === 'goal' || Boolean(runtime.lastTeamState && members.length));
   const memberStatuses = members.map((item) => item.status);
   const membersActive = memberStatuses.some((status) => isActive(status));
-  const active = Boolean(
-    runtime.historyReplayActive ||
-      runtime.activePromptRunId ||
-      runtime.isAwaitingResponse ||
-      activeThread ||
-      (activeTeam && (members.length === 0 || membersActive)) ||
-      activeItems.length ||
+  const hasOrchestration = Boolean(
+    members.length > 0 ||
+      steps.length > 0 ||
+      toolItems.length > 0 ||
+      projectedGoal ||
       pendingPermission ||
-      runtime.workflowState?.active,
+      runtime.historyReplayActive ||
+      (source === 'workflow' && runtime.workflowState) ||
+      explicitSubagent,
   );
-  const snapshotStatus = normalizeStatus(teamSnapshot?.status, 'completed');
-  const status = failedCount > 0 || snapshotStatus === 'failed'
-    ? 'failed'
-    : snapshotStatus === 'cancelled'
-      ? 'cancelled'
-      : active
-        ? threadStatus === 'waiting' || pendingPermission || items.some((item) => item.status === 'waiting')
-          ? 'waiting'
-          : 'running'
-        : completedCount > 0 || phase === 'idle' || snapshotStatus === 'completed'
-          ? 'completed'
-          : 'idle';
+  // "Active workflow" requires orchestration content — a running prompt alone is not a workflow.
+  const active = Boolean(
+    hasOrchestration &&
+      (
+        runtime.historyReplayActive ||
+        runtime.activePromptRunId ||
+        runtime.isAwaitingResponse ||
+        activeThread ||
+        (activeTeam && (members.length === 0 || membersActive)) ||
+        activeItems.length ||
+        toolsRunningCount > 0 ||
+        pendingPermission ||
+        runtime.workflowState?.active
+      ),
+  );
+  // Auto-open only for real orchestration — not ordinary TaskCreate tool spam.
+  const shouldAutoOpen = Boolean(
+    activeThread &&
+      (runtime.activePromptRunId || runtime.isAwaitingResponse || active) &&
+      (
+        (source === 'team' && members.length > 0) ||
+        source === 'goal' ||
+        (source === 'workflow' && Boolean(runtime.workflowState)) ||
+        explicitSubagent
+      ),
+  );
+  // Only read team snapshot status when a team actually exists. normalizeStatus(undefined, 'completed')
+  // used to force empty panels into "已完成" + phase fallback "正在执行".
+  const snapshotStatus = teamSnapshot
+    ? normalizeStatus(teamSnapshot.status, active ? 'running' : 'completed')
+    : null;
+  const status = !hasOrchestration
+    ? 'idle'
+    : failedCount > 0 || snapshotStatus === 'failed'
+      ? 'failed'
+      : snapshotStatus === 'cancelled'
+        ? 'cancelled'
+        : active
+          ? threadStatus === 'waiting' || pendingPermission || items.some((item) => item.status === 'waiting')
+            ? 'waiting'
+            : 'running'
+          : completedCount > 0 || phase === 'idle' || snapshotStatus === 'completed'
+            ? 'completed'
+            : 'idle';
   const tokenTotals = members.reduce((totals, member) => {
     totals.inputTokens += Number(member.tokenUsage?.inputTokens || 0);
     totals.outputTokens += Number(member.tokenUsage?.outputTokens || 0);
@@ -275,18 +337,25 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   }, { inputTokens: 0, outputTokens: 0 });
   const toolCallCount = members.reduce((count, member) => count + member.toolCallCount, 0);
 
+  const reportedCount = Number.isFinite(explicitCount) && explicitCount > 0
+    ? explicitCount
+    : members.length || steps.length || toolItems.length;
   return {
     visible,
     active,
+    shouldAutoOpen,
     status,
     phase,
     progress,
     source,
-    items,
+    items: members.length || steps.length ? items : toolItems,
     members,
     steps,
+    tools: toolItems,
+    toolsRunningCount,
     reportedCount,
-    activeCount: activeItems.length,
+    // Activity "count": members/steps when present; else running tools (never "N TaskCreates = N workflow steps").
+    activeCount: members.length || steps.length ? activeItems.length : toolsRunningCount,
     completedCount,
     failedCount,
     startedAt,
@@ -295,10 +364,10 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     teamStatus: teamSnapshot?.status || null,
     runId: firstValue(runtime.workflowState?.runId, runtime.activePromptRunId, teamSnapshot?.runId, null),
     tokenTotals,
-    toolCallCount,
-    detailsAvailable: members.length > 0 || Boolean(runtime.memberHistoriesByName && Object.keys(runtime.memberHistoriesByName).length),
-    inferred: source === 'timeline',
-    capabilityMessage: source === 'workflow' && members.length === 0 ? 'aggregate-only' : null,
+    toolCallCount: toolCallCount || toolItems.length,
+    detailsAvailable: members.length > 0 || Boolean(runtime.memberHistoriesByName && Object.keys(runtime.memberHistoriesByName).length) || toolItems.length > 0,
+    inferred: source === 'timeline' || source === 'tools',
+    capabilityMessage: source === 'workflow' && members.length === 0 ? 'aggregate-only' : source === 'tools' ? 'tools-only' : null,
     goals,
     currentGoal: projectedGoal,
     goalMode: projectedGoals.mode || null,
@@ -308,4 +377,96 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
 
 export function workflowHasActivity(status) {
   return Boolean(status?.active && status?.visible);
+}
+
+/**
+ * Single product view-model for topbar / floating panel / activity strip.
+ * Empty-first contract:
+ * - kind==='empty' ⇒ no status chrome, no phase chrome, no topbar highlight
+ * - never emit status='completed' with visible=false
+ */
+export function deriveWorkflowView({ runtime = {}, threadStatus = 'idle', timeline, now = Date.now() } = {}) {
+  const base = normalizeWorkflowStatus({ runtime, threadStatus, timeline, now });
+  const hasMembers = Array.isArray(base.members) && base.members.length > 0;
+  const hasTools = Array.isArray(base.tools) && base.tools.length > 0;
+  const hasSteps = Array.isArray(base.steps) && base.steps.length > 0;
+  const hasGoal = Boolean(base.currentGoal);
+  const hasPermissionPhase = base.phase === 'waiting_for_permission';
+  const reports = Array.isArray(runtime.subagentReports)
+    ? runtime.subagentReports
+    : Array.isArray(runtime.lastSubagentReports)
+      ? runtime.lastSubagentReports
+      : [];
+  const hasReports = reports.length > 0;
+
+  let kind = 'empty';
+  if (hasPermissionPhase) kind = 'permission';
+  else if (base.source === 'team' && hasMembers) kind = 'team';
+  else if (base.source === 'goal' || hasGoal) kind = 'goal';
+  else if (base.source === 'workflow') kind = 'workflow';
+  else if (base.source === 'tools' || hasTools) kind = 'tools';
+  else if (base.source === 'timeline' && hasSteps) kind = 'timeline';
+  else if (hasReports && (hasMembers || base.active)) kind = 'team';
+  else kind = 'empty';
+
+  const empty = kind === 'empty' || (!base.visible && !hasGoal && !hasMembers && !hasTools && !hasSteps && !hasPermissionPhase);
+  const resolvedKind = empty ? 'empty' : kind;
+
+  // Hard invariants for chrome
+  const status = empty ? 'idle' : base.status === 'idle' && base.active ? 'running' : base.status;
+  const phase = empty ? '' : base.phase || '';
+  const highlightTopbar = !empty && (base.active || hasMembers || hasGoal || hasReports || status === 'failed');
+  const showStatus = !empty && status && status !== 'idle';
+  const showPhase = !empty && Boolean(phase);
+
+  return {
+    ...base,
+    // Force consistent empty fields even if base drifts.
+    visible: empty ? false : base.visible,
+    active: empty ? false : base.active,
+    status,
+    phase,
+    kind: resolvedKind,
+    empty,
+    highlightTopbar,
+    showStatus,
+    showPhase,
+    shouldAutoOpen: empty ? false : base.shouldAutoOpen,
+  };
+}
+
+/** Presenter: one-line chat activity label keys/params (caller translates). */
+export function presentWorkflowActivity(status, t) {
+  const view = status?.kind ? status : null;
+  const model = view || status;
+  if (!model || model.empty || !workflowHasActivity(model)) return null;
+  if (model.source === 'team' && (model.activeCount || model.members?.length)) {
+    return t('workflow.activityAgents', { count: model.activeCount || model.members.length });
+  }
+  if (model.source === 'goal' || model.kind === 'goal') {
+    const percent = model.progress?.percent;
+    if (Number.isFinite(percent)) return t('workflow.activityGoalPercent', { percent: Math.round(percent) });
+    return t('workflow.activityGoal');
+  }
+  if (model.source === 'tools' || model.phase === 'tool_executing' || model.kind === 'tools') {
+    const count = model.toolsRunningCount || model.activeCount || 0;
+    return count > 0 ? t('workflow.activityTools', { count }) : t('sessionActivity.tool');
+  }
+  if (model.source === 'timeline' && model.activeCount > 0) {
+    return t('workflow.activitySteps', { count: model.activeCount });
+  }
+  return null;
+}
+
+/** Presenter: whether the workflow panel should auto-open for this run. */
+export function presentWorkflowAutoOpen(status, { dismissedRunId = null, runId = null } = {}) {
+  if (!status || status.empty || !status.shouldAutoOpen) return false;
+  const id = runId || status.runId;
+  if (id && dismissedRunId && String(dismissedRunId) === String(id)) return false;
+  return true;
+}
+
+/** Topbar highlight — same source as panel empty contract. */
+export function presentWorkflowTopbarHighlight(runtime = {}, threadStatus = 'idle', timeline) {
+  return deriveWorkflowView({ runtime, threadStatus, timeline }).highlightTopbar;
 }

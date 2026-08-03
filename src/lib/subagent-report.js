@@ -37,6 +37,32 @@ function identityFor(source, fallback) {
   );
 }
 
+/** Timestamp-ish agent ids like `1785720595825-gc8kb5` must not be the only visible title. */
+export function isBareAgentIdentity(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (/^\d{10,}[-_][a-z0-9]{4,}$/i.test(text)) return true;
+  if (/^(agent|task|tool|member|session)[-_]?\d+/i.test(text) && text.length > 12) return true;
+  return false;
+}
+
+function displayNameFor(source, fallback) {
+  const candidate = firstValue(
+    source?.name,
+    source?.memberName,
+    source?.agentName,
+    source?.displayName,
+    source?.role,
+    source?.subagentType,
+    source?.description,
+    fallback,
+  );
+  if (candidate && !isBareAgentIdentity(candidate)) return String(candidate);
+  const role = firstValue(source?.role, source?.subagentType, '');
+  if (role && !isBareAgentIdentity(role)) return String(role);
+  return '';
+}
+
 function flattenTools(items, output = []) {
   for (const item of Array.isArray(items) ? items : []) {
     if (!item || typeof item !== 'object') continue;
@@ -207,10 +233,11 @@ export function collectSubagentReports({
       toolIds: new Set(),
       updatedAt: 0,
     };
+    const nextName = displayNameFor(source, prior.name || '');
     const next = {
       ...prior,
       role: firstValue(source?.role, source?.subagentType, prior.role, ''),
-      name: firstValue(source?.name, source?.memberName, source?.agentName, prior.name, key),
+      name: nextName || prior.name || '',
       status: normalizeStatus(source?.status || prior.status),
       description: firstValue(source?.description, source?.task, source?.prompt, prior.description, ''),
       agentId: firstValue(source?.agentId, source?.subagentId, source?.taskId, source?.sessionId, prior.agentId, key),
@@ -233,7 +260,10 @@ export function collectSubagentReports({
   };
 
   for (const item of flattenTools(timeline)) {
-    if (!item.isSubAgent && !item.memberName && !item.subagentType && !item.parentToolCallId) continue;
+    // Require explicit subagent signals — parent-only orphans without member/type still nest under tools,
+    // but bare TaskCreate rows with only an agent id must not become report cards.
+    if (!item.isSubAgent && !item.memberName && !item.subagentType) continue;
+    if (item.parentToolCallId && !item.isSubAgent && !item.memberName && !item.subagentType) continue;
     // Children with parent are attributed to parent identity when possible
     const matchingMember = members.find(
       (member) => member?.name === item.memberName || member?.agentName === item.memberName,
@@ -290,7 +320,22 @@ export function collectSubagentReports({
   }
 
   return Array.from(reports.values())
-    .filter((report) => report.name || report.role)
+    .filter((report) => {
+      const titled = (report.name && !isBareAgentIdentity(report.name)) || (report.role && !isBareAgentIdentity(report.role));
+      const useful =
+        Boolean(report.conclusion && String(report.conclusion).trim()) ||
+        report.conclusionKind === 'text' ||
+        report.conclusionKind === 'path_list' ||
+        (report.toolCallCount > 0 && report.description);
+      // Drop pure id shells with no human title and no useful body (TaskCreate noise).
+      return titled || useful;
+    })
+    .map((report) => {
+      if (!report.name || isBareAgentIdentity(report.name)) {
+        report.name = firstValue(report.role, report.description, report.summary, 'Subagent');
+      }
+      return report;
+    })
     .sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
 }
 

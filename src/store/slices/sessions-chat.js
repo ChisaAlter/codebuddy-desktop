@@ -28,6 +28,7 @@ import {
   hasPromptRunActivity,
   hasUsableAssistantBody,
   hasUsableGoalTurn,
+  hasUsableMemberConclusions,
 } from '../helpers/prompt-completion';
 import {
   emptyThreadRuntime,
@@ -44,6 +45,7 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
+import { deriveWorkflowView, presentWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
 
 /**
@@ -323,10 +325,21 @@ export function createSessionsChatSlice(set, get, ctx) {
       });
       get().patchThreadRuntime(threadId, { subagentReports: runtimePatch.subagentReports });
     }
-    if (workflowActivity && get().activeThreadId === threadId) {
-      const runId = runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
+    if (get().activeThreadId === threadId) {
+      // Auto-open only for real orchestration (team/goal/workflow/explicit subagent), not TaskCreate spam.
+      const latestForPanel = get().threadRuntimeById[threadId] || runtime;
+      const view = deriveWorkflowView({
+        runtime: latestForPanel,
+        threadStatus: get().threadsById[threadId]?.status || 'idle',
+        timeline: latestForPanel.timeline,
+      });
+      const runId = view.runId || runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
       const currentPanel = get().workflowFloatingPanel;
-      if (runId && currentPanel == null && get().workflowPanelDismissedRunId !== runId) {
+      if (
+        !view.empty &&
+        presentWorkflowAutoOpen(view, { dismissedRunId: get().workflowPanelDismissedRunId, runId }) &&
+        currentPanel == null
+      ) {
         get().openWorkflowPanel({ threadId, runId });
       }
     }
@@ -1110,13 +1123,7 @@ export function createSessionsChatSlice(set, get, ctx) {
     };
 
     try {
-      const knownRecoveryError = thread.metadata?.lastError || thread.metadata?.recoveryError || '';
-      if (requestedSessionId && /(timeout|408)/i.test(knownRecoveryError)) {
-        await client.connect();
-        const init = await client.initialize();
-        const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
-        return await applyInitializedSession(init, loaded, knownRecoveryError);
-      }
+      // Transport timeouts are retriable — always try session/load first. Do NOT treat idle timeout as session death.
       const { init, loaded } = await client.initializeSession(requestedSessionId || null, project.workspacePath || '.');
       return await applyInitializedSession(init, loaded);
     } catch (error) {
@@ -1158,17 +1165,35 @@ export function createSessionsChatSlice(set, get, ctx) {
         return false;
       }
       if (requestedSessionId) {
-        try {
-          const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
-          return await applyInitializedSession(null, loaded, error.message);
-        } catch (_) {}
+        const message = String(error?.message || error || '');
+        const transportFailure =
+          error?.type === 'timeout' ||
+          error?.sessionRecoverable === true ||
+          /idle timeout|timeout|ECONNREFUSED|network|fetch failed|408|502|503|504/i.test(message);
+        const sessionInvalid =
+          error?.sessionInvalid === true ||
+          /session not found|invalid session|unknown session|no such session|session.*expired/i.test(message);
+        // Only create a new session when the old one is explicitly unusable — not on transport blips.
+        if (sessionInvalid && !transportFailure) {
+          try {
+            const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
+            return await applyInitializedSession(null, loaded, error.message);
+          } catch (_) {}
+        }
       }
       const stillActive = isScopedRequestCurrent(request, get());
       if (stillActive) set({ error: error.message, connectionState: 'error' });
       get().patchThreadRuntime(thread.id, { connectionState: 'error' });
       await get().updateThreadRecord(thread.id, {
         status: 'error',
-        metadata: { ...(thread.metadata || {}), lastError: error.message },
+        metadata: {
+          ...(thread.metadata || {}),
+          lastError: error.message,
+          lastTransportError:
+            error?.type === 'timeout' || /idle timeout|timeout/i.test(String(error?.message || ''))
+              ? error.message
+              : thread.metadata?.lastTransportError || null,
+        },
       });
       return false;
     }
@@ -1667,6 +1692,11 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
 
       thread = createThreadRecord(projectId);
+      // Close any previous-thread workflow shell so a blank session never inherits
+      // "completed / running" chrome or a blue topbar highlight.
+      try {
+        get().closeWorkflowPanel?.();
+      } catch (_) {}
       set((state) => ({
         threadsById: { ...state.threadsById, [thread.id]: thread },
         threadOrderByProject: {
@@ -1675,6 +1705,8 @@ export function createSessionsChatSlice(set, get, ctx) {
           [projectId]: [thread.id, ...(state.threadOrderByProject[projectId] || [])],
         },
         activeThreadId: thread.id,
+        workflowFloatingPanel: null,
+        workflowPanelDismissedRunId: null,
       }));
 
       const persisted = await get().persistProductState();
@@ -1807,6 +1839,9 @@ export function createSessionsChatSlice(set, get, ctx) {
       const currentThread = get().threadsById[threadId];
       if (!currentThread || currentThread.sessionId !== sessionId) return true;
       get().applyInterruptionResolution(threadId, interruptionId, decision);
+      try {
+        get().getThreadClient(threadId)?.resumeActivePromptIdle?.(sessionId);
+      } catch (_) {}
       await get().persistProductState();
       return true;
     });
@@ -1876,6 +1911,9 @@ export function createSessionsChatSlice(set, get, ctx) {
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== sessionId) return true;
         get().applyQuestionResolution(threadId, toolCallId, 'answered', answers);
+        try {
+          get().getThreadClient(threadId)?.resumeActivePromptIdle?.(sessionId);
+        } catch (_) {}
         await get().persistProductState();
         return true;
       } catch (error) {
@@ -2306,6 +2344,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       const latest = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       return hasUsableGoalTurn(latest.timeline, promptEntryId, promptStartedAt, latest.goalState || latest.lastGoalState);
     };
+    const hasUsableOrchestration = () => {
+      const latest = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const hasTeam = Boolean(latest.teamState?.members?.length || latest.lastTeamState?.members?.length);
+      const hasGoal = hasUsableGoal();
+      if (!hasTeam && !hasGoal) return false;
+      return hasUsableMemberConclusions(latest.memberHistoriesByName);
+    };
     const recoverPromptHistory = async () => {
       if (!runIsCurrent()) return false;
       get().patchThreadRuntime(threadId, { historyReplayActive: true });
@@ -2553,6 +2598,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         !hasFinalResponse() &&
         !hasUsableBody() &&
         !hasUsableGoal() &&
+        !hasUsableOrchestration() &&
         Date.now() < graceDeadline
       ) {
         await waitForMilliseconds(25);
@@ -2560,12 +2606,12 @@ export function createSessionsChatSlice(set, get, ctx) {
 
       // Prefer a post-tool final answer. If only pre-tool narrative is present, skip history
       // reload (user already sees the body). Reload only when the turn has no usable text.
-      // `/goal` turns may legitimately finish with only goal metadata.
-      if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody() && !hasUsableGoal()) {
+      // `/goal` / team turns may finish with goal metadata or member conclusions only.
+      if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody() && !hasUsableGoal() && !hasUsableOrchestration()) {
         await recoverPromptHistory();
       }
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
-      if (!hasFinalResponse() && !hasUsableBody() && !hasUsableGoal()) {
+      if (!hasFinalResponse() && !hasUsableBody() && !hasUsableGoal() && !hasUsableOrchestration()) {
         const incompleteError = new Error('回复已结束，但最终正文未送达；自动历史恢复也未找到完整回答。');
         incompleteError.promptAccepted = true;
         throw incompleteError;

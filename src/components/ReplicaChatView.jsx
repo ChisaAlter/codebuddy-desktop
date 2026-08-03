@@ -27,7 +27,8 @@ import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
-import { normalizeWorkflowStatus, workflowHasActivity } from '../lib/workflow-status';
+import { deriveWorkflowView, presentWorkflowActivity, workflowHasActivity } from '../lib/workflow-status';
+import { isBareAgentIdentity } from '../lib/subagent-report';
 import { collectSubagentReports } from '../lib/subagent-report';
 import {
   formatToolCollapsedSummary,
@@ -1120,27 +1121,6 @@ function SubagentActivityLine({ items, t }) {
   );
 }
 
-function SubagentConclusionBody({ report, t }) {
-  if (report?.conclusionKind === 'path_list' && report.pathList) {
-    return <PathListSummary pathList={report.pathList} t={t} />;
-  }
-  if (report?.conclusionKind === 'tool_summary' && report.summary) {
-    return <div className="subagent-report-card__conclusion text-[var(--color-text-secondary)]">{report.summary}</div>;
-  }
-  if (report?.conclusion) {
-    return (
-      <div className="subagent-report-card__conclusion line-clamp-4" title={report.conclusion}>
-        {report.conclusion}
-      </div>
-    );
-  }
-  return (
-    <div className="subagent-report-card__conclusion text-[var(--color-text-muted)]">
-      {t('subagent.noConclusion')}
-      {report?.toolCallCount ? ` · ${t('subagent.toolsCompleted', { count: report.toolCallCount })}` : ''}
-    </div>
-  );
-}
 
 function SubagentCard({ item, t }) {
   const isCompleted = item.status === 'completed' || item.status === 'done';
@@ -1227,24 +1207,37 @@ function SubagentCard({ item, t }) {
   );
 }
 
-function SubagentReportCard({ reports, t }) {
-  if (!reports.length) return null;
+function usefulSubagentReports(reports) {
+  return (Array.isArray(reports) ? reports : []).filter((report) => {
+    const name = report?.name || report?.role || '';
+    if (isBareAgentIdentity(name) && !report?.conclusion && report?.conclusionKind !== 'text') return false;
+    return Boolean(
+      (name && !isBareAgentIdentity(name)) ||
+        (report?.conclusion && String(report.conclusion).trim()) ||
+        report?.conclusionKind === 'path_list' ||
+        report?.status === 'failed',
+    );
+  });
+}
+
+/** Compact end-of-turn strip — not a wall of Agent ID cards. */
+function WorkflowSummaryStrip({ reports, t, onOpen }) {
+  const useful = usefulSubagentReports(reports);
+  if (!useful.length) return null;
+  const failed = useful.filter((r) => r.status === 'failed').length;
+  const label = failed
+    ? t('subagent.summaryFailed', { count: useful.length, failed })
+    : t('subagent.summaryDone', { count: useful.length });
   return (
-    <section className="subagent-report-card" data-testid="subagent-report-card">
-      <div className="subagent-report-card__title">{t('subagent.report')}</div>
-      {reports.map((report) => (
-        <div className="subagent-report-card__item" key={report.id}>
-          <div className="subagent-report-card__heading">
-            <strong>{report.name || report.role}</strong>
-            <span>{t(`subagent.status.${report.status}`) || report.status}</span>
-          </div>
-          <div className="subagent-report-card__meta">
-            {t('subagent.role')}: {report.role || t('subagent.unknownRole')} · {t('subagent.agentId')}: {report.agentId} · {report.toolCallCount} {t('workflow.tools')}
-          </div>
-          <SubagentConclusionBody report={report} t={t} />
-        </div>
-      ))}
-    </section>
+    <button
+      type="button"
+      className="subagent-summary-strip mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-3 py-2 text-left text-[12px] text-[var(--color-text-secondary)] hover:border-[var(--color-border-default)]"
+      data-testid="workflow-summary-strip"
+      onClick={onOpen}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <span className="shrink-0 text-[var(--color-accent-blue)]">{t('goal.openPanel')}</span>
+    </button>
   );
 }
 
@@ -1628,10 +1621,17 @@ function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
     tool_use: t('sessionActivity.tool'),
     planning: t('sessionActivity.planning'),
   };
+  // Unknown ACP phases must stay human-readable (never leak raw future_phase keys into the chat chrome).
+  const phaseKey = `workflow.phase.${String(current).toLowerCase()}`;
+  const phaseLabel = t(phaseKey);
+  const label =
+    labels[current] ||
+    (phaseLabel && phaseLabel !== phaseKey ? phaseLabel : null) ||
+    t('workflow.phase.unknown');
   return (
     <div className="mb-3 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
       <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--color-accent-blue)]" />
-      <span>{labels[current] || String(current)}</span>
+      <span>{label}</span>
     </div>
   );
 }
@@ -2294,6 +2294,7 @@ export default function ReplicaChatView() {
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
+  const openWorkflowPanel = useStore((s) => s.openWorkflowPanel);
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
   const promptStartedAt = useStore((s) => s.promptStartedAt);
   const activePromptRunId = useStore((s) => s.activePromptRunId);
@@ -2671,7 +2672,7 @@ export default function ReplicaChatView() {
     activePromptRunId ||
     Boolean(activeThreadRuntime?.promptDispatchInFlight);
   const workflowStatus = useMemo(
-    () => normalizeWorkflowStatus({ runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline }),
+    () => deriveWorkflowView({ runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline }),
     [activeThreadRuntime, activeThreadStatus, timeline],
   );
   const responseActivityLabel = useMemo(
@@ -2687,9 +2688,8 @@ export default function ReplicaChatView() {
         t,
       });
       if (!workflowHasActivity(workflowStatus)) return baseLabel;
-      const workflowLabel = workflowStatus.source === 'team'
-        ? t('workflow.activityAgents', { count: workflowStatus.activeCount || workflowStatus.reportedCount })
-        : t('workflow.activitySteps', { count: workflowStatus.activeCount || workflowStatus.items.length });
+      const workflowLabel = presentWorkflowActivity(workflowStatus, t);
+      if (!workflowLabel) return baseLabel;
       return baseLabel ? `${workflowLabel} · ${baseLabel}` : workflowLabel;
     },
     [
@@ -3311,7 +3311,13 @@ export default function ReplicaChatView() {
                   <TimelineItem item={item} />
                 </React.Fragment>
               ))}
-              <SubagentReportCard reports={subagentReports} t={t} />
+              {!sessionResponseBusy ? (
+                <WorkflowSummaryStrip
+                  reports={subagentReports}
+                  t={t}
+                  onOpen={() => openWorkflowPanel({ threadId: activeThreadId })}
+                />
+              ) : null}
             </div>
           )}
           {timeline.length > 0 ? recoveryNotice : null}

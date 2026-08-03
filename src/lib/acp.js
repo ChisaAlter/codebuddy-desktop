@@ -18,6 +18,29 @@ const PROMPT_CONTENT_SESSION_UPDATES = new Set([
   'tool_call',
   'tool_call_update',
 ]);
+// Progress events that should reset long-running session/prompt idle timers (POST or GET-SSE).
+const PROMPT_IDLE_TOUCH_UPDATES = new Set([
+  ...PROMPT_CONTENT_SESSION_UPDATES,
+  'user_message_chunk',
+  'goal-progress',
+  'goal-status',
+  'plan',
+  'plan_update',
+  'status_change',
+]);
+
+export class AcpTimeoutError extends Error {
+  constructor(method, { idleMs = LONG_REQUEST_IDLE_TIMEOUT_MS, kind = 'idle' } = {}) {
+    super(`ACP request ${kind === 'idle' ? 'idle ' : ''}timeout: ${method}`);
+    this.name = 'AcpTimeoutError';
+    this.type = 'timeout';
+    this.kind = kind;
+    this.method = method;
+    this.idleMs = idleMs;
+    this.retriable = true;
+    this.sessionRecoverable = true;
+  }
+}
 
 export function getApiBase() {
   return _apiBase;
@@ -425,6 +448,13 @@ export class AcpClient {
       message?.params?.update?.sessionUpdate ||
       message?.params?.update?.session_update ||
       message?.params?.update?.type;
+    // GET-SSE progress must keep session/prompt idle alive (POST may be silent while tools run).
+    if (sessionId && message?.method === 'session/update' && PROMPT_IDLE_TOUCH_UPDATES.has(sessionUpdate)) {
+      this.touchActivePromptIdle(sessionId);
+    }
+    if (sessionId && (message?.method === 'session/request_permission' || message?.method === '_codebuddy.ai/question')) {
+      this.pauseActivePromptIdle(sessionId);
+    }
     const promptContentEvent =
       message?.method === 'session/update' && PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
     const requestId = promptContentEvent ? promptEventRequestId(message) : null;
@@ -696,12 +726,19 @@ export class AcpClient {
   trackActivePrompt(sessionId, cancel, context = null) {
     const key = String(sessionId || '').trim();
     if (!key || typeof cancel !== 'function') return () => {};
-    const handle = { cancel, context };
+    const handle = {
+      cancel,
+      context,
+      touchIdle: null,
+      pauseIdle: null,
+      resumeIdle: null,
+      paused: false,
+    };
     const handles = this.activePromptRequests.get(key) || new Set();
     handles.add(handle);
     this.activePromptRequests.set(key, handles);
     this.rememberPromptContext(key, context);
-    return () => {
+    const unregister = () => {
       const current = this.activePromptRequests.get(key);
       if (!current) return;
       current.delete(handle);
@@ -709,6 +746,46 @@ export class AcpClient {
       // Extend correlation window so post-stream SSE can still attach this run id.
       this.rememberPromptContext(key, context);
     };
+    unregister.handle = handle;
+    return unregister;
+  }
+
+  touchActivePromptIdle(sessionId) {
+    const key = String(sessionId || '').trim();
+    const handles = this.activePromptRequests.get(key);
+    if (!handles?.size) return false;
+    let touched = false;
+    for (const handle of handles) {
+      if (handle.paused) continue;
+      if (typeof handle.touchIdle === 'function') {
+        handle.touchIdle();
+        touched = true;
+      }
+    }
+    return touched;
+  }
+
+  pauseActivePromptIdle(sessionId) {
+    const key = String(sessionId || '').trim();
+    const handles = this.activePromptRequests.get(key);
+    if (!handles?.size) return false;
+    for (const handle of handles) {
+      handle.paused = true;
+      if (typeof handle.pauseIdle === 'function') handle.pauseIdle();
+    }
+    return true;
+  }
+
+  resumeActivePromptIdle(sessionId) {
+    const key = String(sessionId || '').trim();
+    const handles = this.activePromptRequests.get(key);
+    if (!handles?.size) return false;
+    for (const handle of handles) {
+      handle.paused = false;
+      if (typeof handle.resumeIdle === 'function') handle.resumeIdle();
+      else if (typeof handle.touchIdle === 'function') handle.touchIdle();
+    }
+    return true;
   }
 
   hasActivePrompt(sessionId) {
@@ -1085,6 +1162,7 @@ export class AcpClient {
       };
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = null;
         unregisterPrompt();
         stream?.close?.();
       };
@@ -1098,8 +1176,12 @@ export class AcpClient {
         if (timeoutId) clearTimeout(timeoutId);
         if (timeoutMs <= 0) return;
         timeoutId = setTimeout(() => {
-          finish(reject, new Error(`ACP request idle timeout: ${payload.method}`));
+          finish(reject, new AcpTimeoutError(payload.method, { idleMs: timeoutMs, kind: 'idle' }));
         }, timeoutMs);
+      };
+      const clearIdleTimer = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = null;
       };
       if (payload.method === 'session/prompt' || payload.method === 'authenticate') {
         // authenticate 无 sessionId：用合成 key，便于侧栏「取消登录」打断等待。
@@ -1112,6 +1194,11 @@ export class AcpClient {
           },
           context,
         );
+        if (unregisterPrompt.handle) {
+          unregisterPrompt.handle.touchIdle = armTimeout;
+          unregisterPrompt.handle.pauseIdle = clearIdleTimer;
+          unregisterPrompt.handle.resumeIdle = armTimeout;
+        }
       }
       armTimeout();
 
@@ -1207,6 +1294,15 @@ export class AcpClient {
       if (timeoutMs <= 0) return;
       timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     };
+    const clearIdleTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = null;
+    };
+    if (isLongRunning && unregisterPrompt.handle) {
+      unregisterPrompt.handle.touchIdle = armTimeout;
+      unregisterPrompt.handle.pauseIdle = clearIdleTimer;
+      unregisterPrompt.handle.resumeIdle = armTimeout;
+    }
     armTimeout();
 
     try {
@@ -1283,7 +1379,10 @@ export class AcpClient {
     } catch (err) {
       if (err.name === 'AbortError') {
         if (cancelledByUser) throw new Error('ACP request cancelled by user');
-        throw new Error(`ACP request ${isLongRunning ? 'idle ' : ''}timeout: ${method}`);
+        if (isLongRunning) {
+          throw new AcpTimeoutError(method, { idleMs: LONG_REQUEST_IDLE_TIMEOUT_MS, kind: 'idle' });
+        }
+        throw new AcpTimeoutError(method, { idleMs: DEFAULT_REQUEST_TIMEOUT_MS, kind: 'hard' });
       }
       throw err;
     } finally {

@@ -917,4 +917,36 @@ describe('AcpClient _codebuddy.ai/authUrl notification', () => {
       { authUrl: 'https://www.codebuddy.cn/oauth/authorize?app=1', provider: 'external' },
     ]);
   });
+
+  it('GET-SSE progress touches active session/prompt idle timer', async () => {
+    vi.useFakeTimers();
+    let handlers;
+    window.electronAPI = {
+      openCodeBuddyStream(_request, nextHandlers) {
+        handlers = nextHandlers;
+        return { close: () => {} };
+      },
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-idle';
+    const request = client.request('session/prompt', { sessionId: 's-idle', prompt: [] });
+    // Advance just under idle window, then SSE thought should re-arm.
+    await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-idle',
+          update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'still working' } },
+        },
+      },
+      'notification',
+    );
+    await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: { stopReason: 'end_turn' } });
+    handlers.onEnd({ ok: true, status: 200 });
+    await expect(request).resolves.toEqual({ stopReason: 'end_turn' });
+    vi.useRealTimers();
+  });
 });

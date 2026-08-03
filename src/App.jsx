@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo } from 'react';
 import { LayoutPanelLeft, ListTree } from 'lucide-react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
@@ -7,6 +7,7 @@ import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon-mark.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
+import { presentWorkflowTopbarHighlight } from './lib/workflow-status';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
 import RightPanelHost from './components/RightPanelHost';
@@ -471,10 +472,16 @@ function StatusBar() {
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
   const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
   const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
-  const workflowVisible = Boolean(
-    activeThreadRuntime?.teamState || activeThreadRuntime?.lastTeamState || activeThreadRuntime?.workflowState ||
-    activeThreadRuntime?.lastWorkflowState || activeThreadRuntime?.goalState || activeThreadRuntime?.lastGoalState,
-  );
+  // Same empty-first contract as the workflow panel (deriveWorkflowView).
+  const activeThread = useStore((s) => s.threadsById?.[activeThreadId] || null);
+  const workflowVisible = useMemo(() => {
+    const runtime = activeThreadRuntime || {};
+    return presentWorkflowTopbarHighlight(
+      runtime,
+      activeThread?.status || 'idle',
+      runtime.timeline,
+    );
+  }, [activeThreadRuntime, activeThread?.status]);
   const surfaceActive = Boolean(rightPanel);
 
   return (

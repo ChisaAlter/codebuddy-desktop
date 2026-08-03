@@ -107,4 +107,20 @@ describe('collectSubagentReports', () => {
     expect(built.conclusionKind).toBe('tool_summary');
     expect(built.summary).toMatch(/Read/);
   });
+
+  it('drops bare TaskCreate agent-id shells without human titles', () => {
+    const reports = collectSubagentReports({
+      timeline: [
+        {
+          type: 'tool_call',
+          toolCallId: 'x',
+          title: 'TaskCreate',
+          agentId: '1785720595825-gc8kb5',
+          isSubAgent: false,
+          status: 'completed',
+        },
+      ],
+    });
+    expect(reports).toEqual([]);
+  });
 });

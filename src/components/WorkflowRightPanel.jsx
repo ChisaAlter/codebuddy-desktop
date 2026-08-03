@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ChevronDown, CircleAlert, ListTree } from 'lucide-react';
 import { useStore } from '../store';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
-import { normalizeWorkflowStatus } from '../lib/workflow-status';
+import { deriveWorkflowView } from '../lib/workflow-status';
 import { currentGoal, goalList, goalsFromTimeline } from '../lib/goal-state';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { collectSubagentReports } from '../lib/subagent-report';
@@ -181,7 +181,11 @@ export default function WorkflowRightPanel({ payload = null }) {
   const runtime = useStore((state) => state.threadRuntimeById?.[threadId] || (threadId === state.activeThreadId ? state : null) || {});
   const thread = useStore((state) => state.threadsById?.[threadId]);
   const timeline = useMemo(() => resolveThreadTimeline(runtime.timeline, thread?.timeline), [runtime.timeline, thread?.timeline]);
-  const status = useMemo(() => normalizeWorkflowStatus({ runtime, threadStatus: thread?.status || 'idle', timeline }), [runtime, thread?.status, timeline]);
+  const view = useMemo(
+    () => deriveWorkflowView({ runtime, threadStatus: thread?.status || 'idle', timeline }),
+    [runtime, thread?.status, timeline],
+  );
+  const status = view;
   const goalState = useMemo(() => runtime.goalState || runtime.lastGoalState || goalsFromTimeline(timeline), [runtime.goalState, runtime.lastGoalState, timeline]);
   const goals = goalList(goalState);
   const goal = currentGoal(goalState);
@@ -199,16 +203,33 @@ export default function WorkflowRightPanel({ payload = null }) {
   });
   const totalTokens = Number(status.tokenTotals?.inputTokens || 0) + Number(status.tokenTotals?.outputTokens || 0);
 
+  // Empty-first: kind==='empty' draws only empty body — never status/phase chrome.
+  const empty = Boolean(view.empty) && !goal && !goalModeWaiting;
+  const phaseLabel = (() => {
+    if (!view.showPhase || !status.phase) return '';
+    const key = `workflow.phase.${status.phase}`;
+    const label = t(key);
+    return label && label !== key ? label : t('workflow.phase.unknown');
+  })();
+
   return (
-    <div className="workflow-right-panel" data-testid="workflow-right-panel">
+    <div className="workflow-right-panel" data-testid="workflow-right-panel" data-workflow-kind={view.kind}>
       <div className="workflow-right-panel__body">
+        {empty ? (
+          <section className="workflow-right-panel__section workflow-right-panel__empty" data-testid="workflow-empty-state">
+            {t('workflow.empty')}
+          </section>
+        ) : (
+          <>
         <section className="workflow-right-panel__section workflow-right-panel__overview">
           <div className="workflow-right-panel__overview-title">
             <ListTree size={15} aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{status.teamName || (goal ? goal.title : t('workflow.title'))}</span>
-            <span className="workflow-right-panel__status" style={{ color: statusColor(status.status) }}>{statusText(status.status, t)}</span>
+            {view.showStatus ? (
+              <span className="workflow-right-panel__status" style={{ color: statusColor(status.status) }}>{statusText(status.status, t)}</span>
+            ) : null}
           </div>
-          <div className="workflow-right-panel__summary">{status.phase ? t(`workflow.phase.${status.phase}`) : t('workflow.phase.unknown')}</div>
+          {phaseLabel ? <div className="workflow-right-panel__summary">{phaseLabel}</div> : null}
           <div className="workflow-right-panel__stats">
             {elapsed ? <span>{t('workflow.elapsedLabel')}: {elapsed}</span> : null}
             {status.items.length ? <span>{status.activeCount}/{status.items.length} {t('workflow.activeShort')}</span> : null}
@@ -222,6 +243,7 @@ export default function WorkflowRightPanel({ payload = null }) {
             </div>
           ) : null}
           {status.capabilityMessage === 'aggregate-only' ? <div className="workflow-right-panel__muted">{t('workflow.aggregateOnly')}</div> : null}
+          {status.capabilityMessage === 'tools-only' ? <div className="workflow-right-panel__muted">{t('workflow.toolsOnly')}</div> : null}
         </section>
 
         <GoalCard goal={goal} t={t} waitingOnly={goalModeWaiting} />
@@ -236,13 +258,31 @@ export default function WorkflowRightPanel({ payload = null }) {
               {members.map((member) => <MemberRow key={member.id} member={member} history={memberHistories[member.name]} t={t} />)}
             </div>
           </section>
+        ) : Array.isArray(status.tools) && status.tools.length ? (
+          <section className="workflow-right-panel__section" data-testid="workflow-tools-only">
+            <div className="workflow-right-panel__section-title">
+              <span>{t('workflow.tools')}</span>
+              <span className="workflow-right-panel__count">{status.tools.length}</span>
+            </div>
+            <div className="workflow-right-panel__members">
+              {status.tools.slice(-12).map((tool) => (
+                <div key={tool.id} className="workflow-right-panel__member">
+                  <span className="workflow-right-panel__member-name" title={tool.name}>{tool.name}</span>
+                  <span className="workflow-right-panel__status">{statusText(tool.status, t)}</span>
+                  {tool.task ? (
+                    <div className="workflow-right-panel__member-detail" title={tool.task}>{tool.task}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
         ) : goal || goalModeWaiting ? (
           <section className="workflow-right-panel__section workflow-right-panel__empty">
             {t('goal.waitingProgress')}
           </section>
         ) : (
           <section className="workflow-right-panel__section workflow-right-panel__empty">
-            {status.visible ? t('workflow.waitingForSteps') : t('workflow.empty')}
+            {t('workflow.waitingForSteps')}
           </section>
         )}
 
@@ -285,6 +325,8 @@ export default function WorkflowRightPanel({ payload = null }) {
         {status.status === 'failed' ? (
           <div className="workflow-right-panel__notice workflow-right-panel__notice--error"><CircleAlert size={14} aria-hidden="true" />{t('workflow.failedNotice')}</div>
         ) : null}
+          </>
+        )}
       </div>
     </div>
   );

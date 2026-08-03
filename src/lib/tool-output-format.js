@@ -323,8 +323,27 @@ export function getToolKind(item) {
 }
 
 export function formatToolCollapsedSummary(item) {
+  const kind = getToolKind(item);
+  const title = String(item?.title || item?.toolName || item?.name || item?.kind || '');
   const fromInput = summarizeToolLine(item?.rawInput);
+  // TaskCreate / TaskUpdate / Explore: prefer human goal text over raw envelopes.
+  if (kind === 'task' || /task(create|update)|explore/i.test(title)) {
+    const input = item?.rawInput && typeof item.rawInput === 'object' ? item.rawInput : null;
+    const taskGoal = firstString(
+      input?.description,
+      input?.prompt,
+      input?.subject,
+      input?.title,
+      input?.goal,
+      input?.task,
+      input?.content,
+      item?.description,
+      fromInput,
+    );
+    if (taskGoal) return truncateOneLine(taskGoal);
+  }
   if (fromInput) return fromInput;
+  if (item?.description) return truncateOneLine(item.description);
   if (item?.content) return truncateOneLine(item.content);
   const out = normalizeToolResult(item?.rawOutput);
   if (out) {

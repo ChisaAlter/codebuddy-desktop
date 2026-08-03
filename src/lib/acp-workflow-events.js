@@ -199,20 +199,25 @@ export function subagentMetadata(payload) {
   const meta = payload?._meta && typeof payload._meta === 'object' ? payload._meta : {};
   const value = (key) => meta[SUBAGENT_META_KEYS[key]];
   const parentToolCallId = firstValue(value('parentToolCallId'), meta.parentToolCallId, null);
-  const isSubagent = value('isSubagent') === true || meta.isSubagent === true || Boolean(parentToolCallId);
-  if (!isSubagent && !value('subagentType') && !value('memberName') && !meta.agentId && !meta.subagentId) return null;
+  const memberName = firstValue(value('memberName'), meta.memberName, null);
+  const subagentType = firstValue(value('subagentType'), meta.subagentType, null);
+  // Bare agentId/subagentId alone is NOT enough — TaskCreate often carries ids without being a subagent card.
+  const explicitFlag =
+    value('isSubagent') === true || meta.isSubagent === true || meta.isSubAgent === true;
+  const isSubagent = explicitFlag || Boolean(parentToolCallId);
+  if (!isSubagent && !subagentType && !memberName) return null;
   return {
-    isSubagent,
+    isSubagent: isSubagent || Boolean(subagentType || memberName),
     parentToolCallId,
-    subagentType: firstValue(value('subagentType'), meta.subagentType, null),
+    subagentType,
     role: firstValue(value('role'), meta.role, null),
-    agentId: firstValue(value('agentId'), meta.agentId, null),
-    subagentId: firstValue(value('subagentId'), meta.subagentId, null),
+    agentId: firstValue(value('agentId'), meta.agentId, meta.agent_id, null),
+    subagentId: firstValue(value('subagentId'), meta.subagentId, meta.subagent_id, null),
     taskId: firstValue(value('taskId'), meta.taskId, null),
     sessionId: firstValue(value('sessionId'), meta.sessionId, null),
     description: firstValue(value('description'), meta.description, ''),
     isBackground: value('isBackground') === true || meta.isBackground === true,
-    memberName: firstValue(value('memberName'), meta.memberName, null),
+    memberName,
   };
 }
 

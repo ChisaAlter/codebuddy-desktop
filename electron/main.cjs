@@ -2497,7 +2497,7 @@ ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
 });
 
 ipcMain.handle('codebuddy:request', async (event, request = {}) => {
-  // timeoutMs 由前端透传：session/prompt 等 SSE 长请求使用 120000ms，普通 REST 使用 30000ms。
+  // timeoutMs 由前端透传：session/prompt 等长请求使用 idle 窗口（默认 10min，有 chunk 会重置），普通 REST 使用 30000ms。
   const timeoutMs = Number.isFinite(Number(request.timeoutMs))
     ? Number(request.timeoutMs)
     : CODEBUDDY_REQUEST_TIMEOUT_MS;

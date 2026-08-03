@@ -75,6 +75,9 @@ describe('CodeBuddy ACP workflow extensions', () => {
   it('recognizes only explicit subagent metadata', () => {
     expect(subagentMetadata({ title: 'Read file' })).toBeNull();
     expect(subagentMetadata({
+      _meta: { agentId: '1785720595825-gc8kb5' },
+    })).toBeNull();
+    expect(subagentMetadata({
       _meta: {
         'codebuddy.ai/isSubAgent': true,
         'codebuddy.ai/parentToolCallId': 'parent-1',
@@ -138,7 +141,8 @@ describe('CodeBuddy ACP workflow extensions', () => {
         timeline: [{ type: 'tool_call', toolCallId: 'read-1', title: 'Read', status: 'running' }],
       },
     });
-    expect(status.source).toBe('timeline');
+    expect(status.source).toBe('tools');
+    expect(status.shouldAutoOpen).toBe(false);
     expect(status.members).toHaveLength(0);
     expect(status.items[0].name).toBe('Read');
   });

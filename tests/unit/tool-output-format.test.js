@@ -169,4 +169,13 @@ describe('tool-output-format production matrix', () => {
     expect(classifyToolPayload(json)).toBe('path_list');
     expect(extractPathList(json).count).toBe(3);
   });
+
+  it('TaskCreate collapsed summary prefers human goal text', () => {
+    const summary = formatToolCollapsedSummary({
+      title: 'TaskCreate',
+      rawInput: { description: '实现 prototype-v3 的 token 与玻璃壳' },
+    });
+    expect(summary).toMatch(/prototype-v3/);
+    expect(getToolKind({ title: 'TaskCreate' })).toBe('task');
+  });
 });
