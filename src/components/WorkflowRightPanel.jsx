@@ -37,17 +37,29 @@ function progressText(progress, t) {
   return progress.message || '';
 }
 
+function goalKindText(kind, t) {
+  if (!kind) return '';
+  const key = `goal.status.${String(kind).toLowerCase()}`;
+  const value = t(key);
+  return value === key ? '' : value;
+}
+
 function GoalCard({ goal, t, waitingOnly = false }) {
   if (!goal && !waitingOnly) return null;
   const progress = goal?.progress || {};
   const label = progressText(progress, t);
   const title = goal?.title || t('goal.current');
   const status = goal?.status || 'running';
-  const message = goal?.message || (waitingOnly || goal?.seeded ? t('goal.waitingProgress') : '');
+  const terminalKey = ['completed', 'failed', 'cancelled'].includes(status) ? `goal.terminal.${status}` : null;
+  const kindLabel = goalKindText(goal?.kind, t);
+  const message =
+    goal?.message ||
+    kindLabel ||
+    (waitingOnly || goal?.seeded ? t('goal.waitingProgress') : '');
   return (
     <section className="workflow-right-panel__section workflow-right-panel__goal" data-testid="workflow-current-goal">
       <div className="workflow-right-panel__section-title">
-        <span>{t('goal.current')}</span>
+        <span>{terminalKey ? t(terminalKey) : t('goal.current')}</span>
         <span className="workflow-right-panel__status" style={{ color: statusColor(status) }}>{statusText(status, t)}</span>
       </div>
       <div className="workflow-right-panel__goal-title" title={title}>{title}</div>
@@ -57,7 +69,22 @@ function GoalCard({ goal, t, waitingOnly = false }) {
           <span>{label}</span>
         </div>
       ) : null}
-      {message ? <div className="workflow-right-panel__muted" title={message}>{message}</div> : null}
+      {goal?.condition ? (
+        <div className="workflow-right-panel__muted" title={goal.condition}>
+          {t('goal.condition')}: {goal.condition}
+        </div>
+      ) : null}
+      {goal?.reason ? (
+        <div className="workflow-right-panel__muted" title={goal.reason}>
+          {t('goal.reason')}: {goal.reason}
+        </div>
+      ) : null}
+      {message && message !== goal?.condition && message !== title ? (
+        <div className="workflow-right-panel__muted" title={message}>{message}</div>
+      ) : null}
+      {goal?.turnCount != null ? (
+        <div className="workflow-right-panel__muted">{goal.turnCount} turns</div>
+      ) : null}
     </section>
   );
 }
@@ -235,7 +262,20 @@ export default function WorkflowRightPanel({ payload = null }) {
                   <div className="workflow-right-panel__muted">{t('subagent.role')}: {report.role || t('subagent.unknownRole')}</div>
                   <div className="workflow-right-panel__muted" title={report.agentId}>{t('subagent.agentId')}: {report.agentId}</div>
                   <div className="workflow-right-panel__muted">{t('subagent.toolCount')}: {report.toolCallCount}</div>
-                  <div className="workflow-right-panel__report-conclusion" title={report.conclusion}>{report.conclusion}</div>
+                  {report.conclusionKind === 'path_list' && report.pathList ? (
+                    <div className="workflow-right-panel__report-conclusion" data-testid="panel-path-list">
+                      {t('tool.pathListCount', { count: report.pathList.count })}
+                      <ul className="m-0 mt-1 list-none space-y-0.5 p-0">
+                        {(report.pathList.preview || []).map((p) => (
+                          <li key={p} className="truncate text-[11px]" title={p}>{String(p).split(/[/\\]/).pop()}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="workflow-right-panel__report-conclusion line-clamp-4" title={report.conclusion || report.summary}>
+                      {report.conclusion || report.summary || t('subagent.noConclusion')}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

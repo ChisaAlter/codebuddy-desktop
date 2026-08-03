@@ -52,6 +52,8 @@ describe('goal state projection', () => {
       status: 'running',
       seeded: true,
     });
+    // message must not duplicate title (UI shows localized waiting text instead)
+    expect(seeded.goalsById['local-seed'].message || '').not.toBe('修复登录');
     expect(hasGoalTurnActivity(seeded)).toBe(true);
     expect(hasGoalTurnActivity(emptyGoalState('goal'))).toBe(false);
   });

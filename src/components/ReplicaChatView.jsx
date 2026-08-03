@@ -29,6 +29,11 @@ import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import { normalizeWorkflowStatus, workflowHasActivity } from '../lib/workflow-status';
 import { collectSubagentReports } from '../lib/subagent-report';
+import {
+  formatToolCollapsedSummary,
+  formatToolExpandedView,
+  shortenPath,
+} from '../lib/tool-output-format';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -838,7 +843,8 @@ function ToolKindIcon({ kind, completed }) {
   );
 }
 
-function formatToolPayload(value) {
+/** Legacy dump path — only when structuredOutputV1 is off. */
+function formatToolPayloadLegacy(value) {
   if (value == null) return '';
   if (typeof value === 'string') return value;
   try {
@@ -868,63 +874,83 @@ function toolStatusLabel(status, t) {
   return t('tool.running');
 }
 
-function toolCallSummary(item) {
-  const input = item?.rawInput;
-  if (input == null) return '';
-  if (typeof input === 'string') {
-    const oneLine = input.replace(/\s+/g, ' ').trim();
-    return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
-  }
-  if (typeof input === 'object') {
-    const preferred =
-      input.command ||
-      input.path ||
-      input.file_path ||
-      input.filePath ||
-      input.pattern ||
-      input.query ||
-      input.url ||
-      input.description ||
-      null;
-    if (preferred) {
-      const text = String(preferred).replace(/\s+/g, ' ').trim();
-      return text.length > 80 ? `${text.slice(0, 80)}…` : text;
-    }
-  }
-  return '';
+function isSubagentToolItem(item) {
+  return Boolean(item?.isSubAgent || item?.memberName || item?.subagentType);
 }
 
-function ToolCallBlock({ item }) {
+function PathListSummary({ pathList, t }) {
+  if (!pathList?.count) return null;
+  return (
+    <div className="tool-path-list" data-testid="tool-path-list-summary" data-count={pathList.count}>
+      <div className="mb-1 text-[11px] font-medium text-[var(--color-text-secondary)]">
+        {t('tool.pathListCount', { count: pathList.count })}
+      </div>
+      <ul className="m-0 list-none space-y-0.5 p-0">
+        {(pathList.preview || []).map((entry) => {
+          const full = entry.full || entry;
+          const short = entry.short || shortenPath(full);
+          return (
+            <li key={full} className="tool-path-chip truncate text-[11px] text-[var(--color-text-secondary)]" title={full}>
+              {short}
+            </li>
+          );
+        })}
+      </ul>
+      {pathList.count > (pathList.preview?.length || 0) ? (
+        <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+          {t('tool.morePaths', { count: pathList.count - (pathList.preview?.length || 0) })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolCallBlock({ item, nested = false }) {
   const t = useUiTranslate();
+  const structured = useStore((s) => s.guiSettings?.structuredOutputV1 !== false);
   const isCompleted = item.status === 'completed' || item.status === 'done';
   const isFailed = item.status === 'failed' || item.status === 'error';
   const isRunning = !isCompleted && !isFailed;
-  const hasDetails = Boolean(item.rawInput || item.rawOutput || item.content);
-  // M-rc6: track whether the user has manually toggled expand, so the
-  // running→completed auto-collapse only fires for auto-expanded rows and does
-  // not stomp a user's manual expand (chat-cancel.test asserts this).
+  const hasDetails = Boolean(item.rawInput || item.rawOutput || item.content || item.locations?.length);
   const userToggledRef = useRef(false);
-  // WebUI: auto-expand failed; expand running Write/edit; otherwise collapsed
   const [expanded, setExpanded] = useState(
     () => isFailed || ((item.kind === 'edit' || item.toolName === 'Write') && isRunning),
   );
+  const [showFull, setShowFull] = useState(false);
 
   useEffect(() => {
-    // M-rc6: auto-expand failed tool calls; auto-collapse running edits once they
-    // complete (the WebUI parity rule). Skip the auto-collapse when the user has
-    // manually toggled the row, preserving their explicit choice.
     if (isFailed) setExpanded(true);
     else if (isCompleted && !userToggledRef.current) setExpanded(false);
   }, [isFailed, isCompleted]);
 
   const title = toolCallDisplayTitle(item, t);
-  const summary = toolCallSummary(item);
+  const summary = structured ? formatToolCollapsedSummary(item) : (() => {
+    const input = item?.rawInput;
+    if (input == null) return '';
+    if (typeof input === 'string') {
+      const oneLine = input.replace(/\s+/g, ' ').trim();
+      return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+    }
+    if (typeof input === 'object') {
+      const preferred =
+        input.command || input.path || input.file_path || input.filePath || input.pattern || input.query || input.url || input.description || null;
+      if (preferred) {
+        const text = String(preferred).replace(/\s+/g, ' ').trim();
+        return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      }
+    }
+    return '';
+  })();
   const subagentName = subagentDisplayName(item);
-  const isSubagentTool = Boolean(item.isSubAgent || subagentName || item.parentToolCallId);
+  const isSubagentTool = isSubagentToolItem(item);
   const canToggle = hasDetails && (isCompleted || isFailed || isRunning);
+  const view = useMemo(
+    () => (structured && expanded ? formatToolExpandedView(item, { full: showFull }) : null),
+    [structured, expanded, showFull, item],
+  );
 
   return (
-    <div className="tool-call-row mb-0.5">
+    <div className={`tool-call-row mb-0.5 ${nested ? 'tool-call-row--nested' : ''}`} data-testid={nested ? 'tool-call-nested' : 'tool-call-row'}>
       <button
         type="button"
         onClick={() => {
@@ -942,19 +968,16 @@ function ToolCallBlock({ item }) {
         <span className={`tool-call-title truncate text-[13px] font-medium ${isCompleted && !isFailed ? 'is-done' : ''}`}>
           {isSubagentTool ? `${subagentName || t('subagent.unknownRole')} · ${title}` : title}
         </span>
-        {isSubagentTool ? (
-          <span className="tool-call-summary min-w-0 flex-1 truncate text-[12px]" aria-label={toolStatusLabel(item.status, t)}>
-            {toolStatusLabel(item.status, t)}
-          </span>
-        ) : summary ? (
+        {summary ? (
           <span className={`tool-call-summary min-w-0 flex-1 truncate text-[12px] ${isCompleted && !isFailed ? 'is-done' : ''}`}>
             {summary}
           </span>
         ) : (
-          <span className="flex-1" />
+          <span className="tool-call-summary min-w-0 flex-1 truncate text-[12px]" aria-label={toolStatusLabel(item.status, t)}>
+            {isSubagentTool ? toolStatusLabel(item.status, t) : ''}
+          </span>
         )}
         <ToolStatusDot status={item.status} />
-        {isSubagentTool ? <span className="sr-only">{toolStatusLabel(item.status, t)}</span> : null}
         {canToggle ? (
           <svg
             width="12"
@@ -975,31 +998,78 @@ function ToolCallBlock({ item }) {
       {canToggle && expanded ? (
         <div className="tool-call-detail pl-5">
           <div className="mb-1 mt-0.5 space-y-1.5">
-            {item.rawInput ? (
-              <div>
-                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
-                  {t('tool.input')}
+            {!structured ? (
+              <>
+                {item.rawInput ? (
+                  <div>
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">{t('tool.input')}</div>
+                    <pre className="tool-call-payload max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
+                      {formatToolPayloadLegacy(item.rawInput)}
+                    </pre>
+                  </div>
+                ) : null}
+                {item.rawOutput ? (
+                  <div>
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">{t('tool.output')}</div>
+                    <pre className="tool-call-payload max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
+                      {formatToolPayloadLegacy(item.rawOutput)}
+                    </pre>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {view?.inputSummary ? (
+                  <div>
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">{t('tool.input')}</div>
+                    <div className="truncate text-[12px] text-[var(--color-text-secondary)]" title={view.inputSummary}>
+                      {view.kind === 'execute' && view.command ? `$ ${view.command}` : view.inputSummary}
+                    </div>
+                  </div>
+                ) : null}
+                {view?.locations?.length ? (
+                  <div className="flex flex-wrap gap-1">
+                    {view.locations.map((loc) => (
+                      <span key={loc.full} className="tool-path-chip rounded px-1.5 py-0.5 text-[10px]" title={loc.full}>
+                        {loc.short}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <div>
+                  <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">{t('tool.output')}</div>
+                  {view?.mode === 'path_list' && view.pathList ? (
+                    <PathListSummary pathList={view.pathList} t={t} />
+                  ) : view?.body ? (
+                    <pre
+                      className="tool-call-payload max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4"
+                      data-testid="tool-output-clamped"
+                      data-hidden-lines={view.hiddenLines || 0}
+                    >
+                      {view.body}
+                    </pre>
+                  ) : (
+                    <div className="text-[11px] text-[var(--color-text-muted)]">{t('tool.emptyOutput')}</div>
+                  )}
+                  {view?.truncated ? (
+                    <button
+                      type="button"
+                      className="mt-1 text-[11px] text-[var(--color-accent-blue)] hover:underline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowFull((v) => !v);
+                      }}
+                    >
+                      {showFull
+                        ? t('tool.showLess')
+                        : view.mode === 'path_list'
+                          ? t('tool.showAllPaths', { count: view.pathList?.count || 0 })
+                          : t('tool.moreLines', { count: view.hiddenLines || 0 })}
+                    </button>
+                  ) : null}
                 </div>
-                <pre className="tool-call-payload max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
-                  {formatToolPayload(item.rawInput)}
-                </pre>
-              </div>
-            ) : null}
-            {item.rawOutput ? (
-              <div>
-                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
-                  {t('tool.output')}
-                </div>
-                <pre className="tool-call-payload max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
-                  {formatToolPayload(item.rawOutput)}
-                </pre>
-              </div>
-            ) : null}
-            {item.content && !item.rawInput && !item.rawOutput ? (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4 text-[var(--color-text-secondary)]">
-                {item.content}
-              </pre>
-            ) : null}
+              </>
+            )}
           </div>
         </div>
       ) : null}
@@ -1019,18 +1089,141 @@ function toolNameHistogram(toolItems) {
 }
 
 function SubagentActivityLine({ items, t }) {
-  const toolItems = items.filter((item) => item?.type === 'tool_call');
-  const first = toolItems.find((item) => item.isSubAgent || item.memberName || item.subagentType || item.parentToolCallId);
-  if (!first) return null;
-  const name = subagentDisplayName(first) || t('subagent.unknownRole');
-  const task = first.description || toolCallDisplayTitle(first, t);
+  const toolItems = items.filter((item) => item?.type === 'tool_call' && isSubagentToolItem(item));
+  if (!toolItems.length) return null;
+  const byName = new Map();
+  for (const item of toolItems) {
+    const name = subagentDisplayName(item) || t('subagent.unknownRole');
+    if (!byName.has(name)) byName.set(name, item);
+  }
+  const entries = Array.from(byName.entries());
+  const shown = entries.slice(0, 3);
+  const extra = Math.max(0, entries.length - shown.length);
   const running = toolItems.some((item) => !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes(item.status));
   return (
     <div className="subagent-activity-line" data-testid="subagent-activity-line" aria-live="polite">
       <span className={`workflow-status-dot ${running ? 'workflow-status-dot--running' : 'workflow-status-dot--completed'}`} aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate" title={`${name} · ${task}`}>{name} · {task}</span>
+      <span className="min-w-0 flex-1 truncate" title={shown.map(([name, item]) => `${name} · ${item.description || toolCallDisplayTitle(item, t)}`).join(' · ')}>
+        {shown.map(([name, item], index) => {
+          const task = item.description || toolCallDisplayTitle(item, t);
+          return (
+            <span key={name}>
+              {index > 0 ? ' · ' : ''}
+              {name} · {task}
+            </span>
+          );
+        })}
+        {extra > 0 ? ` · ${t('subagent.moreAgents', { count: extra })}` : ''}
+      </span>
       <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{running ? t('tool.running') : t('tool.completed')}</span>
     </div>
+  );
+}
+
+function SubagentConclusionBody({ report, t }) {
+  if (report?.conclusionKind === 'path_list' && report.pathList) {
+    return <PathListSummary pathList={report.pathList} t={t} />;
+  }
+  if (report?.conclusionKind === 'tool_summary' && report.summary) {
+    return <div className="subagent-report-card__conclusion text-[var(--color-text-secondary)]">{report.summary}</div>;
+  }
+  if (report?.conclusion) {
+    return (
+      <div className="subagent-report-card__conclusion line-clamp-4" title={report.conclusion}>
+        {report.conclusion}
+      </div>
+    );
+  }
+  return (
+    <div className="subagent-report-card__conclusion text-[var(--color-text-muted)]">
+      {t('subagent.noConclusion')}
+      {report?.toolCallCount ? ` · ${t('subagent.toolsCompleted', { count: report.toolCallCount })}` : ''}
+    </div>
+  );
+}
+
+function SubagentCard({ item, t }) {
+  const isCompleted = item.status === 'completed' || item.status === 'done';
+  const isFailed = item.status === 'failed' || item.status === 'error';
+  const isRunning = !isCompleted && !isFailed;
+  const name = subagentDisplayName(item) || t('subagent.unknownRole');
+  const description = item.description || formatToolCollapsedSummary(item) || toolCallDisplayTitle(item, t);
+  const children = Array.isArray(item.children) ? item.children.filter((c) => c?.type === 'tool_call') : [];
+  const childCount = children.length || Number(item.toolCallCount) || 0;
+  const storageKey = 'subagent-collapse-pref';
+  const [expanded, setExpanded] = useState(() => {
+    if (isRunning) return true;
+    try {
+      return localStorage.getItem(storageKey) !== 'collapsed';
+    } catch (_) {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (isRunning) setExpanded(true);
+  }, [isRunning]);
+
+  const toggle = () => {
+    setExpanded((value) => {
+      const next = !value;
+      try {
+        localStorage.setItem(storageKey, next ? 'expanded' : 'collapsed');
+      } catch (_) {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  const statusClass = isFailed ? 'is-failed' : isRunning ? 'is-running' : 'is-done';
+
+  return (
+    <section className={`subagent-card ${statusClass}`} data-testid="subagent-card" data-status={item.status || 'running'}>
+      <button type="button" className="subagent-card__header" onClick={toggle} aria-expanded={expanded}>
+        <span className={`workflow-status-dot ${isRunning ? 'workflow-status-dot--running' : isFailed ? 'workflow-status-dot--failed' : 'workflow-status-dot--completed'}`} aria-hidden="true" />
+        <span className="subagent-card__identity min-w-0 flex-1 truncate">
+          <strong className="subagent-card__name">@{name}</strong>
+          <span className="subagent-card__desc truncate" title={description}>{description}</span>
+        </span>
+        <span className="subagent-card__meta shrink-0">
+          {isRunning
+            ? t('subagent.toolsRunning', { count: Math.max(childCount, 1) })
+            : isFailed
+              ? t('subagent.toolsFailed', { count: Math.max(childCount, 1) })
+              : t('subagent.toolsCompleted', { count: Math.max(childCount, 1) })}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} aria-hidden="true">
+          <path d="M6 3l5 5-5 5" />
+        </svg>
+      </button>
+      {expanded ? (
+        <div className="subagent-card__body">
+          {Array.isArray(item.subagentTimeline) && item.subagentTimeline.length ? (
+            <div className="subagent-card__timeline">
+              {item.subagentTimeline.slice(-6).map((entry, index) => {
+                const text = String(entry?.content || entry?.message || entry?.text || '').trim();
+                if (!text) return null;
+                return (
+                  <div key={entry.id || index} className="subagent-card__timeline-line text-[12px] text-[var(--color-text-secondary)]">
+                    {text.length > 280 ? `${text.slice(0, 280)}…` : text}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {children.length ? (
+            <div className="subagent-card__children" data-testid="subagent-children">
+              {children.map((child, index) => (
+                <ToolCallBlock key={child.id || child.toolCallId || `child-${index}`} item={child} nested />
+              ))}
+            </div>
+          ) : (
+            <ToolCallBlock item={item} nested />
+          )}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1045,8 +1238,10 @@ function SubagentReportCard({ reports, t }) {
             <strong>{report.name || report.role}</strong>
             <span>{t(`subagent.status.${report.status}`) || report.status}</span>
           </div>
-          <div className="subagent-report-card__meta">{t('subagent.role')}: {report.role || t('subagent.unknownRole')} · {t('subagent.agentId')}: {report.agentId} · {report.toolCallCount} {t('workflow.tools')}</div>
-          <div className="subagent-report-card__conclusion">{report.conclusion || t('subagent.noConclusion')}</div>
+          <div className="subagent-report-card__meta">
+            {t('subagent.role')}: {report.role || t('subagent.unknownRole')} · {t('subagent.agentId')}: {report.agentId} · {report.toolCallCount} {t('workflow.tools')}
+          </div>
+          <SubagentConclusionBody report={report} t={t} />
         </div>
       ))}
     </section>
@@ -1055,21 +1250,37 @@ function SubagentReportCard({ reports, t }) {
 
 function ExecutionGroup({ items, autoCollapse = false }) {
   const t = useUiTranslate();
-  const toolItems = items.filter((item) => item?.type === 'tool_call');
-  const internalEventCount = Math.max(0, items.length - toolItems.length);
+  // Skip children already attached under a parent — render only via SubagentCard nesting.
+  const parentIds = new Set(
+    (items || [])
+      .filter((item) => item?.type === 'tool_call' && Array.isArray(item.children) && item.children.length)
+      .map((item) => item.toolCallId)
+      .filter(Boolean),
+  );
+  const toolItems = items.filter((item) => {
+    if (item?.type !== 'tool_call') return false;
+    if (item.parentToolCallId && parentIds.has(item.parentToolCallId)) return false;
+    // Also hide orphans that still carry parentToolCallId when any parent exists in group
+    if (item.parentToolCallId) {
+      const parentPresent = (items || []).some((p) => p?.toolCallId === item.parentToolCallId);
+      if (parentPresent) return false;
+    }
+    return true;
+  });
+  const internalEventCount = Math.max(0, items.length - items.filter((i) => i?.type === 'tool_call').length);
   const toolCount = toolItems.length;
   const failedCount = toolItems.filter((item) => ['failed', 'error'].includes(item?.status)).length;
   const running = toolItems.some(
     (item) => !['completed', 'done', 'failed', 'error'].includes(item?.status),
   );
-  // WebUI: auto-collapse when ≥2 tools and turn finished (autoCollapse) and nothing running/failed pending UI
-  const preferCollapsed = Boolean(autoCollapse) && !running && toolCount >= 2;
+  const hasSubagentParent = toolItems.some((item) => isSubagentToolItem(item) && !item.parentToolCallId);
+  // Do not auto-collapse groups that are primarily subagent cards
+  const preferCollapsed = Boolean(autoCollapse) && !running && toolCount >= 2 && !hasSubagentParent;
   const userOverrideRef = useRef(null);
   const [expandedOverride, setExpandedOverride] = useState(null);
   const expanded = expandedOverride !== null ? expandedOverride : !preferCollapsed;
 
   useEffect(() => {
-    // When autoCollapse flips true after final answer, snap to collapsed unless user already toggled.
     if (!autoCollapse) return;
     if (userOverrideRef.current !== null) return;
     setExpandedOverride(null);
@@ -1079,7 +1290,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
     toolCount === 1
       ? `1 ${t('tool.toolSingular')}`
       : t('tool.toolsExecuted', { count: toolCount });
-  const isSubagentToolGroup = toolItems.some((item) => Boolean(item.isSubAgent || item.memberName || item.subagentType || item.parentToolCallId));
+  const isSubagentToolGroup = toolItems.some((item) => isSubagentToolItem(item));
   const groupStatusLabel = running
     ? t('subagent.toolsRunning', { count: toolCount })
     : failedCount > 0
@@ -1093,34 +1304,32 @@ function ExecutionGroup({ items, autoCollapse = false }) {
     setExpandedOverride(next);
   };
 
-  // Pure checkpoint / task / goal noise with zero tool rows must not become a fake
-  // “turn ended” footer (“本轮没有可展示的工具调用” + “已合并 N 条内部进度”).
   if (toolCount === 0) return null;
 
-  // Single running/finished tool with no siblings: render the row directly (WebUI does not wrap in a summary).
+  const renderItem = (item, index) => {
+    if (isSubagentToolItem(item) && !item.parentToolCallId) {
+      return <SubagentCard key={item.id || item.toolCallId || `subagent-${index}`} item={item} t={t} />;
+    }
+    return <ToolCallBlock key={item.id || `tool-${index}-${item.toolName || item.kind || ''}`} item={item} />;
+  };
+
   if (toolCount === 1 && internalEventCount === 0 && !preferCollapsed) {
     return (
       <div className="execution-group mb-2 w-full">
-        {isSubagentToolGroup ? <SubagentActivityLine items={toolItems} t={t} /> : null}
-        {isSubagentToolGroup ? (
-          <div className="mb-1 px-1.5 text-[12px] text-[var(--color-text-tertiary)]">{groupStatusLabel}</div>
-        ) : null}
-        <ToolCallBlock item={toolItems[0]} />
+        {isSubagentToolGroup && !isSubagentToolItem(toolItems[0]) ? <SubagentActivityLine items={toolItems} t={t} /> : null}
+        {renderItem(toolItems[0], 0)}
       </div>
     );
   }
 
-  // WebUI only shows the “N 个工具已执行” chrome when the group is (or can be) collapsed.
-  // While tools are still running, just list the light rows with an optional left rail.
-  const showGroupChrome = preferCollapsed || expandedOverride !== null || (!running && toolCount >= 2);
-  // Internal events stay folded silently — no “已合并 N 条内部进度” footer (felt like a wrong ending).
-  const showRail = toolCount > 1;
+  const showGroupChrome = preferCollapsed || expandedOverride !== null || (!running && toolCount >= 2 && !hasSubagentParent);
+  const showRail = toolCount > 1 && !hasSubagentParent;
 
   return (
     <div className="execution-group mb-2 flex w-full flex-col gap-0">
       {expanded ? (
         <>
-          <SubagentActivityLine items={toolItems} t={t} />
+          {isSubagentToolGroup ? <SubagentActivityLine items={toolItems} t={t} /> : null}
           {showGroupChrome ? (
             <button
               type="button"
@@ -1128,16 +1337,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
               className="flex items-center gap-2 rounded-lg px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--color-bg-hover)]/50"
               aria-expanded={true}
             >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                className="shrink-0 text-[var(--color-text-tertiary)]"
-                aria-hidden="true"
-              >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">
                 <path d="M4 6l4 4 4-4" />
               </svg>
               <span className="text-[12px] text-[var(--color-text-tertiary)]">{isSubagentToolGroup ? groupStatusLabel : countLabel}</span>
@@ -1150,13 +1350,9 @@ function ExecutionGroup({ items, autoCollapse = false }) {
             </button>
           ) : null}
           <div className={`relative ${showRail ? 'ml-1.5 pl-4' : ''}`}>
-            {showRail ? (
-              <div className="absolute bottom-1 left-0 top-1 w-px bg-[var(--color-border-default)]" aria-hidden="true" />
-            ) : null}
+            {showRail ? <div className="absolute bottom-1 left-0 top-1 w-px bg-[var(--color-border-default)]" aria-hidden="true" /> : null}
             <div className="flex flex-col gap-0.5">
-              {toolItems.map((item, index) => (
-                <ToolCallBlock key={item.id || `tool-${index}-${item.toolName || item.kind || ''}`} item={item} />
-              ))}
+              {toolItems.map((item, index) => renderItem(item, index))}
             </div>
           </div>
         </>
@@ -1168,16 +1364,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
           aria-expanded={false}
           aria-label={countLabel}
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            className="shrink-0 text-[var(--color-text-tertiary)]"
-            aria-hidden="true"
-          >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">
             <path d="M6 3l5 5-5 5" />
           </svg>
           <span className="text-[12px] text-[var(--color-text-tertiary)]">{isSubagentToolGroup ? groupStatusLabel : countLabel}</span>
@@ -1188,9 +1375,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
             </span>
           ) : null}
           {nameHint ? (
-            <span className="tool-group-hint min-w-0 flex-1 truncate text-[11px] opacity-0 transition-opacity group-hover:opacity-100">
-              {nameHint}
-            </span>
+            <span className="tool-group-hint min-w-0 flex-1 truncate text-[11px] opacity-0 transition-opacity group-hover:opacity-100">{nameHint}</span>
           ) : (
             <span className="flex-1" />
           )}
@@ -1808,6 +1993,66 @@ function DateSeparator({ label }) {
   );
 }
 
+function AssistantTurn({ item, t }) {
+  const thinking = item.thinking && typeof item.thinking === 'object' ? item.thinking : null;
+  const text = typeof item.content === 'string' ? item.content : '';
+  const hasText = text.trim().length > 0;
+  const lineCount = hasText ? text.split('\n').length : 0;
+  const longMessage = hasText && !item.streaming && (lineCount > 80 || text.length > 8000);
+  const [expandedLong, setExpandedLong] = useState(false);
+  if (!thinking && !hasText && !item.streaming) return null;
+  const displayText =
+    longMessage && !expandedLong
+      ? `${text.split('\n').slice(0, 40).join('\n')}${lineCount > 40 ? '\n…' : ''}`
+      : text;
+  return (
+    <div className="mb-6 w-full" data-chat-role="assistant">
+      {thinking ? <ThinkingCard item={thinking} /> : null}
+      {hasText || item.streaming ? (
+        <div className="chat-assistant-message group">
+          <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
+            {hasText ? <MarkdownMessage text={displayText} streaming={Boolean(item.streaming)} /> : '...'}
+          </div>
+          {longMessage ? (
+            <button
+              type="button"
+              className="mt-2 text-[12px] text-[var(--color-accent-blue)] hover:underline"
+              onClick={() => setExpandedLong((v) => !v)}
+            >
+              {expandedLong ? t('tool.collapseMessage') : t('tool.expandMessage')}
+            </button>
+          ) : null}
+          {hasText ? <CopyButton text={text} /> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function GoalStatusStrip({ item, t }) {
+  const openWorkflowPanel = useStore((s) => s.openWorkflowPanel);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  const payload = item?.meta || item?.raw || item || {};
+  const title = payload.title || payload.name || payload.condition || payload.message || t('goal.current');
+  const kind = payload.kind || payload.status || '';
+  const kindKey = kind ? `goal.status.${String(kind).toLowerCase()}` : '';
+  const kindLabel = kindKey ? t(kindKey) : '';
+  const label = kindLabel && kindLabel !== kindKey ? kindLabel : t('goal.chatStrip', { title });
+  return (
+    <button
+      type="button"
+      className="goal-chat-strip mb-2 flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-left text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+      data-testid="goal-chat-strip"
+      onClick={() => openWorkflowPanel({ threadId: activeThreadId })}
+      title={t('goal.openPanel')}
+    >
+      <span className="workflow-status-dot workflow-status-dot--running" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="shrink-0 text-[11px] text-[var(--color-accent-blue)]">{t('goal.openPanel')}</span>
+    </button>
+  );
+}
+
 function getProtocolEventLabel(type, t) {
   const map = {
     config_option_update: t('protocol.configOptionUpdate'),
@@ -1825,12 +2070,23 @@ function getProtocolEventLabel(type, t) {
 const TimelineItem = React.memo(function TimelineItem({ item }) {
   const t = useUiTranslate();
   if (item.type === 'execution_group') {
-    const visibleItems = (item.items || []).filter((entry) => !['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(entry?.type));
+    // Keep goal-status out of tool groups (rendered as thin strip at top-level if present).
+    const visibleItems = (item.items || []).filter(
+      (entry) => !['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(entry?.type),
+    );
     if (!visibleItems.length) return null;
     return <ExecutionGroup items={visibleItems} autoCollapse={item.autoCollapse} />;
   }
 
-  if (['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)) {
+  if (['checkpoint', 'taskCreated', 'taskStatus', 'question_answered'].includes(item.type)) {
+    return null;
+  }
+
+  // Thin goal status strip only (not a large card). Progress stays in the right panel.
+  if (item.type === 'goal-status') {
+    return <GoalStatusStrip item={item} t={t} />;
+  }
+  if (item.type === 'goal-progress') {
     return null;
   }
 
@@ -1850,9 +2106,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <CompactTimelineCard item={item} />;
   }
 
-  if (
-    ['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)
-  ) {
+  if (['checkpoint', 'taskCreated', 'taskStatus', 'question_answered'].includes(item.type)) {
     return null;
   }
 
@@ -1861,6 +2115,9 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
   }
 
   if (item.type === 'tool_call') {
+    // Hide children already nested under a parent subagent card.
+    if (item.parentToolCallId) return null;
+    if (isSubagentToolItem(item)) return <SubagentCard item={item} t={t} />;
     return <ToolCallBlock item={item} />;
   }
 
@@ -1979,29 +2236,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
   }
 
   if (item.role === 'assistant') {
-    // Thinking + markdown share one unit (no double card gap); outer mb-6 matches user turn rhythm.
-    const thinking = item.thinking && typeof item.thinking === 'object' ? item.thinking : null;
-    const text = typeof item.content === 'string' ? item.content : '';
-    const hasText = text.trim().length > 0;
-    if (!thinking && !hasText && !item.streaming) return null;
-    return (
-      <div className="mb-6 w-full" data-chat-role="assistant">
-        {thinking ? <ThinkingCard item={thinking} /> : null}
-        {hasText || item.streaming ? (
-          <div className="chat-assistant-message group">
-            {/* WebUI: markdown-body text-chat text-text-primary */}
-            <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
-              {hasText ? (
-                <MarkdownMessage text={text} streaming={Boolean(item.streaming)} />
-              ) : (
-                '...'
-              )}
-            </div>
-            {hasText ? <CopyButton text={text} /> : null}
-          </div>
-        ) : null}
-      </div>
-    );
+    return <AssistantTurn item={item} t={t} />;
   }
 
   return null;

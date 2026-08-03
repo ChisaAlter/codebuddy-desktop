@@ -1,3 +1,11 @@
+import {
+  extractPathList,
+  formatToolCollapsedSummary,
+  isPathHeavyText,
+  normalizeToolResult,
+  truncateOneLine,
+} from './tool-output-format';
+
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
 }
@@ -12,19 +20,21 @@ function normalizeStatus(value) {
 }
 
 function identityFor(source, fallback) {
-  return String(firstValue(
-    source?.agentId,
-    source?.agent_id,
-    source?.subagentId,
-    source?.subagent_id,
-    source?.taskId,
-    source?.task_id,
-    source?.sessionId,
-    source?.session_id,
-    source?.id,
-    source?.name,
-    fallback,
-  ));
+  return String(
+    firstValue(
+      source?.agentId,
+      source?.agent_id,
+      source?.subagentId,
+      source?.subagent_id,
+      source?.taskId,
+      source?.task_id,
+      source?.sessionId,
+      source?.session_id,
+      source?.id,
+      source?.name,
+      fallback,
+    ),
+  );
 }
 
 function flattenTools(items, output = []) {
@@ -39,16 +49,133 @@ function flattenTools(items, output = []) {
 function textFrom(value) {
   if (typeof value === 'string') return value.trim();
   if (Array.isArray(value)) return value.map(textFrom).filter(Boolean).join(' ').trim();
-  if (value && typeof value === 'object') return textFrom(value.text || value.content || value.message || '');
+  if (value && typeof value === 'object') {
+    return textFrom(value.text || (typeof value.content === 'string' ? value.content : '') || value.message || '');
+  }
   return '';
 }
 
-function historyConclusion(history) {
-  for (const item of [...(Array.isArray(history) ? history : [])].reverse()) {
-    const text = textFrom(item?.content || item?.message || item?.rawOutput);
-    if (text) return text;
+function isAssistantHistoryItem(item) {
+  if (!item || typeof item !== 'object') return false;
+  const role = String(item.role || item.speaker || '').toLowerCase();
+  const type = String(item.type || '').toLowerCase();
+  if (role === 'assistant' || role === 'agent') return true;
+  if (type === 'message' && role !== 'user') return true;
+  if (type === 'assistant' || type === 'assistant_message') return true;
+  // Explicit content without tool markers
+  if ((item.content || item.message) && !item.toolCallId && type !== 'tool_call') {
+    if (role === 'user') return false;
+    return true;
   }
-  return '';
+  return false;
+}
+
+function isNoisyConclusionText(text) {
+  if (!text) return true;
+  if (text.length > 4000) return true;
+  if (isPathHeavyText(text)) return true;
+  const pathList = extractPathList(text);
+  if (pathList && pathList.count >= 5) return true;
+  // Pure JSON array/object dumps
+  const trimmed = text.trim();
+  if (trimmed.length > 200 && trimmed.startsWith('[') && trimmed.includes('\\\\')) return true;
+  return false;
+}
+
+/**
+ * Build a structured conclusion from history / tools.
+ * Never returns an unclamped path wall as conclusion text.
+ */
+export function buildSubagentConclusion({ history = [], tools = [], emptyLabel = '' } = {}) {
+  // 1) Last assistant message in history
+  for (const item of [...(Array.isArray(history) ? history : [])].reverse()) {
+    if (!isAssistantHistoryItem(item)) continue;
+    const text = textFrom(item?.content || item?.message);
+    if (!text) continue;
+    const pathList = extractPathList(text);
+    if (pathList && pathList.count >= 2) {
+      return {
+        conclusion: '',
+        conclusionKind: 'path_list',
+        pathList,
+        summary: `${pathList.count} paths`,
+        noisy: false,
+      };
+    }
+    if (isNoisyConclusionText(text)) {
+      return {
+        conclusion: truncateOneLine(text, 160),
+        conclusionKind: 'summary',
+        pathList: null,
+        summary: truncateOneLine(text, 80),
+        noisy: true,
+      };
+    }
+    return {
+      conclusion: text,
+      conclusionKind: 'text',
+      pathList: null,
+      summary: truncateOneLine(text, 80),
+      noisy: false,
+    };
+  }
+
+  // 2) Structured fields on tools
+  for (const tool of [...(Array.isArray(tools) ? tools : [])].reverse()) {
+    const structured = textFrom(tool?.conclusion || tool?.summary || tool?.meta?.conclusion);
+    if (structured && !isNoisyConclusionText(structured)) {
+      return {
+        conclusion: structured,
+        conclusionKind: 'text',
+        pathList: null,
+        summary: truncateOneLine(structured, 80),
+        noisy: false,
+      };
+    }
+  }
+
+  // 3) Path-list tool answers (keep count — do not silent-drop)
+  for (const tool of [...(Array.isArray(tools) ? tools : [])].reverse()) {
+    const pathList = extractPathList(tool?.rawOutput) || extractPathList(normalizeToolResult(tool?.rawOutput));
+    if (pathList && pathList.count >= 2) {
+      return {
+        conclusion: '',
+        conclusionKind: 'path_list',
+        pathList,
+        summary: `${pathList.count} paths`,
+        noisy: false,
+      };
+    }
+  }
+
+  // 4) Tool histogram summary
+  const toolItems = Array.isArray(tools) ? tools : [];
+  if (toolItems.length) {
+    const counts = new Map();
+    for (const tool of toolItems) {
+      const name = String(tool?.toolName || tool?.title || tool?.kind || 'tool').replace(/Tool$/i, '');
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    const hist = Array.from(counts.entries())
+      .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
+      .join(' · ');
+    return {
+      conclusion: '',
+      conclusionKind: 'tool_summary',
+      pathList: null,
+      summary: hist,
+      toolHistogram: hist,
+      noisy: false,
+    };
+  }
+
+  return {
+    conclusion: emptyLabel || '',
+    conclusionKind: 'empty',
+    pathList: null,
+    summary: emptyLabel || '',
+    noisy: false,
+  };
 }
 
 export function collectSubagentReports({
@@ -57,8 +184,11 @@ export function collectSubagentReports({
   lastTeamState = null,
   memberHistoriesByName = {},
   subagentToolCalls = {},
+  emptyConclusionLabel = '',
 } = {}) {
   const reports = new Map();
+  const toolsByKey = new Map();
+
   const ensure = (source, fallback) => {
     const key = identityFor(source, fallback);
     const prior = reports.get(key) || {
@@ -70,6 +200,10 @@ export function collectSubagentReports({
       description: '',
       toolCallCount: 0,
       conclusion: '',
+      conclusionKind: 'empty',
+      pathList: null,
+      summary: '',
+      noisy: false,
       toolIds: new Set(),
       updatedAt: 0,
     };
@@ -80,51 +214,73 @@ export function collectSubagentReports({
       status: normalizeStatus(source?.status || prior.status),
       description: firstValue(source?.description, source?.task, source?.prompt, prior.description, ''),
       agentId: firstValue(source?.agentId, source?.subagentId, source?.taskId, source?.sessionId, prior.agentId, key),
-      updatedAt: Math.max(prior.updatedAt, Number(source?.updatedAt) || 0),
+      updatedAt: Math.max(prior.updatedAt, Number(source?.updatedAt) || Number(source?.completedAt) || 0),
     };
     reports.set(key, next);
     return next;
   };
 
-  for (const member of [
+  const members = [
     ...(Array.isArray(teamState?.members) ? teamState.members : []),
     ...(Array.isArray(lastTeamState?.members) ? lastTeamState.members : []),
-  ]) ensure(member, `member-${reports.size + 1}`);
+  ];
+
+  for (const member of members) ensure(member, `member-${reports.size + 1}`);
+
+  const rememberTool = (report, tool) => {
+    if (!toolsByKey.has(report.id)) toolsByKey.set(report.id, []);
+    toolsByKey.get(report.id).push(tool);
+  };
 
   for (const item of flattenTools(timeline)) {
     if (!item.isSubAgent && !item.memberName && !item.subagentType && !item.parentToolCallId) continue;
-    const matchingMember = [
-      ...(Array.isArray(teamState?.members) ? teamState.members : []),
-      ...(Array.isArray(lastTeamState?.members) ? lastTeamState.members : []),
-    ].find((member) => member?.name === item.memberName || member?.agentName === item.memberName);
+    // Children with parent are attributed to parent identity when possible
+    const matchingMember = members.find(
+      (member) => member?.name === item.memberName || member?.agentName === item.memberName,
+    );
     const report = matchingMember
       ? ensure(matchingMember, `member-${reports.size + 1}`)
       : ensure(item, `tool-${item.toolCallId || reports.size + 1}`);
     if (item.toolCallId) report.toolIds.add(item.toolCallId);
     report.toolCallCount = Math.max(report.toolCallCount, report.toolIds.size);
-    if (item.rawOutput) report.conclusion = textFrom(item.rawOutput) || report.conclusion;
+    rememberTool(report, item);
+    if (item.status) report.status = normalizeStatus(item.status);
   }
 
   for (const [toolCallId, item] of Object.entries(subagentToolCalls || {})) {
-    const matchingMember = [
-      ...(Array.isArray(teamState?.members) ? teamState.members : []),
-      ...(Array.isArray(lastTeamState?.members) ? lastTeamState.members : []),
-    ].find((member) => member?.name === item?.memberName || member?.agentName === item?.memberName);
+    const matchingMember = members.find(
+      (member) => member?.name === item?.memberName || member?.agentName === item?.memberName,
+    );
     const report = matchingMember
       ? ensure(matchingMember, `member-${reports.size + 1}`)
       : ensure(item, `tool-${toolCallId}`);
     report.toolIds.add(toolCallId);
     report.toolCallCount = Math.max(report.toolCallCount, report.toolIds.size);
+    rememberTool(report, { ...item, toolCallId });
   }
 
   for (const report of reports.values()) {
-    const history = memberHistoriesByName?.[report.name];
-    report.conclusion = historyConclusion(history) || report.conclusion;
-    if (!report.conclusion) report.conclusion = '暂无结论';
-    const member = [
-      ...(Array.isArray(teamState?.members) ? teamState.members : []),
-      ...(Array.isArray(lastTeamState?.members) ? lastTeamState.members : []),
-    ].find((candidate) => candidate?.name === report.name || identityFor(candidate, '') === report.id);
+    const history = memberHistoriesByName?.[report.name] || [];
+    const tools = toolsByKey.get(report.id) || [];
+    const built = buildSubagentConclusion({
+      history,
+      tools,
+      emptyLabel: emptyConclusionLabel,
+    });
+    report.conclusion = built.conclusion;
+    report.conclusionKind = built.conclusionKind;
+    report.pathList = built.pathList;
+    report.summary =
+      built.summary ||
+      report.description ||
+      formatToolCollapsedSummary(tools[tools.length - 1] || {}) ||
+      '';
+    report.noisy = Boolean(built.noisy);
+    report.toolHistogram = built.toolHistogram || '';
+
+    const member = members.find(
+      (candidate) => candidate?.name === report.name || identityFor(candidate, '') === report.id,
+    );
     if (member) {
       report.toolCallCount = Math.max(report.toolCallCount, Number(member.toolCallCount) || 0);
       report.status = normalizeStatus(member.status || report.status);
@@ -137,3 +293,5 @@ export function collectSubagentReports({
     .filter((report) => report.name || report.role)
     .sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
 }
+
+export { isAssistantHistoryItem, isNoisyConclusionText };

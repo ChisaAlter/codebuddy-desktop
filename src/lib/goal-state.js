@@ -63,9 +63,15 @@ export function normalizeGoalEvent(payload, eventType = null) {
     source.goal?.name,
     source.description,
     source.message,
+    source.condition,
     `Goal ${goalId}`,
   ));
-  const message = String(firstValue(source.message, source.detail, source.description, '') || '');
+  const message = String(firstValue(source.message, source.detail, '') || '');
+  const condition = firstValue(source.condition, source.goal?.condition, source.criteria, null);
+  const reason = firstValue(source.reason, source.goal?.reason, source.cause, null);
+  const kind = firstValue(source.kind, source.statusKind, source.goalKind, source.code, null);
+  const turnCountRaw = firstValue(source.turnCount, source.turns, source.turn_count, null);
+  const turnCount = Number(turnCountRaw);
   const updatedAt = Number(firstValue(source.updatedAt, source.updated_at, source.timestamp, source.createdAt)) || Date.now();
   const normalizedType = eventType || source.type || 'goal-progress';
   return {
@@ -73,7 +79,12 @@ export function normalizeGoalEvent(payload, eventType = null) {
     type: normalizedType,
     goalId,
     title,
-    message,
+    // Avoid duplicating title into message when CLI only sent one field.
+    message: message && message !== title ? message : String(firstValue(source.detail, '') || ''),
+    condition: condition != null ? String(condition) : null,
+    reason: reason != null ? String(reason) : null,
+    kind: kind != null ? String(kind).toLowerCase() : null,
+    turnCount: Number.isFinite(turnCount) ? turnCount : null,
     status,
     progress,
     runId: runId ? String(runId) : null,
@@ -83,7 +94,7 @@ export function normalizeGoalEvent(payload, eventType = null) {
     eventKey: firstValue(
       eventId ? `event:${eventId}` : null,
       Number.isFinite(sequence) ? `${goalId}:sequence:${sequence}` : null,
-      `${goalId}:${normalizedType}:${status}:${progress.percent ?? ''}:${message}`,
+      `${goalId}:${normalizedType}:${status}:${progress.percent ?? ''}:${message}:${condition || ''}`,
     ),
   };
 }
@@ -199,12 +210,14 @@ export function seedGoalStateFromPrompt(content, runId = null) {
     {
       goalId,
       title,
-      message: title,
+      // message left empty so UI can show localized "waiting for progress"
+      message: '',
       status: 'running',
       runId,
       eventId: `seed:${runId || now}`,
       updatedAt: now,
       seeded: true,
+      kind: 'active',
     },
     'goal-progress',
   );

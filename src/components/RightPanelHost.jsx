@@ -1,6 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { usePanelTransition } from './usePanelTransition';
+import { resolveLocaleMode, translate } from '../lib/i18n';
+import SurfacePicker from './SurfacePicker';
+
+const ReplicaTerminalView = lazy(() => import('./ReplicaTerminalView'));
+const ReplicaChangesView = lazy(() => import('./ReplicaChangesView'));
+
+const RIGHT_PANEL_TYPES = new Set(['surfaces', 'files', 'browser', 'terminal', 'diff']);
 
 function safeBrowserUrl(value) {
   const raw = String(value || '').trim();
@@ -14,9 +21,21 @@ function safeBrowserUrl(value) {
   }
 }
 
-export function PanelHeader({ title, onClose }) {
+export function PanelHeader({ title, onClose, onBack = null }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
+      {onBack ? (
+        <button
+          type="button"
+          className="rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          onClick={onBack}
+          aria-label="返回工作面选择"
+          title="返回"
+          data-testid="right-panel-back"
+        >
+          ←
+        </button>
+      ) : null}
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
       <button
         type="button"
@@ -31,7 +50,7 @@ export function PanelHeader({ title, onClose }) {
   );
 }
 
-function FilePanel({ onClose }) {
+function FilePanel({ onClose, onBack, t }) {
   const fileCwd = useStore((s) => s.fileCwd);
   const fileEntries = useStore((s) => s.fileEntries);
   const fileLoading = useStore((s) => s.fileLoading);
@@ -49,7 +68,7 @@ function FilePanel({ onClose }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PanelHeader title="文件浏览" onClose={onClose} />
+      <PanelHeader title={t('topbar.surface.files')} onClose={onClose} onBack={onBack} />
       <div className="border-b border-[var(--color-border-default)] p-3">
         <input
           value={query}
@@ -58,7 +77,9 @@ function FilePanel({ onClose }) {
           aria-label="搜索当前目录"
           className="input-field w-full text-xs"
         />
-        <div className="mt-2 truncate text-[11px] text-[var(--color-text-muted)]" title={fileCwd || '.'}>{fileCwd || '.'}</div>
+        <div className="mt-2 truncate text-[11px] text-[var(--color-text-muted)]" title={fileCwd || '.'}>
+          {fileCwd || '.'}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {fileLoading ? <div className="p-3 text-xs text-[var(--color-text-muted)]">加载文件中...</div> : null}
@@ -95,7 +116,7 @@ function FilePanel({ onClose }) {
   );
 }
 
-function BrowserPanel({ payload, panelPhase, onClose }) {
+function BrowserPanel({ payload, panelPhase, onClose, onBack, t }) {
   const initialUrl = safeBrowserUrl(payload?.url);
   const [address, setAddress] = useState(initialUrl);
   const [url, setUrl] = useState(initialUrl);
@@ -161,7 +182,7 @@ function BrowserPanel({ payload, panelPhase, onClose }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PanelHeader title="浏览器" onClose={onClose} />
+      <PanelHeader title={t('topbar.surface.browser')} onClose={onClose} onBack={onBack} />
       <form className="flex gap-2 border-b border-[var(--color-border-default)] p-2" onSubmit={navigate}>
         <input
           value={address}
@@ -170,12 +191,18 @@ function BrowserPanel({ payload, panelPhase, onClose }) {
           aria-label="浏览器地址"
           className="input-field min-w-0 flex-1 text-xs"
         />
-        <button type="submit" className="btn-primary px-2 text-xs">打开</button>
+        <button type="submit" className="btn-primary px-2 text-xs">
+          打开
+        </button>
       </form>
       {url ? (
         <div ref={browserSurfaceRef} className="min-h-0 flex-1 bg-white" data-testid="right-browser-surface" />
       ) : (
-        <div ref={browserSurfaceRef} className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-xs text-[var(--color-text-muted)]" data-testid="right-browser-surface">
+        <div
+          ref={browserSurfaceRef}
+          className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-xs text-[var(--color-text-muted)]"
+          data-testid="right-browser-surface"
+        >
           点击 AI 回复中的链接，或输入 http(s) 地址打开页面
         </div>
       )}
@@ -183,35 +210,104 @@ function BrowserPanel({ payload, panelPhase, onClose }) {
   );
 }
 
+function EmbeddedSurfacePanel({ title, onClose, onBack, children }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="right-embedded-surface">
+      <PanelHeader title={title} onClose={onClose} onBack={onBack} />
+      <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+function panelTitle(type, t) {
+  if (type === 'surfaces') return t('topbar.surfacesTitle');
+  if (type === 'files') return t('topbar.surface.files');
+  if (type === 'browser') return t('topbar.surface.browser');
+  if (type === 'terminal') return t('topbar.surface.terminal');
+  if (type === 'diff') return t('topbar.surface.diff');
+  return t('topbar.surfaces');
+}
+
 export default function RightPanelHost() {
   const rightPanel = useStore((s) => s.rightPanel);
   const closeRightPanel = useStore((s) => s.closeRightPanel);
+  const openRightPanel = useStore((s) => s.openRightPanel);
+  const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
+  const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
   const transitioned = usePanelTransition(rightPanel);
 
   useEffect(() => {
-    if (!transitioned.value || !['files', 'browser'].includes(transitioned.value.type)) return undefined;
+    if (!transitioned.value || !RIGHT_PANEL_TYPES.has(transitioned.value.type)) return undefined;
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') closeRightPanel();
+      if (event.key === 'Escape') {
+        // From a concrete surface, Esc returns to chooser; from chooser, closes panel.
+        if (transitioned.value?.type && transitioned.value.type !== 'surfaces') {
+          openRightPanel('surfaces');
+        } else {
+          closeRightPanel();
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeRightPanel, transitioned.value]);
+  }, [closeRightPanel, openRightPanel, transitioned.value]);
 
   if (!transitioned.value) return null;
   const panel = transitioned.value;
-  if (!['files', 'browser'].includes(panel.type)) return null;
+  if (!RIGHT_PANEL_TYPES.has(panel.type)) return null;
+
+  const goChooser = () => openRightPanel('surfaces');
+  const back = panel.type === 'surfaces' ? null : goChooser;
+
   return (
     <aside
-      className={`right-panel-host flex h-full w-[min(420px,38vw)] min-w-[300px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] is-${transitioned.phase}`}
+      className={`right-panel-host flex h-full w-[min(440px,40vw)] min-w-[320px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] is-${transitioned.phase}`}
       data-testid="right-panel"
       data-panel-type={panel.type}
       data-panel-phase={transitioned.phase}
       role="complementary"
+      aria-label={panelTitle(panel.type, t)}
     >
-      {panel.type === 'files' ? (
-        <FilePanel onClose={closeRightPanel} />
-      ) : panel.type === 'browser' ? (
-        <BrowserPanel payload={panel.payload} panelPhase={transitioned.phase} onClose={closeRightPanel} />
+      {panel.type === 'surfaces' ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <PanelHeader title={t('topbar.surfacesTitle')} onClose={closeRightPanel} />
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <SurfacePicker
+              t={t}
+              onSelect={(surfaceId) => {
+                if (['browser', 'files', 'terminal', 'diff'].includes(surfaceId)) {
+                  openRightPanel(surfaceId);
+                }
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {panel.type === 'files' ? <FilePanel onClose={closeRightPanel} onBack={back} t={t} /> : null}
+
+      {panel.type === 'browser' ? (
+        <BrowserPanel payload={panel.payload} panelPhase={transitioned.phase} onClose={closeRightPanel} onBack={back} t={t} />
+      ) : null}
+
+      {panel.type === 'terminal' ? (
+        <EmbeddedSurfacePanel title={t('topbar.surface.terminal')} onClose={closeRightPanel} onBack={back}>
+          <Suspense fallback={<div className="p-4 text-xs text-[var(--color-text-muted)]">…</div>}>
+            <div className="right-panel-embed h-full min-h-0">
+              <ReplicaTerminalView />
+            </div>
+          </Suspense>
+        </EmbeddedSurfacePanel>
+      ) : null}
+
+      {panel.type === 'diff' ? (
+        <EmbeddedSurfacePanel title={t('topbar.surface.diff')} onClose={closeRightPanel} onBack={back}>
+          <Suspense fallback={<div className="p-4 text-xs text-[var(--color-text-muted)]">…</div>}>
+            <div className="right-panel-embed h-full min-h-0">
+              <ReplicaChangesView />
+            </div>
+          </Suspense>
+        </EmbeddedSurfacePanel>
       ) : null}
     </aside>
   );

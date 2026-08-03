@@ -69,6 +69,8 @@ describe('gui-settings', () => {
       doNotDisturb: false,
       sessionAutoAllowFileEdits: false,
       requestPermissionOnFirstToolUse: false,
+      // production default: structured tool/subagent output on
+      structuredOutputV1: true,
     });
   });
 

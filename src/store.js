@@ -1059,7 +1059,8 @@ export const useStore = create((set, get) => {
 
   openRightPanel(type, payload = null) {
     if (type === 'workflow') return get().openWorkflowPanel(payload);
-    const allowed = new Set(['files', 'browser']);
+    // surfaces = chooser; files/browser/terminal/diff all live in the right host.
+    const allowed = new Set(['surfaces', 'files', 'browser', 'terminal', 'diff']);
     if (!allowed.has(type)) return false;
     set({
       rightPanel: { type, payload: payload && typeof payload === 'object' ? payload : null },

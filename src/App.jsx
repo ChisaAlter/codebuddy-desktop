@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useEffect } from 'react';
+import { LayoutPanelLeft, ListTree } from 'lucide-react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
@@ -462,25 +463,32 @@ function StatusBar() {
   const sessionTitle = useStore((s) => s.sessionTitle);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
+  const openRightPanel = useStore((s) => s.openRightPanel);
   const toggleRightPanel = useStore((s) => s.toggleRightPanel);
+  const rightPanel = useStore((s) => s.rightPanel);
   const toggleWorkflowPanel = useStore((s) => s.toggleWorkflowPanel);
   const activeThreadId = useStore((s) => s.activeThreadId);
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
+  const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
+  const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
   const workflowVisible = Boolean(
     activeThreadRuntime?.teamState || activeThreadRuntime?.lastTeamState || activeThreadRuntime?.workflowState ||
     activeThreadRuntime?.lastWorkflowState || activeThreadRuntime?.goalState || activeThreadRuntime?.lastGoalState,
   );
+  const surfaceActive = Boolean(rightPanel);
+
   return (
     <div
       className="topbar titlebar-drag flex h-11 shrink-0 items-center gap-3 pl-3 text-xs"
       role="banner"
       aria-label="Status bar"
+      data-testid="app-topbar"
     >
       <button
         className="titlebar-no-drag flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-        title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-        aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+        title={sidebarCollapsed ? t('topbar.sidebarExpand') : t('topbar.sidebarCollapse')}
+        aria-label={sidebarCollapsed ? t('topbar.sidebarExpand') : t('topbar.sidebarCollapse')}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M2 2h4v12H2V2zm8 0h4v12h-4V2z" />
@@ -495,31 +503,35 @@ function StatusBar() {
           </>
         ) : null}
       </div>
-      <div className="titlebar-no-drag flex h-full items-stretch">
+      <div className="titlebar-no-drag flex h-full items-center gap-0.5 pr-1">
         <button
           type="button"
-          className="flex h-full items-center px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-          onClick={() => toggleRightPanel('files')}
-          title="文件浏览"
-          aria-label="文件浏览"
-        >文件</button>
-        <button
-          type="button"
-          className={`flex h-full items-center gap-1 px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]${workflowVisible ? ' text-[var(--color-accent-blue)]' : ''}`}
-          onClick={() => toggleWorkflowPanel({ threadId: activeThreadId })}
-          title="工作流与子代理"
-          aria-label="工作流与子代理"
+          className={`topbar-icon-btn${surfaceActive ? ' is-active' : ''}`}
+          onClick={() => {
+            // Closed → open chooser. Chooser open → close panel. Other surface → back to chooser.
+            if (!rightPanel) openRightPanel('surfaces');
+            else if (rightPanel.type === 'surfaces') toggleRightPanel('surfaces');
+            else openRightPanel('surfaces');
+          }}
+          title={t('topbar.surfaces')}
+          aria-label={t('topbar.surfaces')}
+          aria-haspopup="dialog"
+          aria-expanded={Boolean(rightPanel)}
+          data-testid="topbar-surfaces-btn"
         >
-          {workflowVisible ? <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent-blue)]" aria-hidden="true" /> : null}
-          工作流
+          <LayoutPanelLeft size={16} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className="flex h-full items-center px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-          onClick={() => toggleRightPanel('browser')}
-          title="浏览器"
-          aria-label="浏览器"
-        >浏览器</button>
+          className={`topbar-icon-btn${workflowVisible ? ' is-active' : ''}`}
+          onClick={() => toggleWorkflowPanel({ threadId: activeThreadId })}
+          title={t('topbar.workflow')}
+          aria-label={t('topbar.workflow')}
+          data-testid="topbar-workflow-btn"
+        >
+          {workflowVisible ? <span className="topbar-icon-btn__dot" aria-hidden="true" /> : null}
+          <ListTree size={16} strokeWidth={1.75} aria-hidden="true" />
+        </button>
         <WindowControls />
       </div>
     </div>

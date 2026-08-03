@@ -22,6 +22,9 @@ export const DEFAULT_GUI_SETTINGS = {
   sessionAutoAllowFileEdits: false,
   // Request permission on the first tool use of each session (behavior hint label).
   requestPermissionOnFirstToolUse: false,
+  // Production structured tool/subagent/goal output (WebUI-aligned clamp + cards).
+  // Default true; set false only as emergency rollback to legacy pre dumps.
+  structuredOutputV1: true,
   // Cloud account login site: cn (China) | global (international).
   // Default global = same as bare CLI (no INTERNET_ENVIRONMENT), so disk OAuth survives GUI restart.
   accountLoginSite: 'global',
@@ -50,6 +53,8 @@ export function normalizeGuiSettings(value) {
     doNotDisturb: source.doNotDisturb === true,
     sessionAutoAllowFileEdits: source.sessionAutoAllowFileEdits === true,
     requestPermissionOnFirstToolUse: source.requestPermissionOnFirstToolUse === true,
+    // Default on; only explicit false disables.
+    structuredOutputV1: source.structuredOutputV1 !== false,
     accountLoginSite: normalizeAccountLoginSite(source.accountLoginSite),
     lastAccountUser: normalizeLastAccountUser(source.lastAccountUser),
   };
@@ -103,6 +108,7 @@ const STRIP_FROM_BACKEND_SETTINGS = Object.freeze([
   'doNotDisturb',
   'sessionAutoAllowFileEdits',
   'requestPermissionOnFirstToolUse',
+  'structuredOutputV1',
   'accountLoginSite',
   'lastAccountUser',
 ]);

@@ -74,7 +74,7 @@ describe('RightPanelHost', () => {
     await act(async () => root.render(React.createElement(RightPanelHost)));
 
     expect(container.querySelector('[data-testid="right-panel"]')).toBeTruthy();
-    expect(container.textContent).toContain('文件浏览');
+    expect(container.textContent).toContain('文件');
     expect(container.textContent).toContain('App.jsx');
     const fileButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('App.jsx'));
     const directoryButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('components'));
@@ -104,17 +104,25 @@ describe('RightPanelHost', () => {
     expect(container.querySelector('[data-testid="right-panel"]')).toBeNull();
     root.unmount();
   });
-  it('closes on Escape and through the close button', async () => {
+
+  it('returns to surface chooser on Escape from files, and closes from chooser via close button', async () => {
     store.rightPanel = { type: 'files', payload: null };
+    store.openRightPanel = vi.fn((type, payload = null) => {
+      store.rightPanel = { type, payload };
+      return true;
+    });
     const { createRoot } = await import('react-dom/client');
     const root = createRoot(container);
     await act(async () => root.render(React.createElement(RightPanelHost)));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(store.closeRightPanel).toHaveBeenCalledTimes(1);
+    expect(store.openRightPanel).toHaveBeenCalledWith('surfaces');
+
+    store.rightPanel = { type: 'surfaces', payload: null };
+    await act(async () => root.render(React.createElement(RightPanelHost)));
     await act(async () => {
       container.querySelector('button[aria-label="关闭右侧面板"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(store.closeRightPanel).toHaveBeenCalledTimes(2);
+    expect(store.closeRightPanel).toHaveBeenCalled();
     root.unmount();
   });
 });
