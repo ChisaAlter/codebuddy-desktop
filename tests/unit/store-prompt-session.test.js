@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { hasCompletePromptResponse, hasUsableAssistantBody, useStore } from '../../src/store';
+import {
+  hasCompletePromptResponse,
+  hasUsableAssistantBody,
+  hasUsableGoalTurn,
+  useStore,
+} from '../../src/store';
 
 function runtime(overrides = {}) {
   return {
@@ -128,6 +133,26 @@ describe('store prompt session selection', () => {
     expect(hasCompletePromptResponse(timeline, 'prompt-1', promptStartedAt)).toBe(false);
     expect(hasUsableAssistantBody(timeline, 'prompt-1', promptStartedAt)).toBe(true);
     expect(hasUsableAssistantBody([prompt, { id: 'think-1', type: 'thinking', content: '…' }], 'prompt-1', promptStartedAt)).toBe(
+      false,
+    );
+  });
+
+  it('treats goal-only turns as usable without assistant text', () => {
+    const promptStartedAt = 1000;
+    const prompt = { id: 'prompt-1', type: 'message', role: 'user', content: '/goal fix login', createdAt: promptStartedAt };
+    const timeline = [
+      prompt,
+      { id: 'goal-1', type: 'goal-progress', meta: { title: 'fix login', percent: 10 }, createdAt: 1100 },
+    ];
+    expect(hasUsableGoalTurn(timeline, 'prompt-1', promptStartedAt, null)).toBe(true);
+    expect(
+      hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, {
+        mode: 'goal',
+        goalsById: { 'local-seed': { goalId: 'local-seed', title: 'fix login' } },
+        eventCount: 1,
+      }),
+    ).toBe(true);
+    expect(hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, { mode: 'goal', goalsById: {}, eventCount: 0 })).toBe(
       false,
     );
   });
@@ -725,6 +750,76 @@ describe('store prompt session selection', () => {
 
     expect(request).not.toHaveBeenCalled();
     expect(useStore.getState().threadRuntimeById['thread-1'].promptQueue).toHaveLength(1);
+  });
+
+  it('seeds goal state, shows the user bubble, and opens the workflow panel for /goal', async () => {
+    useStore.setState({
+      workflowFloatingPanel: null,
+      workflowPanelDismissedRunId: null,
+    });
+    request.mockImplementationOnce(async () => {
+      // Goal-only completion: seeded projection is enough for hasUsableGoalTurn.
+      return { stopReason: 'end_turn' };
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', '/goal 修复登录')).resolves.toBe(true);
+
+    const state = useStore.getState();
+    const timeline = state.threadRuntimeById['thread-1'].timeline;
+    expect(timeline.some((item) => item.role === 'user' && item.content === '/goal 修复登录')).toBe(true);
+    expect(state.threadRuntimeById['thread-1'].lastGoalState || state.threadRuntimeById['thread-1'].goalState).toMatchObject({
+      mode: 'goal',
+    });
+    const goalSnap = state.threadRuntimeById['thread-1'].lastGoalState || state.threadRuntimeById['thread-1'].goalState;
+    expect(Object.keys(goalSnap.goalsById || {})).not.toHaveLength(0);
+    expect(goalSnap.goalsById['local-seed'] || Object.values(goalSnap.goalsById)[0]).toMatchObject({
+      title: '修复登录',
+    });
+    expect(state.workflowFloatingPanel).toMatchObject({
+      payload: expect.objectContaining({ threadId: 'thread-1' }),
+    });
+    expect(request).toHaveBeenCalledWith(
+      'session/prompt',
+      {
+        sessionId: 'session-ready',
+        prompt: [{ type: 'text', text: '/goal 修复登录' }],
+      },
+      { promptRunId: expect.stringMatching(/^run-/) },
+    );
+  });
+
+  it('accepts a goal-only end_turn after CLI goal progress without assistant text', async () => {
+    request.mockImplementationOnce(async () => {
+      const promptRunId = useStore.getState().threadRuntimeById['thread-1'].activePromptRunId;
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-ready',
+          _client: { source: 'request', promptRunId },
+          update: {
+            sessionUpdate: 'goal-progress',
+            _meta: {
+              'codebuddy.ai/goalProgress': {
+                goalId: 'g1',
+                title: '修复登录',
+                percent: 40,
+                status: 'running',
+              },
+            },
+          },
+        },
+      });
+      return { stopReason: 'end_turn' };
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', '/goal 修复登录')).resolves.toBe(true);
+
+    const state = useStore.getState();
+    expect(state.threadsById['thread-1'].status).toBe('idle');
+    expect(state.error).toBeNull();
+    const goalSnap = state.threadRuntimeById['thread-1'].lastGoalState;
+    expect(goalSnap?.goalsById?.g1 || goalSnap?.goalsById?.['local-seed']).toBeTruthy();
   });
 
   it('does not launch session/prompt when Stop is clicked during preflight persistence', async () => {

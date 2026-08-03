@@ -27,6 +27,7 @@ import {
   hasCompletePromptResponse,
   hasPromptRunActivity,
   hasUsableAssistantBody,
+  hasUsableGoalTurn,
 } from '../helpers/prompt-completion';
 import {
   emptyThreadRuntime,
@@ -35,7 +36,14 @@ import {
   sessionActionItemMatches,
   ACTIVE_THREAD_RUNTIME_KEYS,
 } from '../helpers/thread-runtime';
-import { normalizeGoalEvent, mergeGoalEvent, emptyGoalState } from '../../lib/goal-state';
+import {
+  normalizeGoalEvent,
+  mergeGoalEvent,
+  emptyGoalState,
+  isGoalPrompt,
+  seedGoalStateFromPrompt,
+} from '../../lib/goal-state';
+import { collectSubagentReports } from '../../lib/subagent-report';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
 
 /**
@@ -304,11 +312,22 @@ export function createSessionsChatSlice(set, get, ctx) {
       compactTimelinePayload = { phase: 'compacted' };
     }
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
+    if (workflowActivity || subagent || memberName) {
+      const latest = get().threadRuntimeById[threadId] || runtime;
+      runtimePatch.subagentReports = collectSubagentReports({
+        timeline: latest.timeline,
+        teamState: latest.teamState,
+        lastTeamState: latest.lastTeamState,
+        memberHistoriesByName: latest.memberHistoriesByName,
+        subagentToolCalls: latest.subagentToolCalls,
+      });
+      get().patchThreadRuntime(threadId, { subagentReports: runtimePatch.subagentReports });
+    }
     if (workflowActivity && get().activeThreadId === threadId) {
       const runId = runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
-      const currentPanel = get().rightPanel;
+      const currentPanel = get().workflowFloatingPanel;
       if (runId && currentPanel == null && get().workflowPanelDismissedRunId !== runId) {
-        get().openRightPanel('workflow', { threadId, runId });
+        get().openWorkflowPanel({ threadId, runId });
       }
     }
     if (compactTimelinePayload) {
@@ -490,13 +509,24 @@ export function createSessionsChatSlice(set, get, ctx) {
           }
           get().flushThreadTimelineCoalesce?.(threadId);
           const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
-          const terminalPatch = responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedRuntime.timeline) });
+          const terminalPatch = responseTerminalRuntimePatch({
+            timeline: closeAssistantStream(flushedRuntime.timeline),
+            lastWorkflowState: flushedRuntime.workflowState || flushedRuntime.lastWorkflowState || null,
+            lastGoalState: flushedRuntime.goalState || flushedRuntime.lastGoalState || null,
+          });
           if (flushedRuntime.teamState) {
             terminalPatch.lastTeamState = completedTeamSnapshot(
               flushedRuntime.teamState,
               { type: 'team_deleted', status: normalizedStatus === 'error' ? 'failed' : normalizedStatus === 'cancelled' ? 'cancelled' : 'completed' },
             );
           }
+          terminalPatch.lastSubagentReports = collectSubagentReports({
+            timeline: flushedRuntime.timeline,
+            teamState: flushedRuntime.teamState,
+            lastTeamState: terminalPatch.lastTeamState || flushedRuntime.lastTeamState,
+            memberHistoriesByName: flushedRuntime.memberHistoriesByName,
+            subagentToolCalls: flushedRuntime.subagentToolCalls,
+          });
           get().patchThreadRuntime(
             threadId,
             terminalPatch,
@@ -1963,6 +1993,13 @@ export function createSessionsChatSlice(set, get, ctx) {
           lastPromptRunAt: currentRuntime.activePromptRunId ? Date.now() : 0,
           lastWorkflowState: currentRuntime.workflowState || currentRuntime.lastWorkflowState || null,
           lastGoalState: currentRuntime.goalState || currentRuntime.lastGoalState || null,
+          lastSubagentReports: collectSubagentReports({
+            timeline,
+            teamState: currentRuntime.teamState,
+            lastTeamState: currentRuntime.lastTeamState,
+            memberHistoriesByName: currentRuntime.memberHistoriesByName,
+            subagentToolCalls: currentRuntime.subagentToolCalls,
+          }),
           permissionRequests: [],
           questions: [],
           timeline,
@@ -2187,6 +2224,10 @@ export function createSessionsChatSlice(set, get, ctx) {
     }));
     const timeline = pushUserMessage(runtime.timeline, content, promptStartedAt, timelineAttachments);
     const promptEntryId = timeline[timeline.length - 1]?.id || null;
+    const goalPrompt = isGoalPrompt(content);
+    const nextGoalState = goalPrompt
+      ? seedGoalStateFromPrompt(content, activePromptRunId)
+      : { ...emptyGoalState(), mode: null };
     get().patchThreadRuntime(threadId, {
       timeline,
       isAwaitingResponse: true,
@@ -2200,10 +2241,18 @@ export function createSessionsChatSlice(set, get, ctx) {
       subagentToolCalls: {},
       workflowState: null,
       lastWorkflowState: null,
-      goalState: { ...emptyGoalState(), mode: /^\/goal(?:\s|$)/i.test(String(content || '').trim()) ? 'goal' : null },
+      goalState: nextGoalState,
       lastGoalState: null,
       rawExtensionEvents: [],
     });
+    // `/goal` should surface the right panel immediately (optimistic seed), not only
+    // after the first CLI goal-progress event — otherwise the turn looks dead.
+    if (goalPrompt && get().activeThreadId === threadId) {
+      const dismissed = get().workflowPanelDismissedRunId;
+      if (!dismissed || dismissed !== activePromptRunId) {
+        get().openWorkflowPanel({ threadId, runId: activePromptRunId });
+      }
+    }
     await get().updateThreadRecord(threadId, {
       status: 'running',
       draft: '',
@@ -2253,6 +2302,10 @@ export function createSessionsChatSlice(set, get, ctx) {
       hasCompletePromptResponse(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
     const hasUsableBody = () =>
       hasUsableAssistantBody(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
+    const hasUsableGoal = () => {
+      const latest = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      return hasUsableGoalTurn(latest.timeline, promptEntryId, promptStartedAt, latest.goalState || latest.lastGoalState);
+    };
     const recoverPromptHistory = async () => {
       if (!runIsCurrent()) return false;
       get().patchThreadRuntime(threadId, { historyReplayActive: true });
@@ -2274,7 +2327,8 @@ export function createSessionsChatSlice(set, get, ctx) {
         }
       }
       // History may only restore the pre-tool narrative; treat that as recovered too.
-      return hasFinalResponse() || hasUsableBody();
+      // Goal-only turns recover when goal projection / timeline events are present.
+      return hasFinalResponse() || hasUsableBody() || hasUsableGoal();
     };
     try {
       if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) {
@@ -2344,9 +2398,21 @@ export function createSessionsChatSlice(set, get, ctx) {
         get().flushThreadTimelineCoalesce?.(threadId);
         const cancelledRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
         const cancelledTimeline = closeAssistantStream(cancelledRuntime.timeline);
+        const cancelledReports = collectSubagentReports({
+          timeline: cancelledTimeline,
+          teamState: cancelledRuntime.teamState,
+          lastTeamState: cancelledRuntime.lastTeamState,
+          memberHistoriesByName: cancelledRuntime.memberHistoriesByName,
+          subagentToolCalls: cancelledRuntime.subagentToolCalls,
+        });
         get().patchThreadRuntime(
           threadId,
-          responseTerminalRuntimePatch({ timeline: cancelledTimeline }),
+          responseTerminalRuntimePatch({
+            timeline: cancelledTimeline,
+            lastWorkflowState: cancelledRuntime.workflowState || cancelledRuntime.lastWorkflowState || null,
+            lastGoalState: cancelledRuntime.goalState || cancelledRuntime.lastGoalState || null,
+            lastSubagentReports: cancelledReports,
+          }),
         );
         await get().updateThreadRecord(threadId, {
           status: 'cancelled',
@@ -2465,7 +2531,11 @@ export function createSessionsChatSlice(set, get, ctx) {
           ]);
           get().patchThreadRuntime(
             threadId,
-            responseTerminalRuntimePatch({ timeline: truncatedTimeline }),
+            responseTerminalRuntimePatch({
+              timeline: truncatedTimeline,
+              lastWorkflowState: truncatedRuntime.workflowState || truncatedRuntime.lastWorkflowState || null,
+              lastGoalState: truncatedRuntime.goalState || truncatedRuntime.lastGoalState || null,
+            }),
           );
           await get().updateThreadRecord(threadId, {
             status: 'idle',
@@ -2482,6 +2552,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         runIsCurrent() &&
         !hasFinalResponse() &&
         !hasUsableBody() &&
+        !hasUsableGoal() &&
         Date.now() < graceDeadline
       ) {
         await waitForMilliseconds(25);
@@ -2489,11 +2560,12 @@ export function createSessionsChatSlice(set, get, ctx) {
 
       // Prefer a post-tool final answer. If only pre-tool narrative is present, skip history
       // reload (user already sees the body). Reload only when the turn has no usable text.
-      if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody()) {
+      // `/goal` turns may legitimately finish with only goal metadata.
+      if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody() && !hasUsableGoal()) {
         await recoverPromptHistory();
       }
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
-      if (!hasFinalResponse() && !hasUsableBody()) {
+      if (!hasFinalResponse() && !hasUsableBody() && !hasUsableGoal()) {
         const incompleteError = new Error('回复已结束，但最终正文未送达；自动历史恢复也未找到完整回答。');
         incompleteError.promptAccepted = true;
         throw incompleteError;
@@ -2506,11 +2578,19 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const completedTimeline = closeAssistantStream(completedRuntime.timeline);
+      const completedReports = collectSubagentReports({
+        timeline: completedTimeline,
+        teamState: completedRuntime.teamState,
+        lastTeamState: completedRuntime.lastTeamState,
+        memberHistoriesByName: completedRuntime.memberHistoriesByName,
+        subagentToolCalls: completedRuntime.subagentToolCalls,
+      });
       get().patchThreadRuntime(
         threadId,
         responseTerminalRuntimePatch({
           lastWorkflowState: completedRuntime.workflowState || completedRuntime.lastWorkflowState || null,
           lastGoalState: completedRuntime.goalState || completedRuntime.lastGoalState || null,
+          lastSubagentReports: completedReports,
           timeline: completedTimeline,
           // H1: remember the just-finished run so late SSE chunks still arriving
           // within LATE_PROMPT_CORRELATION_MS are appended instead of dropped.
@@ -2548,9 +2628,19 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (failedRuntime.activePromptRunId === activePromptRunId) {
           get().flushThreadTimelineCoalesce?.(threadId);
           const flushedFailed = get().threadRuntimeById[threadId] || failedRuntime;
+          const cancelledReports = collectSubagentReports({
+            timeline: flushedFailed.timeline,
+            teamState: flushedFailed.teamState,
+            lastTeamState: flushedFailed.lastTeamState,
+            memberHistoriesByName: flushedFailed.memberHistoriesByName,
+            subagentToolCalls: flushedFailed.subagentToolCalls,
+          });
           get().patchThreadRuntime(
             threadId,
-            responseTerminalRuntimePatch({ timeline: closeAssistantStream(flushedFailed.timeline) }),
+            responseTerminalRuntimePatch({
+              timeline: closeAssistantStream(flushedFailed.timeline),
+              lastSubagentReports: cancelledReports,
+            }),
           );
         }
         return { ok: false, reason: 'cancelled' };
@@ -2575,10 +2665,18 @@ export function createSessionsChatSlice(set, get, ctx) {
       const failedTimeline = closeAssistantStream(
         reduceAcpEvent(flushedFailedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
       );
+      const failedReports = collectSubagentReports({
+        timeline: failedTimeline,
+        teamState: flushedFailedRuntime.teamState,
+        lastTeamState: flushedFailedRuntime.lastTeamState,
+        memberHistoriesByName: flushedFailedRuntime.memberHistoriesByName,
+        subagentToolCalls: flushedFailedRuntime.subagentToolCalls,
+      });
       get().patchThreadRuntime(
         threadId,
         responseTerminalRuntimePatch({
           timeline: failedTimeline,
+          lastSubagentReports: failedReports,
           pendingAttachments: restoredAttachments,
         }),
       );

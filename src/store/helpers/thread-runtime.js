@@ -31,6 +31,8 @@ export function emptyThreadRuntime() {
     lastWorkflowState: null,
     goalState: null,
     lastGoalState: null,
+    subagentReports: [],
+    lastSubagentReports: [],
     rawExtensionEvents: [],
     agentPhase: null,
     progress: null,
@@ -159,6 +161,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'lastWorkflowState',
   'goalState',
   'lastGoalState',
+  'subagentReports',
+  'lastSubagentReports',
   'rawExtensionEvents',
   'agentPhase',
   'progress',
@@ -191,9 +195,11 @@ export function responseTerminalRuntimePatch(patch = {}) {
     // The active team/workflow objects are cleared below; final snapshots remain readable.
     workflowState: null,
     goalState: null,
+    subagentReports: null,
     // 终态保留最后一次 goal/workflow projection，供右侧面板查看结果。
     lastWorkflowState: null,
     lastGoalState: null,
+    lastSubagentReports: null,
     ...patch,
   };
 }

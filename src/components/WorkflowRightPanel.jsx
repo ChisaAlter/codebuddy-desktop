@@ -5,6 +5,7 @@ import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import { normalizeWorkflowStatus } from '../lib/workflow-status';
 import { currentGoal, goalList, goalsFromTimeline } from '../lib/goal-state';
 import { resolveLocaleMode, translate } from '../lib/i18n';
+import { collectSubagentReports } from '../lib/subagent-report';
 import { formatElapsed } from './WorkflowStatusPanel';
 
 function useTranslate() {
@@ -36,24 +37,27 @@ function progressText(progress, t) {
   return progress.message || '';
 }
 
-function GoalCard({ goal, t }) {
-  if (!goal) return null;
-  const progress = goal.progress || {};
+function GoalCard({ goal, t, waitingOnly = false }) {
+  if (!goal && !waitingOnly) return null;
+  const progress = goal?.progress || {};
   const label = progressText(progress, t);
+  const title = goal?.title || t('goal.current');
+  const status = goal?.status || 'running';
+  const message = goal?.message || (waitingOnly || goal?.seeded ? t('goal.waitingProgress') : '');
   return (
     <section className="workflow-right-panel__section workflow-right-panel__goal" data-testid="workflow-current-goal">
       <div className="workflow-right-panel__section-title">
         <span>{t('goal.current')}</span>
-        <span className="workflow-right-panel__status" style={{ color: statusColor(goal.status) }}>{statusText(goal.status, t)}</span>
+        <span className="workflow-right-panel__status" style={{ color: statusColor(status) }}>{statusText(status, t)}</span>
       </div>
-      <div className="workflow-right-panel__goal-title" title={goal.title}>{goal.title}</div>
+      <div className="workflow-right-panel__goal-title" title={title}>{title}</div>
       {progress.percent != null ? (
         <div className="workflow-right-panel__progress">
           <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress.percent}%` }} /></div>
           <span>{label}</span>
         </div>
       ) : null}
-      {goal.message ? <div className="workflow-right-panel__muted" title={goal.message}>{goal.message}</div> : null}
+      {message ? <div className="workflow-right-panel__muted" title={message}>{message}</div> : null}
     </section>
   );
 }
@@ -61,7 +65,7 @@ function GoalCard({ goal, t }) {
 function MemberRow({ member, history, t }) {
   const [expanded, setExpanded] = useState(false);
   const entries = Array.isArray(history) ? history.slice(-8) : [];
-  const canExpand = Boolean(entries.length || member.description || member.task);
+  const canExpand = Boolean(entries.length || member.description || member.task || member.agentId || member.taskId || member.sessionId);
   return (
     <div className="workflow-right-panel__member">
       <button
@@ -83,6 +87,11 @@ function MemberRow({ member, history, t }) {
       {expanded ? (
         <div className="workflow-right-panel__member-detail-box">
           {member.description || member.task ? <div>{member.description || member.task}</div> : null}
+          {member.agentId || member.subagentId || member.taskId || member.sessionId ? (
+            <div className="workflow-right-panel__member-id" title={member.agentId || member.subagentId || member.taskId || member.sessionId}>
+              {member.agentId || member.subagentId || member.taskId || member.sessionId}
+            </div>
+          ) : null}
           {entries.length ? (
             <div className="workflow-right-panel__member-history">
               {entries.map((entry, index) => (
@@ -149,10 +158,18 @@ export default function WorkflowRightPanel({ payload = null }) {
   const goalState = useMemo(() => runtime.goalState || runtime.lastGoalState || goalsFromTimeline(timeline), [runtime.goalState, runtime.lastGoalState, timeline]);
   const goals = goalList(goalState);
   const goal = currentGoal(goalState);
+  const goalModeWaiting = Boolean(goalState?.mode === 'goal' && !goal);
   const startedAt = status.startedAt;
   const elapsed = startedAt ? formatElapsed(status.active ? Date.now() - startedAt : status.durationMs, t) : '';
   const memberHistories = runtime.memberHistoriesByName || {};
   const members = status.members.length ? status.members : status.items.filter((item) => item.kind !== 'tool');
+  const reports = runtime.subagentReports || runtime.lastSubagentReports || collectSubagentReports({
+    timeline,
+    teamState: runtime.teamState,
+    lastTeamState: runtime.lastTeamState,
+    memberHistoriesByName: runtime.memberHistoriesByName,
+    subagentToolCalls: runtime.subagentToolCalls,
+  });
   const totalTokens = Number(status.tokenTotals?.inputTokens || 0) + Number(status.tokenTotals?.outputTokens || 0);
 
   return (
@@ -180,7 +197,7 @@ export default function WorkflowRightPanel({ payload = null }) {
           {status.capabilityMessage === 'aggregate-only' ? <div className="workflow-right-panel__muted">{t('workflow.aggregateOnly')}</div> : null}
         </section>
 
-        <GoalCard goal={goal} t={t} />
+        <GoalCard goal={goal} t={t} waitingOnly={goalModeWaiting} />
 
         {members.length ? (
           <section className="workflow-right-panel__section">
@@ -192,12 +209,38 @@ export default function WorkflowRightPanel({ payload = null }) {
               {members.map((member) => <MemberRow key={member.id} member={member} history={memberHistories[member.name]} t={t} />)}
             </div>
           </section>
+        ) : goal || goalModeWaiting ? (
+          <section className="workflow-right-panel__section workflow-right-panel__empty">
+            {t('goal.waitingProgress')}
+          </section>
         ) : (
           <section className="workflow-right-panel__section workflow-right-panel__empty">
             {status.visible ? t('workflow.waitingForSteps') : t('workflow.empty')}
           </section>
         )}
 
+        {reports.length ? (
+          <section className="workflow-right-panel__section" data-testid="workflow-subagent-reports">
+            <div className="workflow-right-panel__section-title">
+              <span>{t('subagent.report')}</span>
+              <span className="workflow-right-panel__count">{reports.length}</span>
+            </div>
+            <div className="workflow-right-panel__report-list">
+              {reports.map((report) => (
+                <div className="workflow-right-panel__report" key={report.id}>
+                  <div className="workflow-right-panel__report-title">
+                    <span className="workflow-right-panel__member-name" title={report.name}>{report.name || report.role}</span>
+                    <span className="workflow-right-panel__status">{t(`subagent.status.${report.status}`) || report.status}</span>
+                  </div>
+                  <div className="workflow-right-panel__muted">{t('subagent.role')}: {report.role || t('subagent.unknownRole')}</div>
+                  <div className="workflow-right-panel__muted" title={report.agentId}>{t('subagent.agentId')}: {report.agentId}</div>
+                  <div className="workflow-right-panel__muted">{t('subagent.toolCount')}: {report.toolCallCount}</div>
+                  <div className="workflow-right-panel__report-conclusion" title={report.conclusion}>{report.conclusion}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
         {goals.length > 0 ? <GoalLog timeline={timeline} t={t} /> : null}
         {status.status === 'failed' ? (
           <div className="workflow-right-panel__notice workflow-right-panel__notice--error"><CircleAlert size={14} aria-hidden="true" />{t('workflow.failedNotice')}</div>

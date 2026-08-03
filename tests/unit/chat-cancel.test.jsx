@@ -318,7 +318,9 @@ describe('ReplicaChatView cancellation', () => {
     expect(container.querySelector('[data-testid="workflow-status-panel"]')).toBeNull();
     expect(container.querySelector('[data-response-activity]')).toBeTruthy();
     expect(container.textContent).not.toContain('6 个子代理');
-    expect(container.textContent).not.toContain('子代理 1');
+    expect(container.querySelector('[data-testid="subagent-report-card"]')).toBeTruthy();
+    expect(container.textContent).toContain('子代理报告');
+    expect(container.textContent).toContain('子代理 1');
   });
 
   it('keeps new ACP phases readable without rendering a transcript workflow card', async () => {

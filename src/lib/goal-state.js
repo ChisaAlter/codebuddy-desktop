@@ -175,4 +175,61 @@ export function isGoalActive(goal) {
   return Boolean(goal && !['completed', 'failed', 'cancelled'].includes(normalizeStatus(goal.status)));
 }
 
+/** True when the prompt text is a `/goal` slash command (with or without args). */
+export function isGoalPrompt(content) {
+  return /^\/goal(?:\s|$)/i.test(String(content || '').trim());
+}
+
+/** Strip the `/goal` prefix so the remainder can seed the goal title. */
+export function goalTitleFromPrompt(content) {
+  const text = String(content || '').trim();
+  const stripped = text.replace(/^\/goal(?:\s+|$)/i, '').trim();
+  return stripped || text || 'Goal';
+}
+
+/**
+ * Optimistic goal projection for a freshly sent `/goal …` prompt.
+ * Gives the right panel something to show before the CLI emits progress events.
+ */
+export function seedGoalStateFromPrompt(content, runId = null) {
+  const title = goalTitleFromPrompt(content);
+  const goalId = 'local-seed';
+  const now = Date.now();
+  const event = normalizeGoalEvent(
+    {
+      goalId,
+      title,
+      message: title,
+      status: 'running',
+      runId,
+      eventId: `seed:${runId || now}`,
+      updatedAt: now,
+      seeded: true,
+    },
+    'goal-progress',
+  );
+  return {
+    ...emptyGoalState('goal'),
+    goalsById: {
+      [goalId]: {
+        ...event,
+        lastSequence: null,
+        lastEventKey: event.eventKey,
+      },
+    },
+    activeGoalId: goalId,
+    eventCount: 1,
+    lastEventAt: now,
+    updatedAt: now,
+    runId: runId ? String(runId) : null,
+  };
+}
+
+/** True when goal state has real CLI progress (not only an empty mode seed). */
+export function hasGoalTurnActivity(goalState) {
+  if (!goalState || typeof goalState !== 'object') return false;
+  if (Number(goalState.eventCount || 0) > 0) return true;
+  return Object.keys(stateGoals(goalState)).length > 0;
+}
+
 export { normalizeStatus, normalizeProgress };

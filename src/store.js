@@ -46,7 +46,9 @@ import {
   fetchMarketplaces as apiFetchMarketplaces,
   setMarketplaceAutoUpdate as apiSetMarketplaceAutoUpdate,
   updatePluginHttp as apiUpdatePluginHttp,
+  updateMarketplace as apiUpdateMarketplace,
 } from './lib/ops';
+import { normalizePluginRecord, qualifyPluginId } from './lib/plugins-list';
 import {
   normalizeWorkspaceDirList,
   normalizeWorkspaceDirPath,
@@ -101,6 +103,7 @@ import { createSessionsChatSlice } from './store/slices/sessions-chat';
 export {
   hasCompletePromptResponse,
   hasUsableAssistantBody,
+  hasUsableGoalTurn,
 } from './store/helpers/prompt-completion';
 export { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
 export {
@@ -444,9 +447,9 @@ function settingScopeKey(projectId, key) {
 
 function normalizePlugins(payload) {
   const data = payload?.data ?? payload ?? [];
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.plugins)) return data.plugins;
-  if (data && typeof data === 'object' && data.name) return [data];
+  if (Array.isArray(data)) return data.map((plugin) => normalizePluginRecord(plugin) || plugin).filter(Boolean);
+  if (Array.isArray(data?.plugins)) return data.plugins.map((plugin) => normalizePluginRecord(plugin) || plugin).filter(Boolean);
+  if (data && typeof data === 'object' && data.name) return [normalizePluginRecord(data) || data];
   return [];
 }
 
@@ -675,6 +678,7 @@ export const useStore = create((set, get) => {
   activePromptRunId: null,
   sidebarCollapsed: false,
   rightPanel: null,
+  workflowFloatingPanel: null,
   workflowPanelDismissedRunId: null,
   changesCount: 0,
   leftTab: 'chat',
@@ -705,6 +709,8 @@ export const useStore = create((set, get) => {
   subagentToolCalls: {},
   workflowState: null,
   lastWorkflowState: null,
+  subagentReports: null,
+  lastSubagentReports: null,
   rawExtensionEvents: [],
   agentPhase: null,
   progress: null,
@@ -1052,11 +1058,11 @@ export const useStore = create((set, get) => {
   },
 
   openRightPanel(type, payload = null) {
-    const allowed = new Set(['files', 'browser', 'workflow']);
+    if (type === 'workflow') return get().openWorkflowPanel(payload);
+    const allowed = new Set(['files', 'browser']);
     if (!allowed.has(type)) return false;
     set({
       rightPanel: { type, payload: payload && typeof payload === 'object' ? payload : null },
-      ...(type === 'workflow' ? { workflowPanelDismissedRunId: null } : {}),
     });
     return true;
   },
@@ -1073,9 +1079,35 @@ export const useStore = create((set, get) => {
   },
 
   toggleRightPanel(type, payload = null) {
+    if (type === 'workflow') return get().toggleWorkflowPanel(payload);
     const current = get().rightPanel;
     if (current?.type === type) return get().closeRightPanel();
     return get().openRightPanel(type, payload);
+  },
+
+  openWorkflowPanel(payload = null) {
+    set({
+      workflowFloatingPanel: {
+        payload: payload && typeof payload === 'object' ? payload : null,
+      },
+      workflowPanelDismissedRunId: null,
+    });
+    return true;
+  },
+
+  closeWorkflowPanel() {
+    const current = get().workflowFloatingPanel;
+    const runId = current?.payload?.runId || get().activePromptRunId || get().lastPromptRunId || null;
+    set({
+      workflowFloatingPanel: null,
+      ...(runId ? { workflowPanelDismissedRunId: runId } : {}),
+    });
+    return true;
+  },
+
+  toggleWorkflowPanel(payload = null) {
+    if (get().workflowFloatingPanel) return get().closeWorkflowPanel();
+    return get().openWorkflowPanel(payload);
   },
 
   setActivePane(paneId) {
@@ -2573,12 +2605,13 @@ export const useStore = create((set, get) => {
     }
   },
 
-  async installPluginByName(pluginId, marketplace) {
+  async installPluginByName(pluginId, marketplace, options = {}) {
+    const qualifiedPlugin = qualifyPluginId(pluginId, marketplace);
     const projectId = get().activeProjectId;
-    const busyKey = `install:${pluginId}`;
+    const busyKey = `install:${qualifiedPlugin}`;
     set({ pluginBusy: busyKey, pluginError: null });
     try {
-      await apiInstallPlugin(pluginId, marketplace);
+      await apiInstallPlugin(pluginId, marketplace, options);
       if (projectId === get().activeProjectId) await get().refreshPlugins();
       if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
@@ -2631,7 +2664,7 @@ export const useStore = create((set, get) => {
     set({ pluginBusy: busyKey, marketplaceError: null });
     try {
       const payload = { ...(config || {}) };
-      if (payload.autoUpdate === undefined) payload.autoUpdate = true;
+      if (payload.autoUpdate === undefined) payload.autoUpdate = false;
       await apiAddMarketplace(id, payload);
       if (projectId === get().activeProjectId) await get().refreshMarketplaces();
       if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
@@ -2661,6 +2694,45 @@ export const useStore = create((set, get) => {
     }
   },
 
+  async updateMarketplaceById(id, force = false) {
+    const marketplaceId = String(id || '').trim();
+    if (!marketplaceId) return false;
+    const projectId = get().activeProjectId;
+    const busyKey = `updateMkt:${marketplaceId}`;
+    set({ pluginBusy: busyKey, marketplaceError: null });
+    try {
+      await apiUpdateMarketplace(marketplaceId, force);
+      if (projectId === get().activeProjectId) await get().refreshMarketplaces();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, marketplaceError: err?.message || '同步市场失败' });
+      }
+      return false;
+    }
+  },
+  async syncMarketplaces(force = true) {
+    const projectId = get().activeProjectId;
+    const list = Array.isArray(get().marketplaces) ? get().marketplaces : [];
+    const ids = list.map((item) => item?.id || item?.marketplaceId || item?.name || item?.source).filter(Boolean);
+    if (!ids.length) return true;
+    const busyKey = 'syncMkt:all';
+    set({ pluginBusy: busyKey, marketplaceError: null });
+    try {
+      const results = await Promise.allSettled(ids.map((id) => apiUpdateMarketplace(id, force)));
+      const failed = results.filter((result) => result.status === 'rejected');
+      if (failed.length === results.length) throw failed[0]?.reason || new Error('同步市场失败');
+      if (projectId === get().activeProjectId) await get().refreshMarketplaces();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
+      return failed.length === 0;
+    } catch (err) {
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, marketplaceError: err?.message || '同步市场失败' });
+      }
+      return false;
+    }
+  },
   async setMarketplaceAutoUpdateById(id, autoUpdate) {
     const marketplaceId = String(id || '').trim();
     if (!marketplaceId) return false;
@@ -2680,12 +2752,13 @@ export const useStore = create((set, get) => {
     }
   },
 
+
   /**
    * Update plugin: HTTP first, then CLI fallback (plan T2).
    * @returns {{ ok: boolean, via?: 'http'|'cli', output?: string, truncated?: boolean, error?: string }}
    */
   async updatePluginByName(pluginId, options = {}) {
-    const plugin = String(pluginId || '').trim();
+    const plugin = qualifyPluginId(pluginId, options.marketplace);
     if (!plugin) return { ok: false, error: '插件 ID 不能为空' };
     const projectId = get().activeProjectId;
     const busyKey = `update:${plugin}`;

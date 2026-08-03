@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import WorkflowRightPanel from './WorkflowRightPanel';
+import { usePanelTransition } from './usePanelTransition';
+
 function safeBrowserUrl(value) {
   const raw = String(value || '').trim();
   if (!raw || raw.length > 4096) return '';
@@ -13,13 +14,13 @@ function safeBrowserUrl(value) {
   }
 }
 
-function PanelHeader({ title, onClose }) {
+export function PanelHeader({ title, onClose }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
       <button
         type="button"
-        className="rounded px-2 py-1 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        className="rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
         onClick={onClose}
         aria-label="关闭右侧面板"
         title="关闭"
@@ -94,11 +95,11 @@ function FilePanel({ onClose }) {
   );
 }
 
-function BrowserPanel({ payload, onClose }) {
+function BrowserPanel({ payload, panelPhase, onClose }) {
   const initialUrl = safeBrowserUrl(payload?.url);
   const [address, setAddress] = useState(initialUrl);
   const [url, setUrl] = useState(initialUrl);
-  const browserSurfaceRef = React.useRef(null);
+  const browserSurfaceRef = useRef(null);
   const openBrowser = window.electronAPI?.rightBrowserOpen;
   const setBrowserBounds = window.electronAPI?.rightBrowserSetBounds;
 
@@ -124,10 +125,13 @@ function BrowserPanel({ payload, onClose }) {
 
   useEffect(() => {
     if (!openBrowser) return undefined;
+    let frame = 0;
     const sync = () => {
       const rect = browserSurfaceRef.current?.getBoundingClientRect();
-      if (!rect || !setBrowserBounds) return;
-      setBrowserBounds({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
+      if (rect && setBrowserBounds) {
+        setBrowserBounds({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
+      }
+      if (panelPhase !== 'closed') frame = requestAnimationFrame(sync);
     };
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(sync) : null;
     if (observer && browserSurfaceRef.current) observer.observe(browserSurfaceRef.current);
@@ -136,8 +140,9 @@ function BrowserPanel({ payload, onClose }) {
     return () => {
       observer?.disconnect();
       window.removeEventListener('resize', sync);
+      if (frame) cancelAnimationFrame(frame);
     };
-  }, [openBrowser, setBrowserBounds, url]);
+  }, [openBrowser, panelPhase, setBrowserBounds, url]);
 
   useEffect(() => {
     if (!openBrowser || !url) {
@@ -181,28 +186,32 @@ function BrowserPanel({ payload, onClose }) {
 export default function RightPanelHost() {
   const rightPanel = useStore((s) => s.rightPanel);
   const closeRightPanel = useStore((s) => s.closeRightPanel);
+  const transitioned = usePanelTransition(rightPanel);
 
   useEffect(() => {
-    if (!rightPanel) return undefined;
+    if (!transitioned.value || !['files', 'browser'].includes(transitioned.value.type)) return undefined;
     const onKeyDown = (event) => {
       if (event.key === 'Escape') closeRightPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeRightPanel, rightPanel]);
+  }, [closeRightPanel, transitioned.value]);
 
-  if (!rightPanel) return null;
+  if (!transitioned.value) return null;
+  const panel = transitioned.value;
+  if (!['files', 'browser'].includes(panel.type)) return null;
   return (
-    <aside className="right-panel-host flex h-full w-[min(420px,38vw)] min-w-[300px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]" data-testid="right-panel" data-panel-type={rightPanel.type} role="complementary">
-      {rightPanel.type === 'files' ? (
+    <aside
+      className={`right-panel-host flex h-full w-[min(420px,38vw)] min-w-[300px] shrink-0 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] is-${transitioned.phase}`}
+      data-testid="right-panel"
+      data-panel-type={panel.type}
+      data-panel-phase={transitioned.phase}
+      role="complementary"
+    >
+      {panel.type === 'files' ? (
         <FilePanel onClose={closeRightPanel} />
-      ) : rightPanel.type === 'browser' ? (
-        <BrowserPanel payload={rightPanel.payload} onClose={closeRightPanel} />
-      ) : rightPanel.type === 'workflow' ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <PanelHeader title="工作流" onClose={closeRightPanel} />
-          <WorkflowRightPanel payload={rightPanel.payload} />
-        </div>
+      ) : panel.type === 'browser' ? (
+        <BrowserPanel payload={panel.payload} panelPhase={transitioned.phase} onClose={closeRightPanel} />
       ) : null}
     </aside>
   );

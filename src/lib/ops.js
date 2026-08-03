@@ -1,4 +1,5 @@
 import { getApiBase, fetchJson, requestCodeBuddy } from './acp';
+import { qualifyPluginId } from './plugins-list';
 
 async function requestOptionalJson(path, init = {}) {
   const response = await requestCodeBuddy(path, init);
@@ -231,23 +232,16 @@ export async function stopWorker(pid) {
 
 // ===== Plugin 管理 =====
 
-function qualifyPluginId(pluginId, marketplace) {
-  const id = String(pluginId || '').trim();
-  if (!id) throw new Error('plugin name 不能为空');
-  const marketplaceId = String(marketplace || '').trim();
-  if (!marketplaceId) return id;
-  const marketplaceSeparator = id.lastIndexOf('@');
-  const packageSlash = id.lastIndexOf('/');
-  return marketplaceSeparator > packageSlash ? id : `${id}@${marketplaceId}`;
-}
-
 /** 安装插件 */
-export async function installPlugin(pluginId, marketplace) {
+export async function installPlugin(pluginId, marketplace, options = {}) {
   const plugin = qualifyPluginId(pluginId, marketplace);
+  const body = { plugin };
+  const scope = options.scope || (typeof options === 'string' ? options : '');
+  if (scope) body.options = { scope: String(scope) };
   const payload = await fetchJson('/api/v1/plugins', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin }),
+    body: JSON.stringify(body),
   });
   return payload?.data || payload || null;
 }
@@ -575,12 +569,12 @@ export async function browseMarketplace(marketplaceId, query) {
 
 // ===== Plugin Marketplaces 增删（对照源 bundle）=====
 
-/** 新增插件市场（2.122+ 可选 autoUpdate） */
+/** 新增插件市场（source 必填，name 可选） */
 export async function addMarketplace(marketplaceId, config = {}) {
-  if (!marketplaceId) throw new Error('marketplace id 不能为空');
-  const source = String(config.source || config.url || '').trim();
+  const source = String(config.source || config.url || (typeof marketplaceId === 'string' && /^https?:\/\//i.test(marketplaceId) ? marketplaceId : '')).trim();
+  const name = String(config.name || (source === String(marketplaceId || '').trim() ? '' : marketplaceId || '')).trim();
   if (!source) throw new Error('marketplace source 不能为空');
-  const body = { name: marketplaceId, source };
+  const body = name ? { name, source } : { source };
   if (config.autoUpdate === true || config.autoUpdate === false) {
     body.autoUpdate = Boolean(config.autoUpdate);
   }
@@ -588,6 +582,17 @@ export async function addMarketplace(marketplaceId, config = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  return payload?.data || payload || null;
+}
+
+export async function updateMarketplace(marketplaceId, force = false) {
+  const marketplace = String(marketplaceId || '').trim();
+  if (!marketplace) throw new Error('marketplace 不能为空');
+  const payload = await fetchJson('/api/v1/plugins/marketplaces/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marketplace, force: Boolean(force) }),
   });
   return payload?.data || payload || null;
 }
@@ -611,7 +616,7 @@ export async function setMarketplaceAutoUpdate(marketplaceId, autoUpdate) {
  * body: { plugin, scope?, waitForApply? }
  */
 export async function updatePluginHttp(pluginId, options = {}) {
-  const plugin = String(pluginId || '').trim();
+  const plugin = qualifyPluginId(pluginId, options.marketplace);
   if (!plugin) throw new Error('plugin 不能为空');
   const body = { plugin };
   if (options.scope) body.scope = String(options.scope);

@@ -46,6 +46,21 @@ export function hasPromptRunActivity(timeline, promptEntryId, promptStartedAt) {
   if (!turnEntries) return false;
   return turnEntries.some((item) => {
     if (item?.type === 'message' && item?.role === 'assistant') return true;
-    return ['thinking', 'tool_call', 'interruption', 'question'].includes(item?.type);
+    return ['thinking', 'tool_call', 'interruption', 'question', 'goal-progress', 'goal-status'].includes(item?.type);
   });
+}
+
+/**
+ * `/goal` turns may finish with only private goal metadata (no assistant text).
+ * Treat non-empty goal projection or goal timeline events as a usable completion.
+ */
+export function hasUsableGoalTurn(timeline, promptEntryId, promptStartedAt, goalState = null) {
+  if (goalState && typeof goalState === 'object') {
+    const goals = goalState.goalsById && typeof goalState.goalsById === 'object' ? goalState.goalsById : {};
+    if (Object.keys(goals).length > 0) return true;
+    if (Number(goalState.eventCount || 0) > 0) return true;
+  }
+  const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
+  if (!turnEntries) return false;
+  return turnEntries.some((item) => item?.type === 'goal-progress' || item?.type === 'goal-status');
 }

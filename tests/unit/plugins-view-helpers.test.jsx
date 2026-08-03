@@ -43,6 +43,7 @@ vi.mock('../../src/store', () => {
     addMarketplaceById: vi.fn(),
     removeMarketplaceById: vi.fn(),
     setMarketplaceAutoUpdateById: vi.fn(),
+    syncMarketplaces: vi.fn().mockResolvedValue(true),
     updatePluginByName: vi.fn().mockResolvedValue({ ok: true, via: 'http', output: 'ok' }),
     refreshMarketplaces: mocks.refreshMarketplaces,
     restartProjectRuntime: vi.fn(),

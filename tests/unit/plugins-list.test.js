@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aggregateMarketplacePlugins,
   detectPluginKind,
   filterPlugins,
+  isPluginInstalled,
+  pluginCanRemove,
+  pluginCanSwitchoff,
   slicePluginPage,
 } from '../../src/lib/plugins-list';
 
@@ -29,6 +33,24 @@ describe('plugins-list helpers', () => {
     expect(filterPlugins(sample, { query: 'utility' }).map((p) => p.name)).toEqual(['tools-only']);
   });
 
+  it('aggregates marketplaces, tolerates one failure, and dedupes by qualified identity', async () => {
+    const browse = vi.fn(async (id) => {
+      if (id === 'broken') throw new Error('offline');
+      return id === 'm1'
+        ? [{ name: 'demo', version: '1' }, { name: 'shared', marketplace: 'm1' }]
+        : [{ name: 'demo', version: '2' }, { name: 'shared', marketplace: 'm2' }];
+    });
+    const result = await aggregateMarketplacePlugins([{ name: 'm1' }, { name: 'm2' }, { name: 'broken' }], browse);
+    expect(result.failures).toBe(1);
+    expect(result.plugins.map((plugin) => plugin.pluginId)).toEqual(['demo@m1', 'shared@m1', 'demo@m2', 'shared@m2']);
+  });
+
+  it('uses marketplace identity for installed state and policy flags', () => {
+    expect(isPluginInstalled({ name: 'demo', marketplace: 'm1' }, [{ name: 'demo', marketplace: 'm2' }])).toBe(false);
+    expect(isPluginInstalled({ name: 'demo', marketplace: 'm1' }, [{ name: 'demo', marketplace: 'm1' }])).toBe(true);
+    expect(pluginCanRemove({ canRemove: false })).toBe(false);
+    expect(pluginCanSwitchoff({ canSwitchoff: false })).toBe(false);
+  });
   it('slicePluginPage windows the list for infinite scroll', () => {
     const list = Array.from({ length: 55 }, (_, i) => ({ name: `p${i}` }));
     const first = slicePluginPage(list, 30, 30);

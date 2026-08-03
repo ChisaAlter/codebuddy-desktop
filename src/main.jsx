@@ -1,7 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import { useStore } from './store'
 import './index.css'
+
+// E2E / manual GUI harnesses attach via CDP and need a stable handle to seed a
+// mock session when the local CodeBuddy CLI runtime cannot start.
+if (typeof window !== 'undefined') {
+    window.__CODEBUDDY_STORE__ = useStore
+}
 
 const recentRendererReports = new Map()
 

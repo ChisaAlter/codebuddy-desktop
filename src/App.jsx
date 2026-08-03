@@ -9,6 +9,7 @@ import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
 import RightPanelHost from './components/RightPanelHost';
+import WorkflowFloatingPanelHost from './components/WorkflowFloatingPanelHost';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
@@ -462,6 +463,7 @@ function StatusBar() {
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
   const toggleRightPanel = useStore((s) => s.toggleRightPanel);
+  const toggleWorkflowPanel = useStore((s) => s.toggleWorkflowPanel);
   const activeThreadId = useStore((s) => s.activeThreadId);
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
   const workflowVisible = Boolean(
@@ -504,7 +506,7 @@ function StatusBar() {
         <button
           type="button"
           className={`flex h-full items-center gap-1 px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]${workflowVisible ? ' text-[var(--color-accent-blue)]' : ''}`}
-          onClick={() => toggleRightPanel('workflow', { threadId: activeThreadId })}
+          onClick={() => toggleWorkflowPanel({ threadId: activeThreadId })}
           title="工作流与子代理"
           aria-label="工作流与子代理"
         >
@@ -1005,6 +1007,7 @@ export default function App() {
             <MainContent />
           </div>
           <RightPanelHost />
+          <WorkflowFloatingPanelHost />
           <GlobalErrorNotice />
           <ToastStack />
           {/* 启动检测 CodeBuddy CLI（对齐 pi-desktop onboarding step1） */}

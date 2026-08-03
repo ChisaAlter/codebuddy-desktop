@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { emptyGoalState, goalsFromTimeline, mergeGoalEvent, normalizeGoalEvent } from '../../src/lib/goal-state';
+import {
+  emptyGoalState,
+  goalTitleFromPrompt,
+  goalsFromTimeline,
+  hasGoalTurnActivity,
+  isGoalPrompt,
+  mergeGoalEvent,
+  normalizeGoalEvent,
+  seedGoalStateFromPrompt,
+} from '../../src/lib/goal-state';
 
 describe('goal state projection', () => {
   it('normalizes aliases and derives percentage', () => {
@@ -21,5 +30,42 @@ describe('goal state projection', () => {
     ]);
     expect(state.eventCount).toBe(2);
     expect(state.goalsById.g1).toMatchObject({ status: 'completed', progress: { percent: 100 } });
+  });
+
+  it('detects /goal prompts and strips the command prefix for titles', () => {
+    expect(isGoalPrompt('/goal fix login')).toBe(true);
+    expect(isGoalPrompt('/goal')).toBe(true);
+    expect(isGoalPrompt('/goal\n')).toBe(true);
+    expect(isGoalPrompt('/goals')).toBe(false);
+    expect(isGoalPrompt('goal fix')).toBe(false);
+    expect(goalTitleFromPrompt('/goal fix login bug')).toBe('fix login bug');
+    expect(goalTitleFromPrompt('/goal')).toBe('/goal');
+  });
+
+  it('seeds an optimistic goal projection for /goal prompts', () => {
+    const seeded = seedGoalStateFromPrompt('/goal 修复登录', 'run-1');
+    expect(seeded.mode).toBe('goal');
+    expect(seeded.runId).toBe('run-1');
+    expect(seeded.activeGoalId).toBe('local-seed');
+    expect(seeded.goalsById['local-seed']).toMatchObject({
+      title: '修复登录',
+      status: 'running',
+      seeded: true,
+    });
+    expect(hasGoalTurnActivity(seeded)).toBe(true);
+    expect(hasGoalTurnActivity(emptyGoalState('goal'))).toBe(false);
+  });
+
+  it('lets later CLI goal events replace the local seed via merge', () => {
+    const seeded = seedGoalStateFromPrompt('/goal ship it', 'run-1');
+    const merged = mergeGoalEvent(seeded, {
+      goalId: 'cli-goal',
+      title: 'Ship it',
+      status: 'running',
+      percent: 25,
+      runId: 'run-1',
+    }, 'goal-progress');
+    expect(merged.goalsById['cli-goal']).toMatchObject({ title: 'Ship it', progress: { percent: 25 } });
+    expect(merged.runId).toBe('run-1');
   });
 });

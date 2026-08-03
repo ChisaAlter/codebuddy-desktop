@@ -21,6 +21,9 @@ const store = vi.hoisted(() => ({
   activeThreadId: 'thread-1',
   threadsById: {},
   guiSettings: { locale: 'zh' },
+  openWorkflowPanel: vi.fn(),
+  closeWorkflowPanel: vi.fn(),
+  workflowFloatingPanel: null,
 }));
 
 vi.mock('../../src/store', () => ({
@@ -93,25 +96,12 @@ describe('RightPanelHost', () => {
     root.unmount();
   });
 
-  it('renders workflow panel from the active thread runtime', async () => {
+  it('does not render workflow in the right window host', async () => {
     store.rightPanel = { type: 'workflow', payload: { threadId: 'thread-1' } };
-    store.threadsById = { 'thread-1': { id: 'thread-1', status: 'running', timeline: [] } };
-    store.threadRuntimeById = {
-      'thread-1': {
-        activePromptRunId: 'run-1',
-        promptStartedAt: Date.now(),
-        isAwaitingResponse: true,
-        timeline: [],
-        teamState: { name: '探索团队', members: [{ id: 'agent-1', name: '搜索', status: 'running', task: '扫描项目' }] },
-        memberHistoriesByName: {},
-      },
-    };
     const { createRoot } = await import('react-dom/client');
     const root = createRoot(container);
     await act(async () => root.render(React.createElement(RightPanelHost)));
-    expect(container.querySelector('[data-testid="workflow-right-panel"]')).toBeTruthy();
-    expect(container.textContent).toContain('搜索');
-    expect(container.textContent).toContain('扫描项目');
+    expect(container.querySelector('[data-testid="right-panel"]')).toBeNull();
     root.unmount();
   });
   it('closes on Escape and through the close button', async () => {

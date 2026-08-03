@@ -63,6 +63,8 @@ function normalizeMember(member, index, fallbackStatus) {
     color: firstValue(source.color, source.agentColor, null),
     taskId: firstValue(source.taskId, null),
     sessionId: firstValue(source.sessionId, null),
+    agentId: firstValue(source.agentId, source.agent_id, null),
+    subagentId: firstValue(source.subagentId, source.subagent_id, null),
     status,
     progress: normalizeProgress(source.progress ?? source),
     startedAt: Number(firstValue(source.startedAt, source.createdAt)) || null,

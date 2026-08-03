@@ -28,6 +28,7 @@ import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import { normalizeWorkflowStatus, workflowHasActivity } from '../lib/workflow-status';
+import { collectSubagentReports } from '../lib/subagent-report';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -857,6 +858,16 @@ function toolCallDisplayTitle(item, t) {
   );
 }
 
+function subagentDisplayName(item) {
+  return item?.memberName || item?.subagentType || item?.role || '';
+}
+
+function toolStatusLabel(status, t) {
+  if (status === 'completed' || status === 'done') return t('tool.completed');
+  if (status === 'failed' || status === 'error') return t('tool.failed');
+  return t('tool.running');
+}
+
 function toolCallSummary(item) {
   const input = item?.rawInput;
   if (input == null) return '';
@@ -908,6 +919,8 @@ function ToolCallBlock({ item }) {
 
   const title = toolCallDisplayTitle(item, t);
   const summary = toolCallSummary(item);
+  const subagentName = subagentDisplayName(item);
+  const isSubagentTool = Boolean(item.isSubAgent || subagentName || item.parentToolCallId);
   const canToggle = hasDetails && (isCompleted || isFailed || isRunning);
 
   return (
@@ -927,9 +940,13 @@ function ToolCallBlock({ item }) {
       >
         <ToolKindIcon kind={item.kind || item.toolName || item.title} completed={isCompleted && !isFailed} />
         <span className={`tool-call-title truncate text-[13px] font-medium ${isCompleted && !isFailed ? 'is-done' : ''}`}>
-          {title}
+          {isSubagentTool ? `${subagentName || t('subagent.unknownRole')} · ${title}` : title}
         </span>
-        {summary ? (
+        {isSubagentTool ? (
+          <span className="tool-call-summary min-w-0 flex-1 truncate text-[12px]" aria-label={toolStatusLabel(item.status, t)}>
+            {toolStatusLabel(item.status, t)}
+          </span>
+        ) : summary ? (
           <span className={`tool-call-summary min-w-0 flex-1 truncate text-[12px] ${isCompleted && !isFailed ? 'is-done' : ''}`}>
             {summary}
           </span>
@@ -937,6 +954,7 @@ function ToolCallBlock({ item }) {
           <span className="flex-1" />
         )}
         <ToolStatusDot status={item.status} />
+        {isSubagentTool ? <span className="sr-only">{toolStatusLabel(item.status, t)}</span> : null}
         {canToggle ? (
           <svg
             width="12"
@@ -1000,6 +1018,41 @@ function toolNameHistogram(toolItems) {
     .join(', ');
 }
 
+function SubagentActivityLine({ items, t }) {
+  const toolItems = items.filter((item) => item?.type === 'tool_call');
+  const first = toolItems.find((item) => item.isSubAgent || item.memberName || item.subagentType || item.parentToolCallId);
+  if (!first) return null;
+  const name = subagentDisplayName(first) || t('subagent.unknownRole');
+  const task = first.description || toolCallDisplayTitle(first, t);
+  const running = toolItems.some((item) => !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes(item.status));
+  return (
+    <div className="subagent-activity-line" data-testid="subagent-activity-line" aria-live="polite">
+      <span className={`workflow-status-dot ${running ? 'workflow-status-dot--running' : 'workflow-status-dot--completed'}`} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate" title={`${name} · ${task}`}>{name} · {task}</span>
+      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{running ? t('tool.running') : t('tool.completed')}</span>
+    </div>
+  );
+}
+
+function SubagentReportCard({ reports, t }) {
+  if (!reports.length) return null;
+  return (
+    <section className="subagent-report-card" data-testid="subagent-report-card">
+      <div className="subagent-report-card__title">{t('subagent.report')}</div>
+      {reports.map((report) => (
+        <div className="subagent-report-card__item" key={report.id}>
+          <div className="subagent-report-card__heading">
+            <strong>{report.name || report.role}</strong>
+            <span>{t(`subagent.status.${report.status}`) || report.status}</span>
+          </div>
+          <div className="subagent-report-card__meta">{t('subagent.role')}: {report.role || t('subagent.unknownRole')} · {t('subagent.agentId')}: {report.agentId} · {report.toolCallCount} {t('workflow.tools')}</div>
+          <div className="subagent-report-card__conclusion">{report.conclusion || t('subagent.noConclusion')}</div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function ExecutionGroup({ items, autoCollapse = false }) {
   const t = useUiTranslate();
   const toolItems = items.filter((item) => item?.type === 'tool_call');
@@ -1026,6 +1079,12 @@ function ExecutionGroup({ items, autoCollapse = false }) {
     toolCount === 1
       ? `1 ${t('tool.toolSingular')}`
       : t('tool.toolsExecuted', { count: toolCount });
+  const isSubagentToolGroup = toolItems.some((item) => Boolean(item.isSubAgent || item.memberName || item.subagentType || item.parentToolCallId));
+  const groupStatusLabel = running
+    ? t('subagent.toolsRunning', { count: toolCount })
+    : failedCount > 0
+      ? t('subagent.toolsFailed', { count: toolCount })
+      : t('subagent.toolsCompleted', { count: toolCount });
   const nameHint = toolNameHistogram(toolItems);
 
   const toggle = () => {
@@ -1042,6 +1101,10 @@ function ExecutionGroup({ items, autoCollapse = false }) {
   if (toolCount === 1 && internalEventCount === 0 && !preferCollapsed) {
     return (
       <div className="execution-group mb-2 w-full">
+        {isSubagentToolGroup ? <SubagentActivityLine items={toolItems} t={t} /> : null}
+        {isSubagentToolGroup ? (
+          <div className="mb-1 px-1.5 text-[12px] text-[var(--color-text-tertiary)]">{groupStatusLabel}</div>
+        ) : null}
         <ToolCallBlock item={toolItems[0]} />
       </div>
     );
@@ -1057,6 +1120,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
     <div className="execution-group mb-2 flex w-full flex-col gap-0">
       {expanded ? (
         <>
+          <SubagentActivityLine items={toolItems} t={t} />
           {showGroupChrome ? (
             <button
               type="button"
@@ -1076,7 +1140,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
               >
                 <path d="M4 6l4 4 4-4" />
               </svg>
-              <span className="text-[12px] text-[var(--color-text-tertiary)]">{countLabel}</span>
+              <span className="text-[12px] text-[var(--color-text-tertiary)]">{isSubagentToolGroup ? groupStatusLabel : countLabel}</span>
               {failedCount > 0 ? (
                 <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-accent-red)]">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
@@ -1116,7 +1180,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
           >
             <path d="M6 3l5 5-5 5" />
           </svg>
-          <span className="text-[12px] text-[var(--color-text-tertiary)]">{countLabel}</span>
+          <span className="text-[12px] text-[var(--color-text-tertiary)]">{isSubagentToolGroup ? groupStatusLabel : countLabel}</span>
           {failedCount > 0 ? (
             <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-accent-red)]">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
@@ -2002,6 +2066,22 @@ export default function ReplicaChatView() {
   const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[s.activeThreadId] || null);
   const promptQueue = useStore((s) => s.promptQueue || []);
+  // Prefer the runtime snapshot, then rebuild from timeline for restored threads.
+  const subagentReports = useMemo(() => {
+    if (Array.isArray(activeThreadRuntime?.subagentReports) && activeThreadRuntime.subagentReports.length) {
+      return activeThreadRuntime.subagentReports;
+    }
+    if (Array.isArray(activeThreadRuntime?.lastSubagentReports) && activeThreadRuntime.lastSubagentReports.length) {
+      return activeThreadRuntime.lastSubagentReports;
+    }
+    return collectSubagentReports({
+      timeline,
+      teamState: activeThreadRuntime?.teamState,
+      lastTeamState: activeThreadRuntime?.lastTeamState,
+      memberHistoriesByName: activeThreadRuntime?.memberHistoriesByName,
+      subagentToolCalls: activeThreadRuntime?.subagentToolCalls,
+    });
+  }, [activeThreadRuntime, timeline]);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
@@ -2024,6 +2104,9 @@ export default function ReplicaChatView() {
   const input = useStore((s) => s.threadsById[s.activeThreadId]?.draft || '');
   const setInput = useStore((s) => s.setThreadDraft);
   const [chatError, setChatError] = useState(null);
+  // Non-error composer feedback (e.g. prompt was queued while busy).
+  const [chatNotice, setChatNotice] = useState(null);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [draggingAttachments, setDraggingAttachments] = useState(false);
   const [droppingAttachments, setDroppingAttachments] = useState(false);
   const [recovering, setRecovering] = useState(false);
@@ -2046,12 +2129,17 @@ export default function ReplicaChatView() {
   const [sendLaunchInFlight, setSendLaunchInFlight] = useState(false);
   const pasteImageInFlightRef = useRef(null);
   const dropAttachmentsInFlightRef = useRef(null);
-  // Auto-dismiss error banner after 8 seconds
+  // Auto-dismiss error / notice banners after 8 seconds
   useEffect(() => {
     if (!chatError) return;
     const timer = setTimeout(() => setChatError(null), 8000);
     return () => clearTimeout(timer);
   }, [chatError]);
+  useEffect(() => {
+    if (!chatNotice) return;
+    const timer = setTimeout(() => setChatNotice(null), 8000);
+    return () => clearTimeout(timer);
+  }, [chatNotice]);
   useEffect(() => {
     sessionSelectionRequestRef.current += 1;
     cancelRequestRef.current += 1;
@@ -2382,13 +2470,15 @@ export default function ReplicaChatView() {
     ],
   );
   const slashSuggestions = useMemo(
-    () => getSlashCommandSuggestions(input, availableCommands),
-    [availableCommands, input],
+    () => (slashMenuDismissed ? [] : getSlashCommandSuggestions(input, availableCommands)),
+    [availableCommands, input, slashMenuDismissed],
   );
 
   useEffect(() => {
     setSelectedSlashCommandIndex(0);
-  }, [input, slashSuggestions.length]);
+    // Re-enable suggestions whenever the draft changes (including after Escape dismiss).
+    setSlashMenuDismissed(false);
+  }, [input]);
 
   const selectSlashCommand = useCallback(
     (command) => {
@@ -2594,6 +2684,7 @@ export default function ReplicaChatView() {
     const isCurrent = () =>
       projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
     setChatError(null);
+    setChatNotice(null);
     // Sending always re-engages follow-latest (even if user was reading older messages).
     shouldAutoScrollRef.current = true;
     userDetachedScrollRef.current = false;
@@ -2607,6 +2698,14 @@ export default function ReplicaChatView() {
       }
       if (isCurrent() && !sent) {
         setChatError(consumeStoreError(t('error.sendFailedRestored')));
+      } else if (isCurrent() && sent?.queued) {
+        // Busy-session queue clears the draft without a chat bubble — surface that
+        // so `/goal` (and any other prompt) never looks like it vanished.
+        setChatNotice(t('queue.enqueued'));
+        requestAnimationFrame(() => {
+          if (!shouldAutoScrollRef.current || userDetachedScrollRef.current) return;
+          scrollTranscriptToBottom('auto');
+        });
       } else if (isCurrent()) {
         // User bubble / first token may paint after await — stick again.
         requestAnimationFrame(() => {
@@ -2839,7 +2938,9 @@ export default function ReplicaChatView() {
       }
       if (commandAction === 'dismiss') {
         e.preventDefault();
-        setInput('');
+        // Close the slash menu only — never wipe the draft (that made `/goal` look
+        // like the message disappeared when the user hit Escape).
+        setSlashMenuDismissed(true);
         return;
       }
       if (commandAction === 'submit' && !e.shiftKey) {
@@ -2975,6 +3076,7 @@ export default function ReplicaChatView() {
                   <TimelineItem item={item} />
                 </React.Fragment>
               ))}
+              <SubagentReportCard reports={subagentReports} t={t} />
             </div>
           )}
           {timeline.length > 0 ? recoveryNotice : null}
@@ -2996,6 +3098,30 @@ export default function ReplicaChatView() {
                 className="btn-ghost shrink-0 text-sm"
                 style={{ color: 'var(--color-error)' }}
                 onClick={() => setChatError(null)}
+                aria-label={t('composer.closeError')}
+              >
+                {t('composer.closeError')}
+              </button>
+            </div>
+          ) : null}
+          {chatNotice ? (
+            <div
+              className="mx-0 mb-4 flex max-h-36 items-start gap-2 overflow-hidden rounded-lg p-3"
+              style={{
+                background: 'var(--color-bg-secondary)',
+                border: '1px solid var(--color-border-default)',
+                color: 'var(--color-text-secondary)',
+              }}
+              role="status"
+              data-testid="chat-notice"
+            >
+              <span className="min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-sm" title={String(chatNotice)}>
+                {chatNotice}
+              </span>
+              <button
+                type="button"
+                className="btn-ghost shrink-0 text-sm"
+                onClick={() => setChatNotice(null)}
                 aria-label={t('composer.closeError')}
               >
                 {t('composer.closeError')}

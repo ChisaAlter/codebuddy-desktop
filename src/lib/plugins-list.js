@@ -12,6 +12,121 @@ export const PLUGIN_KIND_OPTIONS = [
   { id: 'other', labelKey: 'plugins.kind.other' },
 ];
 
+export function qualifyPluginId(pluginId, marketplace) {
+  const id = String(pluginId || '').trim();
+  if (!id) throw new Error('plugin name 不能为空');
+  const marketplaceId = String(marketplace || '').trim();
+  if (!marketplaceId) return id;
+  const marketplaceSeparator = id.lastIndexOf('@');
+  const packageSlash = id.lastIndexOf('/');
+  return marketplaceSeparator > packageSlash ? id : `${id}@${marketplaceId}`;
+}
+
+export function pluginIdentity(plugin, marketplace) {
+  if (typeof plugin === 'string') return qualifyPluginId(plugin, marketplace);
+  const value = plugin || {};
+  return qualifyPluginId(value.id || value.pluginId || value.name, marketplace || value.marketplace);
+}
+
+export function normalizePluginRecord(plugin, marketplace) {
+  if (!plugin || typeof plugin !== 'object') return null;
+  const sourceMarketplace = marketplace || plugin.marketplace || plugin.sourceName;
+  const identity = (() => {
+    try { return pluginIdentity(plugin, sourceMarketplace); } catch (_) { return ''; }
+  })();
+  return {
+    ...plugin,
+    ...(sourceMarketplace ? { marketplace: sourceMarketplace } : {}),
+    ...(identity ? { pluginId: identity } : {}),
+  };
+}
+
+export function pluginIdentityKey(plugin, marketplace) {
+  const identity = pluginIdentity(plugin, marketplace);
+  return identity.toLowerCase();
+}
+
+export function dedupePluginsByIdentity(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).filter((plugin) => {
+    let key = '';
+    try { key = pluginIdentityKey(plugin); } catch (_) {}
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function isPluginInstalled(plugin, installedPlugins) {
+  const target = (() => {
+    try { return pluginIdentityKey(plugin); } catch (_) { return ''; }
+  })();
+  if (!target) return false;
+  return (Array.isArray(installedPlugins) ? installedPlugins : []).some((item) => {
+    try { return pluginIdentityKey(item) === target; } catch (_) { return false; }
+  });
+}
+
+export function pluginSearchText(plugin) {
+  if (!plugin || typeof plugin !== 'object') return '';
+  const values = [
+    plugin.name,
+    plugin.id,
+    plugin.pluginId,
+    plugin.description,
+    plugin.marketplace,
+    plugin.version,
+    plugin.category,
+    plugin.author?.name || plugin.author,
+    plugin.license,
+    plugin.homepage,
+    plugin.repository,
+    ...(Array.isArray(plugin.keywords) ? plugin.keywords : []),
+    ...(Array.isArray(plugin.features) ? plugin.features : []),
+    ...(Array.isArray(plugin.skills) ? plugin.skills.map((s) => s?.name || s) : []),
+  ];
+  return values.filter(Boolean).join(' ').toLowerCase();
+}
+
+export function pluginIsEnabled(plugin) {
+  return plugin?.status === 'enabled' || plugin?.enabled === true;
+}
+
+export function pluginCanSwitchoff(plugin) {
+  return plugin?.canSwitchoff !== false;
+}
+
+export function pluginCanRemove(plugin) {
+  return plugin?.canRemove !== false;
+}
+
+export function pluginCanEdit(plugin) {
+  return plugin?.canEdit !== false;
+}
+
+export async function aggregateMarketplacePlugins(marketplaces, browse) {
+  const sources = (Array.isArray(marketplaces) ? marketplaces : [])
+    .map((marketplace, index) => ({
+      id: marketplace?.id || marketplace?.marketplaceId || marketplace?.name || marketplace?.source,
+      label: marketplace?.name || marketplace?.id || marketplace?.marketplaceId || marketplace?.source || `market-${index}`,
+    }))
+    .filter((marketplace) => marketplace.id);
+  const settled = await Promise.allSettled(sources.map(async (marketplace) => {
+    const results = await browse(marketplace.id);
+    return (Array.isArray(results) ? results : []).map((plugin) => normalizePluginRecord(plugin, marketplace.id));
+  }));
+  const results = [];
+  let failures = 0;
+  settled.forEach((entry, _index) => {
+    if (entry.status === 'fulfilled') results.push(...entry.value.filter(Boolean));
+    else failures += 1;
+  });
+  return {
+    plugins: dedupePluginsByIdentity(results),
+    failures,
+    total: sources.length,
+  };
+}
 export function detectPluginKind(plugin) {
   if (!plugin || typeof plugin !== 'object') return 'other';
   const explicit = String(plugin.kind || plugin.type || plugin.category || '').toLowerCase();
@@ -28,17 +143,14 @@ export function detectPluginKind(plugin) {
       : 0;
   const hookCount = Array.isArray(plugin.hooks) ? plugin.hooks.length : 0;
   const toolCount = Array.isArray(plugin.tools) ? plugin.tools.length : 0;
-
   const hits = [
     skillCount > 0 ? 'skills' : null,
     mcpCount > 0 ? 'mcp' : null,
     hookCount > 0 ? 'hooks' : null,
     toolCount > 0 ? 'tools' : null,
   ].filter(Boolean);
-
   if (hits.length === 1) return hits[0];
   if (hits.length > 1) {
-    // Prefer the largest contribution.
     const scored = [
       ['skills', skillCount],
       ['mcp', mcpCount],
@@ -50,6 +162,7 @@ export function detectPluginKind(plugin) {
   return 'other';
 }
 
+
 export function filterPlugins(list, { query = '', status = 'all', kind = 'all' } = {}) {
   const term = String(query || '').trim().toLowerCase();
   return (Array.isArray(list) ? list : []).filter((p) => {
@@ -59,18 +172,7 @@ export function filterPlugins(list, { query = '', status = 'all', kind = 'all' }
     if (status === 'disabled' && enabled) return false;
     if (kind && kind !== 'all' && detectPluginKind(p) !== kind) return false;
     if (!term) return true;
-    const hay = [
-      p.name,
-      p.id,
-      p.description,
-      p.marketplace,
-      p.version,
-      ...(Array.isArray(p.skills) ? p.skills.map((s) => s?.name || s) : []),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    return hay.includes(term);
+    return pluginSearchText(p).includes(term);
   });
 }
 
