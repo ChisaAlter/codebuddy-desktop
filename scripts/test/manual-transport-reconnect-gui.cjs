@@ -500,6 +500,52 @@ async function main() {
       JSON.stringify(rebind),
     );
 
+    // ---- 8) session-invalid restore → reconnected(sessionInvalid) ----
+    const sessionInvalid = await client.evaluate(`(async () => {
+      ${importHelper}
+      const mod = await loadAcp();
+      if (!mod?.AcpClient) return { ok: false, reason: 'AcpClient-not-importable-in-renderer' };
+      const ac = new mod.AcpClient({ apiBase: 'http://127.0.0.1:63918' });
+      ac._lastSessionId = 'sess-gone';
+      ac.requestHttp = async (path, init = {}) => {
+        if (path === '/api/v1/acp/connect') {
+          return { ok: true, status: 200, json: async () => ({ connectionId: 'conn-sinv', sessionToken: 'tok' }) };
+        }
+        const body = JSON.parse(init.body || '{}');
+        if (body.method === 'initialize') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }) };
+        }
+        if (body.method === 'session/load') {
+          const err = new Error('session not found');
+          err.status = 404;
+          throw err;
+        }
+        throw new Error('unexpected ' + (body.method || path));
+      };
+      const reconnected = [];
+      ac.on('reconnected', (e) => reconnected.push(e.detail));
+      const invalid = [];
+      ac.on('session_invalid', (e) => invalid.push(e.detail));
+      ac.markConnectionBroken('acceptance-sinv');
+      await new Promise((r) => setTimeout(r, 1500));
+      return {
+        ok: true,
+        reconnected,
+        invalid,
+        reconnecting: ac.reconnecting,
+      };
+    })()`);
+    check(
+      '8. 会话失效时 restore 发出 session_invalid 且 reconnected 携带 sessionInvalid 标记',
+      sessionInvalid?.ok &&
+        sessionInvalid.invalid?.length === 1 &&
+        sessionInvalid.reconnected?.length === 1 &&
+        sessionInvalid.reconnected[0]?.sessionInvalid === true &&
+        sessionInvalid.reconnected[0]?.sessionBound === false &&
+        sessionInvalid.reconnecting === false,
+      JSON.stringify(sessionInvalid),
+    );
+
     // ---- settings default ----
     const settings = await client.evaluate(`(() => {
       const store = window.__CODEBUDDY_STORE__;
