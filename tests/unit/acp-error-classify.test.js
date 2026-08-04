@@ -27,6 +27,10 @@ describe('classifyTransportFailure', () => {
     expect(classifyTransportFailure({ status: null, kind: 'timeout' })).toBe('transport');
   });
 
+  it('status null + idle-timeout → idle (main-process stream idle)', () => {
+    expect(classifyTransportFailure({ status: null, kind: 'idle-timeout' })).toBe('idle');
+  });
+
   it('status null + parse/closed → client', () => {
     expect(classifyTransportFailure({ status: null, kind: 'parse' })).toBe('client');
     expect(classifyTransportFailure({ status: null, kind: 'closed' })).toBe('client');

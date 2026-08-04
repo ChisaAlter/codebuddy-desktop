@@ -579,13 +579,15 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'reconnected') {
       get().patchThreadRuntime(threadId, { connectionState: 'connected' });
-      // 重连成功但会话未绑定：写标记，后续用户操作时再补齐（或等 session_invalid）。
+      // 重连成功但会话未绑定：无论是否有 active turn，都必须打标。
+      // 有 active turn 时延后 rebind；无 active turn 时立刻补 session/load。
       if (detail?.sessionBound === false && thread?.sessionId) {
+        get().patchThreadRuntime(threadId, { sessionRestoreNeeded: true });
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
         if (!latestRuntime.activePromptRunId) {
-          get().patchThreadRuntime(threadId, { sessionRestoreNeeded: true });
+          void get().rebindSessionAfterTurn(threadId).catch(() => {});
         }
-      } else {
+      } else if (detail?.sessionBound === true) {
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
         if (latestRuntime.sessionRestoreNeeded) {
           get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
@@ -621,6 +623,22 @@ export function createSessionsChatSlice(set, get, ctx) {
     if (type === 'reconnect_failed') {
       get().flushThreadTimelineCoalesce?.(threadId);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const hasActiveTurn = Boolean(runtime.activePromptRunId || runtime.isAwaitingResponse);
+      // 有进行中的 turn 时只标连接错误，禁止 responseTerminalRuntimePatch 清 run id。
+      if (hasActiveTurn) {
+        get().patchThreadRuntime(threadId, { connectionState: 'error' });
+        const current = get().threadsById[threadId];
+        if (current) {
+          get().updateThreadRecord(threadId, {
+            unread: get().activeThreadId !== threadId,
+            metadata: {
+              ...(current.metadata || {}),
+              lastTransportError: '连接恢复失败，当前回复可能已中断',
+            },
+          });
+        }
+        return;
+      }
       get().patchThreadRuntime(
         threadId,
         responseTerminalRuntimePatch({

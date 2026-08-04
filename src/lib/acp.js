@@ -84,7 +84,11 @@ export function classifyTransportFailure(info) {
     if (status >= 500) return 'upstream';
     return 'transport';
   }
-  // status null：网络异常 / 硬超时 / parse / closed。仅 network 与 timeout 视为 transport。
+  // status null：
+  // - idle-timeout：长任务读循环空闲超时，会话可恢复，不拆连接
+  // - network / timeout：真断线或硬超时，拆连接
+  // - parse / closed：协议/流结束类，不拆连接
+  if (kind === 'idle-timeout') return 'idle';
   if (kind === 'network' || kind === 'timeout') return 'transport';
   if (kind === 'parse' || kind === 'closed') return 'client';
   return 'transport';
@@ -1053,9 +1057,33 @@ export class AcpClient {
   // 统一恢复入口：connect → initialize → session/load（无 active prompt 时）。
   // 任何一步失败都会清理半初始化状态并 throw。成功且（需要时）会话已绑定才返回。
   async restoreConnection({ sessionId = null, cwd = '.' } = {}) {
+    const abortPartialRestore = async (error) => {
+      // connect() 成功后可能已启动 heartbeat/SSE 并占用 connectionId；
+      // initialize/session/load 失败时必须收回，避免半初始化连接被后续请求误用。
+      const partialConnectionId = this.connectionId;
+      this.connected = false;
+      this.initialized = false;
+      this.sessionBound = false;
+      this._connectionError = true;
+      this.stopHeartbeat();
+      this.stopNotificationStream();
+      this.connectionId = null;
+      this.sessionToken = null;
+      if (partialConnectionId) {
+        await this.releaseConnection(partialConnectionId).catch(() => null);
+      }
+      throw error;
+    };
+
     await this.connect();
     if (!this.connected) throw new Error('ACP reconnect failed: not connected');
-    await this.initialize();
+
+    try {
+      await this.initialize();
+    } catch (error) {
+      await abortPartialRestore(error);
+    }
+
     // 有 active prompt 时不 session/load：重放的历史 chunk 会污染进行中的 turn，
     // 会话绑定推迟到 turn 结束后（由 store 的 session_restored 逻辑补齐）。
     const hasActive = sessionId ? this.hasActivePrompt?.(sessionId) : false;
@@ -1077,11 +1105,12 @@ export class AcpClient {
           error?.sessionRecoverable === true ||
           /idle timeout|timeout|ECONNREFUSED|network|fetch failed|408|502|503|504/i.test(message);
         if (sessionInvalid && !transport) {
+          // 协议已恢复，但会话不可用：保留连接，明确告知上层。
           this.sessionBound = false;
           this.emit('session_invalid', { sessionId });
           return { sessionInvalid: true };
         }
-        throw error; // 传输类失败继续退避
+        await abortPartialRestore(error);
       }
     } else if (sessionId) {
       // 有 active prompt：仅协议恢复，会话绑定状态未知。

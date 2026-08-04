@@ -361,7 +361,7 @@ describe('store conversation event routing', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
   });
 
-  it('clears prompt runtime state after reconnect failure', () => {
+  it('preserves active turn runtime after reconnect failure', () => {
     useStore.getState().patchThreadRuntime('thread-1', {
       activePromptRunId: 'run-reconnect',
       promptDispatched: true,
@@ -369,17 +369,42 @@ describe('store conversation event routing', () => {
       promptStartedAt: 5678,
       historyReplayActive: true,
     });
+    useStore.setState((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], status: 'running' },
+      },
+    }));
+
+    useStore.getState().handleConversationEvent({ threadId: 'thread-1', type: 'reconnect_failed', detail: {} });
+
+    // 有 active turn 时只标连接错误，禁止清 run id / 强制终态。
+    expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
+      connectionState: 'error',
+      activePromptRunId: 'run-reconnect',
+      promptDispatched: true,
+      isAwaitingResponse: true,
+      promptStartedAt: 5678,
+      historyReplayActive: true,
+    });
+    expect(useStore.getState().threadsById['thread-1'].status).toBe('running');
+  });
+
+  it('terminalizes idle threads after reconnect failure', () => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: null,
+      isAwaitingResponse: false,
+      connectionState: 'reconnecting',
+    });
 
     useStore.getState().handleConversationEvent({ threadId: 'thread-1', type: 'reconnect_failed', detail: {} });
 
     expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
       connectionState: 'error',
       activePromptRunId: null,
-      promptDispatched: false,
       isAwaitingResponse: false,
-      promptStartedAt: null,
-      historyReplayActive: false,
     });
+    expect(useStore.getState().threadsById['thread-1'].status).toBe('error');
   });
 
   it('leaves a persisted prompt queue paused when an orphaned run reaches idle', async () => {

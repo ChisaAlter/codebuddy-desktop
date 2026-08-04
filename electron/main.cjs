@@ -2468,11 +2468,12 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         codebuddyStreams.delete(streamId);
         if (!sender.isDestroyed()) {
           if (streamError) {
+            // 读循环 armTimeout 触发的是 chunk 空闲超时（长任务可恢复），不是硬连接超时。
             sender.send('codebuddy:streamError', {
               streamId,
               error: streamError,
               status: null,
-              kind: timedOut ? 'timeout' : 'network',
+              kind: timedOut ? 'idle-timeout' : 'network',
             });
           } else if (method !== 'GET' && !controller.signal.aborted) {
             sender.send('codebuddy:streamEnd', {
@@ -2508,7 +2509,8 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
       streamId,
       error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message,
       status: null,
-      kind: timedOut ? 'timeout' : 'network',
+      // openStream 的 timeout 用于 chunk 空闲窗口；长任务应归 idle，不拆连接。
+      kind: timedOut ? 'idle-timeout' : 'network',
     });
     return { ok: false, error: error.message };
   }

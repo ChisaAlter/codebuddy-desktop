@@ -248,6 +248,28 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(true);
   });
 
+  it('reconnected(sessionBound:false) 在 active turn 期间也必须置 sessionRestoreNeeded', () => {
+    useStore.setState((state) => ({
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': {
+          ...state.threadRuntimeById['thread-1'],
+          activePromptRunId: 'run-live',
+          isAwaitingResponse: true,
+          sessionRestoreNeeded: false,
+        },
+      },
+    }));
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'reconnected',
+      detail: { attempts: 1, sessionBound: false },
+    });
+    // 关键回归：有 active turn 时也要打标，等 turn 终态 rebindSessionAfterTurn 补 load。
+    expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(true);
+    expect(useStore.getState().threadRuntimeById['thread-1'].activePromptRunId).toBe('run-live');
+  });
+
   it('reconnected(sessionBound:true) 清除 sessionRestoreNeeded', () => {
     useStore.setState((state) => ({
       threadRuntimeById: {

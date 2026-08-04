@@ -222,6 +222,34 @@ describe('ACP auto-reconnect on transport failure', () => {
     expect(reconnecting).toHaveBeenCalled();
   });
 
+  it('onError idle-timeout（主进程读循环空闲）不拆连接', async () => {
+    const client = makeClient();
+    let onErrorRef;
+    window.electronAPI = ipcStream(({ onError }) => {
+      onErrorRef = onError;
+    });
+    const reconnecting = vi.fn();
+    client.on('reconnecting', (event) => reconnecting(event.detail));
+
+    const pending = client.requestStreamingIpc(
+      { jsonrpc: '2.0', method: 'session/prompt', params: { sessionId: 's1' } },
+      '2g',
+      1000,
+      null,
+    );
+    await onErrorRef({
+      message: 'CodeBuddy stream timed out after 600000ms',
+      status: null,
+      kind: 'idle-timeout',
+    });
+
+    await expect(pending).rejects.toSatisfy(
+      (err) => err.transportFailure === false && err.failureClass === 'idle',
+    );
+    expect(client.connected).toBe(true);
+    expect(reconnecting).not.toHaveBeenCalled();
+  });
+
   it('已匹配的 RPC 业务错误不触发重连（区别于传输失败）', async () => {
     const client = makeClient();
     let onMessageRef;
@@ -479,5 +507,31 @@ describe('ACP auto-reconnect on transport failure', () => {
     expect(client.connected).toBe(true);
     expect(client.initialized).toBe(true);
     expect(client.sessionBound).toBe(true);
+  });
+
+  it('restoreConnection 在 initialize 失败后清理半初始化连接', async () => {
+    const client = makeRealClient();
+    const released = [];
+    client.releaseConnection = vi.fn(async (id) => {
+      released.push(id);
+    });
+    client.requestHttp = vi.fn(async (path, init) => {
+      if (path === '/api/v1/acp/connect') {
+        return { ok: true, status: 200, json: async () => ({ connectionId: 'conn-partial', sessionToken: 'tok' }) };
+      }
+      const body = JSON.parse(init.body || '{}');
+      if (body.method === 'initialize') {
+        throw new Error('initialize refused');
+      }
+      throw new Error('unexpected');
+    });
+
+    await expect(client.restoreConnection({ sessionId: 'sess-real', cwd: 'C:/Project' })).rejects.toThrow(
+      'initialize refused',
+    );
+    expect(client.connected).toBe(false);
+    expect(client.initialized).toBe(false);
+    expect(client.connectionId).toBeNull();
+    expect(released).toContain('conn-partial');
   });
 });
