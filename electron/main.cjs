@@ -223,7 +223,20 @@ function readDiagnosticLog(filePath, maxBytes = 200 * 1024) {
   }
 }
 
-function logStartup(message) {
+// M-perf: startup/renderer logs are buffered and flushed on a 1s timer instead
+// of a synchronous appendFileSync per line — renderer console spam (SSE parse
+// warnings, reconnect storms) used to block the main-process event loop with
+// sync disk I/O for every message.
+const startupLogBuffer = [];
+let startupLogFlushTimer = null;
+
+function flushStartupLog() {
+  if (startupLogFlushTimer) {
+    clearTimeout(startupLogFlushTimer);
+    startupLogFlushTimer = null;
+  }
+  if (!startupLogBuffer.length) return;
+  const batch = startupLogBuffer.splice(0);
   try {
     // 日志轮转：超 1MB 截断保留尾 200KB，避免长期启动累积占满磁盘 + 测试全文读越来越慢
     try {
@@ -235,8 +248,13 @@ function logStartup(message) {
     } catch (_) {
       /* 文件不存在或读失败不阻塞写入 */
     }
-    fs.appendFileSync(startupLog, `[${new Date().toISOString()}] ${message}\n`);
+    fs.appendFileSync(startupLog, batch.join(''));
   } catch (_) {}
+}
+
+function logStartup(message) {
+  startupLogBuffer.push(`[${new Date().toISOString()}] ${message}\n`);
+  if (!startupLogFlushTimer) startupLogFlushTimer = setTimeout(flushStartupLog, 1000);
 }
 
 function destroyTrayIcon(reason = 'exit') {
@@ -2428,9 +2446,37 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
       sender.once('destroyed', onSenderDestroyed);
     }
     (async () => {
-      const emitMessages = (messages) => {
+      // M-perf: batch stream messages in a 33ms window so high-frequency output
+      // (terminal logs, progress bars, chat chunks) is one IPC round-trip per
+      // window instead of one per SSE event. Terminal/error events flush the
+      // batch immediately so the stream always terminates promptly and in order.
+      let batchBuffer = [];
+      let batchTimer = null;
+      const isTerminalMessage = (message) => {
+        const type = message?.type || message?.event;
+        return type === 'done' || type === 'error' || type === 'stream_end' || type === 'end';
+      };
+      const flushBatch = () => {
+        if (batchTimer) {
+          clearTimeout(batchTimer);
+          batchTimer = null;
+        }
+        if (!batchBuffer.length) return;
+        const messages = batchBuffer;
+        batchBuffer = [];
         for (const message of messages) {
           if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
+        }
+      };
+      const emitMessages = (messages) => {
+        for (const message of messages) {
+          if (isTerminalMessage(message)) {
+            flushBatch();
+            if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
+            continue;
+          }
+          batchBuffer.push(message);
+          if (!batchTimer) batchTimer = setTimeout(flushBatch, 33);
         }
       };
       let streamError = null;
@@ -2446,6 +2492,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
               parseErrorCount += parsed.parseErrorCount;
               emitMessages(parsed.messages);
             }
+            flushBatch();
             break;
           }
           armTimeout();
@@ -2467,6 +2514,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         } catch (_) {}
         codebuddyStreams.delete(streamId);
         if (!sender.isDestroyed()) {
+          flushBatch();
           if (streamError) {
             // 读循环 armTimeout 触发的是 chunk 空闲超时（长任务可恢复），不是硬连接超时。
             sender.send('codebuddy:streamError', {
@@ -3088,6 +3136,7 @@ app.whenReady().then(async () => {
 // 不树杀会变孤儿进程占 stdout + 占端口，下次启动端口冲突（实测残留过 PID 42940/18192）
 app.on('before-quit', () => {
   reallyQuitting = true;
+  flushStartupLog();
   if (exitCleanupStarted) return;
   exitCleanupStarted = true;
   logStartup('Electron before-quit cleanup started');

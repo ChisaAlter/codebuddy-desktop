@@ -146,22 +146,35 @@ function BrowserPanel({ payload, panelPhase, onClose, onBack, t }) {
 
   useEffect(() => {
     if (!openBrowser) return undefined;
-    let frame = 0;
+    let timer = null;
+    let disposed = false;
     const sync = () => {
+      if (disposed) return;
       const rect = browserSurfaceRef.current?.getBoundingClientRect();
       if (rect && setBrowserBounds) {
         setBrowserBounds({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
       }
-      if (panelPhase !== 'closed') frame = requestAnimationFrame(sync);
     };
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(sync) : null;
+    // M-perf: event-driven bounds sync (ResizeObserver + window resize) with a
+    // 100ms throttle. The old requestAnimationFrame loop pushed ~60 IPC
+    // setBrowserBounds calls per second while the panel was open, competing with
+    // rendering and route-switch animations on the main thread.
+    const throttledSync = () => {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        sync();
+      }, 100);
+    };
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(throttledSync) : null;
     if (observer && browserSurfaceRef.current) observer.observe(browserSurfaceRef.current);
-    window.addEventListener('resize', sync);
+    window.addEventListener('resize', throttledSync);
     sync();
     return () => {
+      disposed = true;
+      if (timer !== null) clearTimeout(timer);
       observer?.disconnect();
-      window.removeEventListener('resize', sync);
-      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('resize', throttledSync);
     };
   }, [openBrowser, panelPhase, setBrowserBounds, url]);
 

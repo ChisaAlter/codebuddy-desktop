@@ -304,6 +304,8 @@ export function createProductPersistSlice(set, get, ctx) {
 
     // Commit coalesced stream chunks before snapshotting timelines to disk.
     get().flushThreadTimelineCoalesce?.();
+    // Fold pending (unflushed) terminal output chunks into the panes first.
+    get().flushPendingPaneOutputs?.();
 
     const pendingThreadIds = Array.from(threadTimelinePersistTimers.keys());
     for (const timer of threadTimelinePersistTimers.values()) clearTimeout(timer);
@@ -337,25 +339,27 @@ export function createProductPersistSlice(set, get, ctx) {
           };
         }
 
-        for (const [projectId, pending] of pendingTerminalStates) {
-          const project = projectsById[projectId];
-          const snapshot = pending?.snapshot;
-          if (!project || !snapshot) continue;
-          projectsById[projectId] = {
-            ...project,
-            preferences: {
-              ...(project.preferences || {}),
-              terminalState: {
-                activePaneId: snapshot.activePaneId,
-                panes: snapshot.panes.map((pane) => ({
-                  ...pane,
-                  output: String(pane.output || '').slice(-200000),
-                })),
-              },
-            },
-            updatedAt: now,
-          };
-        }
+    for (const [projectId] of pendingTerminalStates) {
+      const project = projectsById[projectId];
+      if (!project) continue;
+      // M-perf: terminal timers no longer carry a scheduled-time snapshot (the
+      // 5s debounce made it stale); fold the freshest panes at flush time.
+      const panes = state.terminalPanes.map((pane) => ({
+        ...pane,
+        output: String(pane.output || '').slice(-200000),
+      }));
+      projectsById[projectId] = {
+        ...project,
+        preferences: {
+          ...(project.preferences || {}),
+          terminalState: {
+            activePaneId: state.activePaneId,
+            panes,
+          },
+        },
+        updatedAt: now,
+      };
+    }
 
         for (const [projectId, pending] of pendingWorkspaceStates) {
           const project = projectsById[projectId];

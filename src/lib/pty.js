@@ -59,6 +59,8 @@ export class PtySocket {
     this._closedExplicitly = false;
     this._sseStream = null;
     this._transport = null;
+    this._inputQueue = [];
+    this._inputFlushTimer = null;
   }
 
   get readyState() {
@@ -127,17 +129,30 @@ export class PtySocket {
 
   sendInput(data) {
     if (this._transport === 'sse') {
-      // M-ls3: surface SSE transport failures instead of silently swallowing, so
-      // callers can observe backpressure/retry. The WS path throws when not open;
-      // the SSE path now emits an 'error' event on failure rather than returning.
-      const p = ptySendInputHttp(this.sessionId, data);
-      if (p && typeof p.catch === 'function') p.catch((err) => this.emit('error', err));
+      // M-perf: batch keystrokes in a 16ms window before the HTTP POST so a
+      // typing burst is one IPC + one localhost round-trip instead of one per
+      // key (each POST used to await a response via the generic request channel).
+      // Failures surface through the 'error' event (TerminalPane marks the pane
+      // status) rather than blocking input.
+      this._inputQueue.push(data);
+      if (!this._inputFlushTimer) {
+        this._inputFlushTimer = setTimeout(() => this._flushInputQueue(), 16);
+      }
       return;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('PTY socket is not connected');
     }
     this.socket.send(JSON.stringify({ type: 'input', data }));
+  }
+
+  _flushInputQueue() {
+    this._inputFlushTimer = null;
+    if (!this._inputQueue.length) return;
+    const data = this._inputQueue.join('');
+    this._inputQueue = [];
+    const p = ptySendInputHttp(this.sessionId, data);
+    if (p && typeof p.catch === 'function') p.catch((err) => this.emit('error', err));
   }
 
   resize(cols, rows) {
@@ -160,6 +175,13 @@ export class PtySocket {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    // Drop queued input for a session that is being torn down (no point posting
+    // keystrokes to a dead PTY).
+    if (this._inputFlushTimer) {
+      clearTimeout(this._inputFlushTimer);
+      this._inputFlushTimer = null;
+    }
+    this._inputQueue = [];
     if (this._sseStream) {
       try { this._sseStream.close?.(); } catch (_) {}
       this._sseStream = null;

@@ -133,6 +133,14 @@ const threadTimelineCoalesce = new Map();
 const threadDraftPersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
 const workspaceStatePersistTimers = new Map();
+// M-perf: pending terminal output chunks are merged on a 50ms window so
+// high-frequency output (npm install, log spam) rebuilds terminalPanes once per
+// window instead of once per chunk. xterm rendering stays per-chunk (live); only
+// the store mirror + persistence are throttled.
+const TERMINAL_OUTPUT_FLUSH_MS = 50;
+const TERMINAL_STATE_PERSIST_MS = 5000;
+const paneOutputPending = new Map();
+let paneOutputFlushTimer = null;
 let fileDirectoryRequestId = 0;
 let filePreviewRequestId = 0;
 let fileSearchRequestId = 0;
@@ -1441,15 +1449,17 @@ export const useStore = create((set, get) => {
     if (!projectId) return;
     const previous = terminalStatePersistTimers.get(projectId);
     if (previous) clearTimeout(previous.timer || previous);
-    const snapshot = {
-      panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
-      activePaneId: get().activePaneId,
-    };
+    // M-perf: capture the snapshot at flush time, not schedule time — with the
+    // 5s debounce a scheduled-time snapshot would be stale when written.
     const timer = setTimeout(() => {
       terminalStatePersistTimers.delete(projectId);
-      get().persistProjectTerminalState(projectId, snapshot);
-    }, 500);
-    terminalStatePersistTimers.set(projectId, { timer, snapshot });
+      get().flushPendingPaneOutputs();
+      get().persistProjectTerminalState(projectId, {
+        panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
+        activePaneId: get().activePaneId,
+      });
+    }, TERMINAL_STATE_PERSIST_MS);
+    terminalStatePersistTimers.set(projectId, timer);
   },
 
   async persistActiveProjectTerminalState() {
@@ -1460,6 +1470,8 @@ export const useStore = create((set, get) => {
       clearTimeout(pending.timer || pending);
       terminalStatePersistTimers.delete(projectId);
     }
+    // Fold any output chunks that have not been committed yet.
+    get().flushPendingPaneOutputs();
     // Best-effort refresh of live PTY cwd before snapshotting so project switch /
     // app quit can reopen terminals in the directory the user last left them in.
     const livePanes = get().terminalPanes;
@@ -1579,13 +1591,34 @@ export const useStore = create((set, get) => {
 
   appendPaneOutput(paneId, chunk, projectId = get().activeProjectId) {
     if (projectId !== get().activeProjectId) return false;
-    set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) =>
-        pane.id === paneId ? { ...pane, output: `${pane.output || ''}${chunk}`.slice(-200000) } : pane,
-      ),
-    }));
+    const entry = paneOutputPending.get(paneId);
+    if (entry) entry.push(chunk);
+    else paneOutputPending.set(paneId, [chunk]);
+    if (!paneOutputFlushTimer) {
+      paneOutputFlushTimer = setTimeout(() => {
+        paneOutputFlushTimer = null;
+        get().flushPendingPaneOutputs();
+      }, TERMINAL_OUTPUT_FLUSH_MS);
+    }
     get().scheduleTerminalStatePersist();
     return true;
+  },
+
+  flushPendingPaneOutputs() {
+    if (paneOutputFlushTimer) {
+      clearTimeout(paneOutputFlushTimer);
+      paneOutputFlushTimer = null;
+    }
+    if (!paneOutputPending.size) return;
+    const pending = new Map(paneOutputPending);
+    paneOutputPending.clear();
+    set((state) => ({
+      terminalPanes: state.terminalPanes.map((pane) => {
+        const chunks = pending.get(pane.id);
+        if (!chunks || !chunks.length) return pane;
+        return { ...pane, output: `${pane.output || ''}${chunks.join('')}`.slice(-200000) };
+      }),
+    }));
   },
 
   appendTimelineEvent(eventType, payload) {

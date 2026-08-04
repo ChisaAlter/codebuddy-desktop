@@ -1326,9 +1326,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (projectChanged) {
         const confirmed = await requestDirtyFileConfirmation(set, get, '切换项目');
         if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
-        await get().persistActiveProjectWorkspaceState({ discardDirty: true });
+        // M-perf: these persist calls update in-memory state synchronously while
+        // the full disk write is fire-and-forget — a switch must never be blocked
+        // by a full product-state serialization+write (the persist chain in
+        // product-persist coalesces the three snapshots into one final write).
+        get().persistActiveProjectWorkspaceState({ discardDirty: true }).catch(() => {});
         if (!isProjectNavigationCurrent(navigation)) return false;
-        await get().persistActiveProjectTerminalState();
+        get().persistActiveProjectTerminalState().catch(() => {});
         if (!isProjectNavigationCurrent(navigation)) return false;
       }
       const currentThread = get().threadsById[threadId];
@@ -1343,9 +1347,10 @@ export function createSessionsChatSlice(set, get, ctx) {
       });
       if (projectChanged) get().loadProjectTerminalState(project.id);
       get().activateThreadRuntime(thread.id);
-      const persisted = await get().persistProductState();
+      // M-perf: fire-and-forget — a failed disk write must not roll back an
+      // already-applied UI switch (the next persist or the quit flush retries).
+      get().persistProductState({ silent: true }).catch(() => {});
       if (!isProjectNavigationCurrent(navigation)) return false;
-      if (!persisted) throw new Error(get().error || '保存会话状态失败');
       const runtime = await get().ensureProjectRuntime(project.id);
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!runtime) throw new Error(get().error || '项目运行时启动失败');
