@@ -178,15 +178,20 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
   // ===== Phase 4: 断连时历史恢复前置 restore；事件处理 =====
 
   it('connected=false 时 recover 先 reconnect 再 session/load', async () => {
-    const reconnect = vi.fn().mockResolvedValue(true);
-    useStore.setState({
-      getThreadClient: () => ({
-        connected: false,
-        initialized: false,
-        reconnect,
-        request,
-        cancelActivePrompt: vi.fn().mockReturnValue(false),
+    const client = {
+      connected: false,
+      initialized: false,
+      request,
+      cancelActivePrompt: vi.fn().mockReturnValue(false),
+      reconnect: vi.fn(async () => {
+        // 模拟协议恢复成功：reconnect 后 client 变为可用。
+        client.connected = true;
+        client.initialized = true;
+        return { ok: true };
       }),
+    };
+    useStore.setState({
+      getThreadClient: () => client,
     });
 
     request
@@ -210,8 +215,8 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
 
     await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(true);
 
-    expect(reconnect).toHaveBeenCalledTimes(1);
-    expect(reconnect).toHaveBeenCalledWith(
+    expect(client.reconnect).toHaveBeenCalledTimes(1);
+    expect(client.reconnect).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'session-ready' }),
     );
     expect(useStore.getState().threadsById['thread-1'].status).toBe('idle');
@@ -417,7 +422,7 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
     expect(markSessionBound).not.toHaveBeenCalled();
   });
 
-  it('rebindSessionAfterTurn：session/load 失败保留标记且不抛', async () => {
+  it('rebindSessionAfterTurn：传输失败保留标记且不抛', async () => {
     makeBoundClient();
     useStore.setState((state) => ({
       threadRuntimeById: {
@@ -425,11 +430,45 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
         'thread-1': { ...state.threadRuntimeById['thread-1'], sessionRestoreNeeded: true },
       },
     }));
-    request.mockRejectedValueOnce(new Error('session gone'));
+    request.mockRejectedValueOnce(new Error('ECONNREFUSED temporarily'));
 
     const result = await useStore.getState().rebindSessionAfterTurn('thread-1');
     expect(result).toBe(false);
-    // 标记保留，下次操作再试
+    // 传输类失败：标记保留，下次操作再试
     expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(true);
+  });
+
+  it('rebindSessionAfterTurn：session invalid 清除标记并给出可见错误', async () => {
+    makeBoundClient();
+    useStore.setState((state) => ({
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': { ...state.threadRuntimeById['thread-1'], sessionRestoreNeeded: true },
+      },
+    }));
+    request.mockRejectedValueOnce(new Error('session not found'));
+
+    const result = await useStore.getState().rebindSessionAfterTurn('thread-1');
+    expect(result).toBe(false);
+    expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(false);
+    expect(useStore.getState().threadsById['thread-1'].metadata?.sessionInvalid).toBe(true);
+    expect(String(useStore.getState().error || '')).toContain('会话已失效');
+  });
+
+  it('session_invalid 事件清除 sessionRestoreNeeded 并提示新建会话', () => {
+    useStore.setState((state) => ({
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': { ...state.threadRuntimeById['thread-1'], sessionRestoreNeeded: true },
+      },
+    }));
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session_invalid',
+      detail: { sessionId: 'session-ready' },
+    });
+    expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(false);
+    expect(useStore.getState().threadsById['thread-1'].metadata?.sessionInvalid).toBe(true);
+    expect(String(useStore.getState().error || '')).toContain('新建会话');
   });
 });

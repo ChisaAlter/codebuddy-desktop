@@ -605,11 +605,11 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'session_invalid') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      // 会话已判定失效：清掉 restore 标记，避免反复 load；引导用户新建会话。
       get().patchThreadRuntime(threadId, {
         connectionState: 'connected',
-        sessionRestoreNeeded: true,
+        sessionRestoreNeeded: false,
       });
-      // 会话失效：明确提示，不静默新建会话（避免丢历史）。
       get().updateThreadRecord(threadId, {
         status: runtime.activePromptRunId ? 'running' : 'idle',
         metadata: {
@@ -618,6 +618,9 @@ export function createSessionsChatSlice(set, get, ctx) {
           sessionInvalid: true,
         },
       });
+      if (get().activeThreadId === threadId) {
+        set({ error: '会话已失效（服务端重启或连接重建），请新建会话继续' });
+      }
       return;
     }
     if (type === 'reconnect_failed') {
@@ -2418,7 +2421,8 @@ export function createSessionsChatSlice(set, get, ctx) {
             cwd: project?.workspacePath || '.',
           })
           .catch(() => false);
-        if (!restored) return false;
+        // reconnect 成功需协议已恢复；sessionBound 可随后由 session/load 补齐。
+        if (!restored || client.connected === false || client.initialized === false) return false;
       }
       get().patchThreadRuntime(threadId, { historyReplayActive: true });
       resetSeenContent(threadId);
@@ -2837,8 +2841,27 @@ export function createSessionsChatSlice(set, get, ctx) {
         get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
       }
       return true;
-    } catch (_) {
-      // 会话失效/传输失败：保留标记，下次操作再试；不阻塞当前 turn。
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      const sessionInvalid =
+        error?.sessionInvalid === true ||
+        /session not found|invalid session|unknown session|no such session|session.*expired/i.test(message);
+      if (sessionInvalid) {
+        // 明确会话失效：停止重试 restore，给用户可见错误。
+        get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
+        await get().updateThreadRecord(threadId, {
+          metadata: {
+            ...(get().threadsById[threadId]?.metadata || {}),
+            lastError: '会话已失效（服务端重启或连接重建），请新建会话继续',
+            sessionInvalid: true,
+          },
+        });
+        if (get().activeThreadId === threadId) {
+          set({ error: '会话已失效（服务端重启或连接重建），请新建会话继续' });
+        }
+        return false;
+      }
+      // 传输类失败：保留标记，下次操作再试；不阻塞当前 turn。
       return false;
     }
   },

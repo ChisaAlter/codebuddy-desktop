@@ -367,6 +367,8 @@ export class AcpClient {
     this.reconnecting = false;
     this._reconnectTimer = null;
     this._connecting = false;
+    // 共享在飞 connect promise，供 reconnect()/并发调用真等待，而不是 setTimeout(0) 假等待。
+    this._connectPromise = null;
     // 重连代际：markConnectionBroken 递增，connect() 在入口捕获、成功时校验，
     // 避免「在飞 connect 成功」复活刚被标记断开的连接（撕裂 FSM）。
     this._restoreGeneration = 0;
@@ -890,7 +892,8 @@ export class AcpClient {
     // each issues a /api/v1/acp/connect POST, and the second overwrites
     // connectionId/sessionToken while the first's heartbeat + SSE are still live —
     // leaving the client talking to a connection id the server doesn't know.
-    if (this.connected || this._connecting) return;
+    if (this.connected) return;
+    if (this._connectPromise) return this._connectPromise;
 
     this._connecting = true;
     this._connectionError = false;
@@ -899,62 +902,66 @@ export class AcpClient {
     // and connect() is also called by initializeSession for fresh connections.
     const generation = this._restoreGeneration;
 
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+    this._connectPromise = (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await this.requestHttp('/api/v1/acp/connect', {
-        method: 'POST',
-        headers: makeHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({}),
-        signal: controller.signal,
-        timeoutMs: 10000,
-      });
+        const response = await this.requestHttp('/api/v1/acp/connect', {
+          method: 'POST',
+          headers: makeHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({}),
+          signal: controller.signal,
+          timeoutMs: 10000,
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        throw new Error(`ACP connect failed: ${response.status}`);
-      }
+        if (!response.ok) {
+          throw new Error(`ACP connect failed: ${response.status}`);
+        }
 
-      const payload = await response.json();
-      // 连接被 markConnectionBroken 取代（在飞期间代际变化）：放弃应用新连接，
-      // 释放刚拿到的 connection，让新的重连周期重新发起。
-      if (generation !== this._restoreGeneration) {
+        const payload = await response.json();
+        // 连接被 markConnectionBroken 取代（在飞期间代际变化）：放弃应用新连接，
+        // 释放刚拿到的 connection，让新的重连周期重新发起。
+        if (generation !== this._restoreGeneration) {
+          await this.releaseConnection(payload.connectionId).catch(() => null);
+          return;
+        }
+        const previousConnectionId = this.connectionId;
+        this.connectionId = payload.connectionId;
+        this.sessionToken = payload.sessionToken || null;
+        this.connected = true;
+        this.reconnecting = false;
+        this._connectionError = false;
+        this.sessionBound = false; // 新连接尚未绑定会话
+        if (previousConnectionId && previousConnectionId !== this.connectionId) {
+          this.invalidateInteractiveRequests('connection-replaced');
+          this.releaseConnection(previousConnectionId);
+          this.emit('connection/replaced', { previousConnectionId, connectionId: this.connectionId });
+        }
+        this.emit('connected', payload);
+
+        // 连接成功后自动启用心跳 + GET SSE 通知流
+        this.startHeartbeat();
+        this.startNotificationStream();
+      } catch (err) {
+        this.connected = false;
+        if (err.name === 'AbortError') {
+          this._connectionError = true;
+        }
+        // 非重连触发的 connect() 失败也走重连流程
+        if (!this.reconnecting) {
+          this._triggerReconnect();
+        }
+        throw err;
+      } finally {
         this._connecting = false;
-        await this.releaseConnection(payload.connectionId).catch(() => null);
-        return;
+        this._connectPromise = null;
       }
-      const previousConnectionId = this.connectionId;
-      this.connectionId = payload.connectionId;
-      this.sessionToken = payload.sessionToken || null;
-      this.connected = true;
-      this._connecting = false;
-      this.reconnecting = false;
-      this._connectionError = false;
-      this.sessionBound = false; // 新连接尚未绑定会话
-      if (previousConnectionId && previousConnectionId !== this.connectionId) {
-        this.invalidateInteractiveRequests('connection-replaced');
-        this.releaseConnection(previousConnectionId);
-        this.emit('connection/replaced', { previousConnectionId, connectionId: this.connectionId });
-      }
-      this.emit('connected', payload);
+    })();
 
-      // 连接成功后自动启用心跳 + GET SSE 通知流
-      this.startHeartbeat();
-      this.startNotificationStream();
-    } catch (err) {
-      this._connecting = false;
-      this.connected = false;
-      if (err.name === 'AbortError') {
-        this._connectionError = true;
-      }
-      // 非重连触发的 connect() 失败也走重连流程
-      if (!this.reconnecting) {
-        this._triggerReconnect();
-      }
-      throw err;
-    }
+    return this._connectPromise;
   }
 
   async _triggerReconnect() {
@@ -988,19 +995,33 @@ export class AcpClient {
       });
       return wasConnected;
     }
-    // 立即通知 UI 进入"重连中"，与心跳兜底路径表现一致。
-    if (!this.reconnecting) {
-      this.reconnecting = true;
+    // 已在重连周期中再次 broken：升代际让在飞 restore 失效，并重置预算、尽快重排下一轮。
+    if (this.reconnecting) {
+      if (this._reconnectTimer) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+      }
       this.reconnectAttempts = 0;
-      console.warn('[acp-restore] broken', {
+      console.warn('[acp-restore] broken-rearm', {
         reason,
-        autoReconnect: true,
         generation: this._restoreGeneration,
         sessionId: this._lastSessionId,
       });
       this.emit('reconnecting', { attempt: 0, max: this.maxReconnectAttempts, reason });
       this._scheduleReconnect(this.reconnectDelay);
+      return wasConnected;
     }
+    // 立即通知 UI 进入"重连中"，与心跳兜底路径表现一致。
+    this.reconnecting = true;
+    this.reconnectAttempts = 0;
+    console.warn('[acp-restore] broken', {
+      reason,
+      autoReconnect: true,
+      generation: this._restoreGeneration,
+      sessionId: this._lastSessionId,
+    });
+    this.emit('reconnecting', { attempt: 0, max: this.maxReconnectAttempts, reason });
+    this._scheduleReconnect(this.reconnectDelay);
     return wasConnected;
   }
 
@@ -1133,18 +1154,20 @@ export class AcpClient {
     this.stopHeartbeat();
     this.stopNotificationStream();
 
-    // 有在飞的 connect()（后台退避已发起）：等待其完成，避免双调度/返回假 true。
-    if (this._connecting) {
-      // 由于 connect() 是异步且无 promise 句柄，这里等待代际稳定：直接尝试等待一个 tick，
-      // 然后由 restoreConnection 的 connected 检查兜底；若仍在连接则返回 false。
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      if (this._connecting) return false;
+    // 有在飞的 connect()：等待共享 promise 真正结束，而不是 setTimeout(0) 假等待。
+    if (this._connectPromise) {
+      try {
+        await this._connectPromise;
+      } catch (_) {
+        // 在飞 connect 失败由原调用方处理；这里继续走 restoreConnection。
+      }
     }
 
     try {
       const result = await this.restoreConnection(options);
-      const ok = this.connected && this.initialized;
-      return ok ? result : false;
+      // 显式 reconnect 的成功语义：协议已恢复；会话绑定由调用方/sessionBound 判断。
+      if (!(this.connected && this.initialized)) return false;
+      return result && typeof result === 'object' ? result : { ok: true };
     } catch (_) {
       this._scheduleReconnect(this.reconnectDelay);
       return false;

@@ -534,4 +534,67 @@ describe('ACP auto-reconnect on transport failure', () => {
     expect(client.connectionId).toBeNull();
     expect(released).toContain('conn-partial');
   });
+
+  it('reconnect() 等待在飞 connect 共享 promise，而不是假等待', async () => {
+    const client = makeRealClient();
+    let releaseConnect;
+    const connectStarted = new Promise((resolve) => {
+      client.requestHttp = vi.fn(async (path, init) => {
+        if (path === '/api/v1/acp/connect') {
+          resolve();
+          await new Promise((r) => {
+            releaseConnect = r;
+          });
+          return { ok: true, status: 200, json: async () => ({ connectionId: 'conn-wait', sessionToken: 'tok' }) };
+        }
+        const body = JSON.parse(init.body || '{}');
+        if (body.method === 'initialize') {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }) };
+        }
+        if (body.method === 'session/load') {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { sessionId: 'sess-real' } }),
+          };
+        }
+        throw new Error('unexpected');
+      });
+    });
+
+    const first = client.connect();
+    await connectStarted;
+    expect(client._connecting).toBe(true);
+    expect(client._connectPromise).toBeTruthy();
+
+    const reconnecting = client.reconnect({ sessionId: 'sess-real', cwd: 'C:/Project' });
+    // 释放在飞 connect，reconnect 应能等到并继续 restore。
+    releaseConnect();
+    const result = await reconnecting;
+    await first.catch(() => null);
+
+    expect(result).toBeTruthy();
+    expect(client.connected).toBe(true);
+    expect(client.initialized).toBe(true);
+  });
+
+  it('markConnectionBroken 在已 reconnecting 时会重排调度并重置 attempts', async () => {
+    const client = makeRealClient();
+    client.autoReconnectEnabled = true;
+    client.reconnectDelay = 1000;
+    client.requestHttp = vi.fn(async () => {
+      throw new Error('connect refused');
+    });
+
+    client.markConnectionBroken('first');
+    expect(client.reconnecting).toBe(true);
+    const firstTimer = client._reconnectTimer;
+    expect(firstTimer).toBeTruthy();
+
+    client.reconnectAttempts = 5;
+    client.markConnectionBroken('second');
+    expect(client.reconnectAttempts).toBe(0);
+    expect(client._reconnectTimer).toBeTruthy();
+    expect(client._reconnectTimer).not.toBe(firstTimer);
+  });
 });

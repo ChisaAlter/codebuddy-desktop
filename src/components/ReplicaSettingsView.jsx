@@ -1573,6 +1573,18 @@ export default function ReplicaSettingsView() {
                 feedback={rowFeedback.requestPermissionOnFirstToolUse}
                 control={<Toggle value={guiSettings?.requestPermissionOnFirstToolUse === true} onChange={(v) => updateGuiSetting('requestPermissionOnFirstToolUse', v)} />}
               />
+              <SettingRow
+                t={t}
+                label={t('settings.item.transportAutoReconnect')}
+                desc={t('settings.item.transportAutoReconnect.desc')}
+                feedback={rowFeedback.transportAutoReconnect}
+                control={
+                  <Toggle
+                    value={guiSettings?.transportAutoReconnect !== false}
+                    onChange={(v) => updateGuiSetting('transportAutoReconnect', v)}
+                  />
+                }
+              />
             </div>
           </div>
         ) : null}
