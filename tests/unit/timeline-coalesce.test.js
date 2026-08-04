@@ -220,3 +220,46 @@ describe('persistProductState coalescing (M-perf)', () => {
     expect(saveProductState).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('persistProductState tail-save race (M-perf review fix)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not drop requests arriving while the tail save is in flight', async () => {
+    const { api } = createHarness();
+    const resolvers = [];
+    const saveProductState = vi.fn().mockImplementation(
+      () => new Promise((resolve) => {
+        resolvers.push(resolve);
+      }),
+    );
+    vi.stubGlobal('window', { electronAPI: { saveProductState } });
+
+    const first = api.persistProductState();
+    const second = api.persistProductState();
+    // Let the chain start the first save.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(saveProductState).toHaveBeenCalledTimes(1);
+
+    resolvers.shift()({ ok: true }); // finish the first save
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // The tail save (for `second`) is now in flight.
+    expect(saveProductState).toHaveBeenCalledTimes(2);
+
+    const third = api.persistProductState(); // arrives during the tail save
+    resolvers.shift()({ ok: true }); // finish the tail save
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // The finally block sees the dirty flag and schedules one more save.
+    expect(saveProductState).toHaveBeenCalledTimes(3);
+    resolvers.shift()({ ok: true });
+
+    await Promise.all([first, second, third]);
+    expect(saveProductState).toHaveBeenCalledTimes(3);
+  });
+});

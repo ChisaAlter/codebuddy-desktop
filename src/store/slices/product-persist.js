@@ -288,15 +288,20 @@ export function createProductPersistSlice(set, get, ctx) {
 
     const operation = getProductStateSaveChain()
       .catch(() => false)
-      .then(runSave)
-      .then((result) => {
-        // Requests that arrived while this save was in flight must not be lost:
-        // flush one more save with the latest state before releasing the chain.
-        if (persistCoalesceDirty) {
+      .then(async () => {
+        // Save unconditionally, then drain coalesce-drain requests: bursts that
+        // landed while a save was in flight — including while THIS drain save is
+        // running (the main process coalesces for ~800ms, so a save can stay in
+        // flight long enough for new requests to arrive) — set the dirty flag.
+        // Drain until quiescent so no request is dropped. The resolved value is
+        // the LAST save's result so callers (e.g. setThreadPinned rollback) can
+        // tell a failed persistence apart from a successful one.
+        let saved = await runSave();
+        while (persistCoalesceDirty) {
           persistCoalesceDirty = false;
-          return runSave().then(() => result);
+          saved = await runSave();
         }
-        return result;
+        return saved;
       })
       .finally(() => {
         persistCoalesceBusy = false;

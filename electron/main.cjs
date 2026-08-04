@@ -2946,11 +2946,15 @@ let productStateSaveTimer = null;
 let productStateSavePending = null;
 let productStateSaveChain = Promise.resolve(null);
 let productStateSaveWindowResolve = null;
+/** Promise for the current 800ms window — every request in the window resolves
+ * through it so callers actually wait for the batch (containing their snapshot)
+ * to land, not for the previous window's chain. */
+let productStateSaveWindow = Promise.resolve(null);
 
 ipcMain.handle('productState:save', (_event, state) => {
   productStateSavePending = state;
-  if (productStateSaveTimer) return productStateSaveChain;
-  const windowPromise = new Promise((resolve) => {
+  if (productStateSaveTimer) return productStateSaveWindow;
+  productStateSaveWindow = new Promise((resolve) => {
     productStateSaveWindowResolve = resolve;
   });
   productStateSaveTimer = setTimeout(() => {
@@ -2969,7 +2973,7 @@ ipcMain.handle('productState:save', (_event, state) => {
     productStateSaveWindowResolve = null;
     if (resolveWindow) resolveWindow(operation);
   }, PRODUCT_STATE_SAVE_COALESCE_MS);
-  return windowPromise.then(() => productStateSaveChain);
+  return productStateSaveWindow.then(() => productStateSaveChain);
 });
 
 ipcMain.on('productState:saveSync', (event, state) => {
