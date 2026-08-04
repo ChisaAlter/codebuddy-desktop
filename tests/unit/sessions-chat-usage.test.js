@@ -88,7 +88,8 @@ function createFakeStore() {
   };
   state.getThreadClient = () => null;
   state.flushThreadTimelineCoalesce = () => {};
-  const ctx = { conversations: { peek: () => null } };
+  state.cancelPendingTimelineActions = (timeline) => timeline;
+  const ctx = { conversations: { peek: () => null }, cancelPendingTimelineActions: state.cancelPendingTimelineActions };
   const slice = createSessionsChatSlice(set, get, ctx);
   Object.assign(state, slice);
   return { state, get, set, slice };

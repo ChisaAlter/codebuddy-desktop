@@ -418,6 +418,21 @@ export function createSessionsChatSlice(set, get, ctx) {
       return;
     }
     if (su === 'interruption_request') {
+      // 终态准入门控：回合已失败/取消（error/cancelled）且无活动 run 时，迟到的中断事件
+      // 不得复活线程或追加权限卡片——否则失败/取消后残留的 permissionRequests 会让
+      // deriveWorkflowView 判定 waiting_for_permission，且线程状态被回写成 waiting，
+      // 导致发送键卡死在终止态、Allow 按钮点不动。标记为 expired 后丢弃。
+      // idle 不拦截：idle 是正常的等待状态，新会话首次权限请求时线程也是 idle。
+      const gateRuntime = get().threadRuntimeById[threadId] || runtime;
+      const gateStatus = get().threadsById[threadId]?.status || 'idle';
+      const hasLiveRun = Boolean(
+        gateRuntime.activePromptRunId || gateRuntime.isAwaitingResponse || gateRuntime.promptDispatchInFlight,
+      );
+      const isFailedOrCancelled = ['error', 'cancelled'].includes(gateStatus);
+      if (isFailedOrCancelled && !hasLiveRun) {
+        get().appendThreadTimelineEvent(threadId, su, { ...update, _expiredLate: true, status: 'expired' });
+        return;
+      }
       // CLI 2.125 surfaces AskUserQuestion as interruption_request (WebUI parity):
       // map to a question card so cancel uses resolveInterruption(deny) / cancelled outcome,
       // never session/cancel.
@@ -490,6 +505,18 @@ export function createSessionsChatSlice(set, get, ctx) {
       return;
     }
     if (su === 'question_request') {
+      // 终态准入门控：同 interruption_request，迟到问答事件不得复活已失败/取消线程。
+      // idle 不拦截：idle 是正常的等待状态。
+      const gateRuntime = get().threadRuntimeById[threadId] || runtime;
+      const gateStatus = get().threadsById[threadId]?.status || 'idle';
+      const hasLiveRun = Boolean(
+        gateRuntime.activePromptRunId || gateRuntime.isAwaitingResponse || gateRuntime.promptDispatchInFlight,
+      );
+      const isFailedOrCancelled = ['error', 'cancelled'].includes(gateStatus);
+      if (isFailedOrCancelled && !hasLiveRun) {
+        get().appendThreadTimelineEvent(threadId, su, { ...update, _expiredLate: true, status: 'expired' });
+        return;
+      }
       const requestId = update.toolCallId;
       if (requestId && runtime.questions.some((item) => sessionActionItemMatches(item, requestId))) return;
       get().patchThreadRuntime(threadId, { questions: [...runtime.questions, update] });
@@ -506,6 +533,7 @@ export function createSessionsChatSlice(set, get, ctx) {
           : ['error', 'failed'].includes(rawStatus)
             ? 'error'
             : rawStatus || 'running';
+      let finalStatus = normalizedStatus;
       if (['idle', 'error', 'cancelled'].includes(normalizedStatus)) {
         const latestRuntime = get().threadRuntimeById[threadId] || runtime;
         const client = conversations.peek(threadId) || get().getThreadClient(threadId);
@@ -520,35 +548,61 @@ export function createSessionsChatSlice(set, get, ctx) {
           if (get().threadsById[threadId]?.status === 'cancelled' && normalizedStatus !== 'cancelled') {
             return;
           }
-          get().flushThreadTimelineCoalesce?.(threadId);
-          const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
-          const terminalPatch = responseTerminalRuntimePatch({
-            timeline: closeAssistantStream(flushedRuntime.timeline),
-            lastWorkflowState: flushedRuntime.workflowState || flushedRuntime.lastWorkflowState || null,
-            lastGoalState: flushedRuntime.goalState || flushedRuntime.lastGoalState || null,
-          });
-          if (flushedRuntime.teamState) {
-            terminalPatch.lastTeamState = completedTeamSnapshot(
-              flushedRuntime.teamState,
-              { type: 'team_deleted', status: normalizedStatus === 'error' ? 'failed' : normalizedStatus === 'cancelled' ? 'cancelled' : 'completed' },
+          // 权限/问答未决时不做 terminal 清理（保留 permissionRequests），并在下方
+          // 把 finalStatus 改为 waiting，防止 Allow 按钮因 respondToInterruption
+          // 前置条件拒绝而死锁。cancelled 不受保护（取消路径已显式清空权限/问答）。
+          const hasPendingInteraction =
+            (latestRuntime.permissionRequests || []).some(
+              (item) => !['resolved', 'expired', 'cancelled'].includes(item?.status),
+            ) ||
+            (latestRuntime.questions || []).some(
+              (item) => !['answered', 'expired', 'cancelled'].includes(item?.status),
+            );
+          if (hasPendingInteraction && ['idle', 'error'].includes(normalizedStatus)) {
+            // 跳过 terminal 清理：保留 permissionRequests/questions 不被 responseTerminalRuntimePatch 清空
+          } else {
+            get().flushThreadTimelineCoalesce?.(threadId);
+            const flushedRuntime = get().threadRuntimeById[threadId] || latestRuntime;
+            const terminalPatch = responseTerminalRuntimePatch({
+              timeline: cancelPendingTimelineActions(closeAssistantStream(flushedRuntime.timeline)),
+              lastWorkflowState: flushedRuntime.workflowState || flushedRuntime.lastWorkflowState || null,
+              lastGoalState: flushedRuntime.goalState || flushedRuntime.lastGoalState || null,
+            });
+            if (flushedRuntime.teamState) {
+              terminalPatch.lastTeamState = completedTeamSnapshot(
+                flushedRuntime.teamState,
+                { type: 'team_deleted', status: normalizedStatus === 'error' ? 'failed' : normalizedStatus === 'cancelled' ? 'cancelled' : 'completed' },
+              );
+            }
+            terminalPatch.lastSubagentReports = collectSubagentReports({
+              timeline: flushedRuntime.timeline,
+              teamState: flushedRuntime.teamState,
+              lastTeamState: terminalPatch.lastTeamState || flushedRuntime.lastTeamState,
+              memberHistoriesByName: flushedRuntime.memberHistoriesByName,
+              subagentToolCalls: flushedRuntime.subagentToolCalls,
+            });
+            get().patchThreadRuntime(
+              threadId,
+              terminalPatch,
             );
           }
-          terminalPatch.lastSubagentReports = collectSubagentReports({
-            timeline: flushedRuntime.timeline,
-            teamState: flushedRuntime.teamState,
-            lastTeamState: terminalPatch.lastTeamState || flushedRuntime.lastTeamState,
-            memberHistoriesByName: flushedRuntime.memberHistoriesByName,
-            subagentToolCalls: flushedRuntime.subagentToolCalls,
-          });
-          get().patchThreadRuntime(
-            threadId,
-            terminalPatch,
-          );
         }
       }
+      // 权限/问答未决时保留 waiting，不覆盖为 idle/error
+      if (['idle', 'error'].includes(normalizedStatus)) {
+        const beforeStatusRuntime = get().threadRuntimeById[threadId] || runtime;
+        const hasPendingInteraction =
+          (beforeStatusRuntime.permissionRequests || []).some(
+            (item) => !['resolved', 'expired', 'cancelled'].includes(item?.status),
+          ) ||
+          (beforeStatusRuntime.questions || []).some(
+            (item) => !['answered', 'expired', 'cancelled'].includes(item?.status),
+          );
+        if (hasPendingInteraction) finalStatus = 'waiting';
+      }
       get().updateThreadRecord(threadId, {
-        status: normalizedStatus,
-        unread: get().activeThreadId !== threadId && ['idle', 'error', 'cancelled'].includes(normalizedStatus),
+        status: finalStatus,
+        unread: get().activeThreadId !== threadId && ['idle', 'error', 'cancelled'].includes(finalStatus),
       });
     }
     get().appendThreadTimelineEvent(threadId, su, update);
@@ -1857,11 +1911,16 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (
         !thread ||
         thread.projectId !== projectId ||
-        thread.sessionId !== sessionId ||
-        !['running', 'waiting'].includes(thread.status)
+        thread.sessionId !== sessionId
       )
         return false;
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      // 放宽前置：status_change 竞态可能把线程改成 idle 但 permissionRequests 仍有匹配项。
+      // 只要存在匹配的待处理项且有 client，就允许响应，避免权限卡片死锁。
+      const hasMatchingPending = runtime.permissionRequests.some((item) =>
+        sessionActionItemMatches(item, interruptionId),
+      );
+      if (!['running', 'waiting'].includes(thread.status) && !hasMatchingPending) return false;
       const target = runtime.timeline.find(
         (item) => item.type === 'interruption' && sessionActionItemMatches(item, interruptionId),
       );
@@ -2516,7 +2575,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (result?.stopReason === 'cancelled') {
         get().flushThreadTimelineCoalesce?.(threadId);
         const cancelledRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-        const cancelledTimeline = closeAssistantStream(cancelledRuntime.timeline);
+        const cancelledTimeline = cancelPendingTimelineActions(closeAssistantStream(cancelledRuntime.timeline));
         const cancelledReports = collectSubagentReports({
           timeline: cancelledTimeline,
           teamState: cancelledRuntime.teamState,
@@ -2622,7 +2681,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (runIsCurrent()) {
           get().flushThreadTimelineCoalesce?.(threadId);
           const truncatedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-          const truncatedTimeline = closeAssistantStream([
+          const truncatedTimeline = cancelPendingTimelineActions(closeAssistantStream([
             ...truncatedRuntime.timeline,
             {
               id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2647,7 +2706,7 @@ export function createSessionsChatSlice(set, get, ctx) {
               locations: null,
               attachments: null,
             },
-          ]);
+          ]));
           get().patchThreadRuntime(
             threadId,
             responseTerminalRuntimePatch({
@@ -2697,7 +2756,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       // with `idle`/`success`.
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const completedTimeline = closeAssistantStream(completedRuntime.timeline);
+      const completedTimeline = cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline));
       const completedReports = collectSubagentReports({
         timeline: completedTimeline,
         teamState: completedRuntime.teamState,
@@ -2760,7 +2819,7 @@ export function createSessionsChatSlice(set, get, ctx) {
           get().patchThreadRuntime(
             threadId,
             responseTerminalRuntimePatch({
-              timeline: closeAssistantStream(flushedFailed.timeline),
+              timeline: cancelPendingTimelineActions(closeAssistantStream(flushedFailed.timeline)),
               lastSubagentReports: cancelledReports,
             }),
           );
@@ -2784,9 +2843,9 @@ export function createSessionsChatSlice(set, get, ctx) {
               ) === index,
           )
         : flushedFailedRuntime.pendingAttachments || [];
-      const failedTimeline = closeAssistantStream(
+      const failedTimeline = cancelPendingTimelineActions(closeAssistantStream(
         reduceAcpEvent(flushedFailedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
-      );
+      ));
       const failedReports = collectSubagentReports({
         timeline: failedTimeline,
         teamState: flushedFailedRuntime.teamState,

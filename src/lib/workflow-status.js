@@ -84,13 +84,17 @@ function memberList(teamState) {
 function currentTurnEntries(timeline, promptStartedAt) {
   const entries = Array.isArray(timeline) ? timeline : [];
   const startedAt = Number(promptStartedAt);
-  if (!Number.isFinite(startedAt) || startedAt <= 0) return entries;
   let start = -1;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const item = entries[index];
     if (item?.type !== 'message' || item?.role !== 'user') continue;
     const createdAt = Number(item.createdAt);
-    if (!Number.isFinite(createdAt) || createdAt >= startedAt) {
+    if (
+      !Number.isFinite(startedAt) ||
+      startedAt <= 0 ||
+      !Number.isFinite(createdAt) ||
+      createdAt >= startedAt
+    ) {
       start = index;
       break;
     }
@@ -250,10 +254,13 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     firstValue(teamSnapshot?.memberCount, teamSnapshot?.agentCount, teamSnapshot?.totalMembers, runtime.workflowState?.agentCount),
   );
   const activeThread = ['running', 'waiting', 'cancelling'].includes(threadStatus);
-  const toolsRunningCount = toolItems.filter((item) => isActive(item.status)).length;
+  // 终态回合：无活动 run、无等待权限。此时工具/条目一律不计为“运行中”，
+  // 否则取消或中断后停在非终态的工具会残留「正在执行工具」活动标签。
+  const terminal = !activeThread && !runtime.activePromptRunId && !runtime.isAwaitingResponse && !pendingPermission;
+  const toolsRunningCount = terminal ? 0 : toolItems.filter((item) => isActive(item.status)).length;
   const toolsFailedCount = toolItems.filter((item) => item.status === 'failed').length;
   const toolsCompletedCount = toolItems.filter((item) => item.status === 'completed').length;
-  const activeItems = items.filter((item) => isActive(item.status));
+  const activeItems = terminal ? [] : items.filter((item) => isActive(item.status));
   // When the panel falls back to tools-only, count tool terminal states — steps/members are empty.
   const usingToolsAsItems = !members.length && !steps.length && toolItems.length > 0;
   const failedCount = usingToolsAsItems
@@ -279,7 +286,6 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
       toolItems.find((item) => item.startedAt)?.startedAt,
     ),
   ) || null;
-  const terminal = !activeThread && !runtime.activePromptRunId && !runtime.isAwaitingResponse && !pendingPermission;
   // Visible only with real orchestration signal — not a bare phase string / leftover empty objects.
   const visible = Boolean(
     (source && (members.length > 0 || steps.length > 0 || toolItems.length > 0 || projectedGoal || source === 'workflow')) ||
@@ -362,6 +368,9 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     phase,
     progress,
     source,
+    // 回合是否已终态（无活动 run / 无等待权限）。终态时活动标签必须收敛为 null，
+    // 防止「正在执行工具」等陈旧提示残留在输入框上方。
+    terminal,
     items: members.length || steps.length ? items : toolItems,
     members,
     steps,
@@ -486,6 +495,9 @@ export function presentWorkflowActivity(status, t) {
     return t('workflow.activityGoal');
   }
   if (toolsOnly) {
+    // 终态回合（对话已完成/被取消）绝不下发「正在执行工具」——此时没有任何工具在运行。
+    // 非终态且计数为 0（工具条目暂无 running 态）时保留通用标签，避免闪烁。
+    if (model.terminal) return null;
     const count = model.toolsRunningCount || model.activeCount || 0;
     return count > 0 ? t('workflow.activityTools', { count }) : t('sessionActivity.tool');
   }

@@ -198,6 +198,11 @@ export function responseTerminalRuntimePatch(patch = {}) {
     workflowState: null,
     goalState: null,
     subagentReports: null,
+    // 终态回合必须一并清空未决的权限/问答请求：否则失败/取消后残留的 permissionRequests
+    // 会让 deriveWorkflowView 把已终态线程判定为 waiting_for_permission，且迟到中断事件
+    // 能据此把线程状态复活为 waiting。cancelSession/disconnect 已显式传 [] 覆盖，不冲突。
+    permissionRequests: [],
+    questions: [],
     // 终态保留最后一次 goal/workflow projection，供右侧面板查看结果。
     lastWorkflowState: null,
     lastGoalState: null,
