@@ -25,9 +25,9 @@ describe('electron product-state store', () => {
     return { dir, store, logs };
   }
 
-  it('round-trips save and load', () => {
+  it('round-trips save and load', async () => {
     const { store } = makeStore();
-    const saved = store.save({
+    const saved = await store.save({
       version: 1,
       projectsById: {
         'project-1': {
@@ -60,10 +60,10 @@ describe('electron product-state store', () => {
     expect(store.load().guiSettings.theme).toBe('dark');
   });
 
-  it('recovers from backup when primary JSON is corrupt', () => {
+  it('recovers from backup when primary JSON is corrupt', async () => {
     const { dir, store, logs } = makeStore();
     // First save creates primary; second save promotes primary to .bak.
-    store.save({
+    await store.save({
       projectsById: { 'project-1': { id: 'project-1', preferences: {} } },
       projectOrder: ['project-1'],
       threadsById: {},
@@ -72,7 +72,7 @@ describe('electron product-state store', () => {
       activeThreadId: null,
       guiSettings: { theme: 'light' },
     });
-    store.save({
+    await store.save({
       projectsById: { 'project-1': { id: 'project-1', preferences: {} } },
       projectOrder: ['project-1'],
       threadsById: {},
@@ -90,9 +90,9 @@ describe('electron product-state store', () => {
     expect(fs.readdirSync(dir).some((name) => name.startsWith('product-state.invalid-'))).toBe(true);
   });
 
-  it('writes atomically and keeps a backup of the previous primary file', () => {
+  it('writes atomically and keeps a backup of the previous primary file', async () => {
     const { store } = makeStore();
-    store.save({
+    await store.save({
       projectsById: {},
       projectOrder: [],
       threadsById: {},
@@ -101,7 +101,7 @@ describe('electron product-state store', () => {
       activeThreadId: null,
       guiSettings: { step: 1 },
     });
-    store.save({
+    await store.save({
       projectsById: {},
       projectOrder: [],
       threadsById: {},
@@ -129,9 +129,9 @@ describe('electron product-state store', () => {
   // L1: product-state.json must be written with 0o600 so conversation/thread
   // content is not world-readable on multi-user POSIX machines. Windows chmod is
   // a no-op so the assertion is skipped there.
-  (process.platform === 'win32' ? it.skip : it)('writes the primary file with mode 0o600 (POSIX)', () => {
+  (process.platform === 'win32' ? it.skip : it)('writes the primary file with mode 0o600 (POSIX)', async () => {
     const { store } = makeStore();
-    store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'] });
+    await store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'] });
     const stat = fs.statSync(store.stateFile);
     // Mask to permission bits only.
     expect(stat.mode & 0o777).toBe(0o600);
@@ -140,7 +140,7 @@ describe('electron product-state store', () => {
   // L3: normalizeTimelineEntry must not allocate a multi-MB string when a tiny
   // rawText is "repeated" into a huge content. The repeat-comparison is skipped
   // past the cap; the entry is returned unchanged (treated as non-repeated).
-  it('skips the repeat comparison for oversized repeated content', () => {
+  it('skips the repeat comparison for oversized repeated content', async () => {
     const { store } = makeStore();
     const rawText = 'ab';
     const hugeContent = rawText.repeat(50_000); // 100k chars, repeatCount=50000 (>1000 cap)
@@ -161,7 +161,7 @@ describe('electron product-state store', () => {
     };
     const normalized = store.load();
     // Use normalizeProductState indirectly by saving + loading.
-    store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'], threadsById: { t1: thread }, threadOrderByProject: { p1: ['t1'] } });
+    await store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'], threadsById: { t1: thread }, threadOrderByProject: { p1: ['t1'] } });
     const loaded = store.load();
     // Without the cap, content would be collapsed to 'ab' (rawText). With the cap,
     // the entry is treated as non-repeated and the huge content is preserved.

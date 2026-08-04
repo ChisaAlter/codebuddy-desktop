@@ -170,30 +170,80 @@ function createProductStateStore(userDataPath, logger = () => {}) {
     }
   }
 
-  function save(value) {
+  /** M-perf: compact serialization. No pretty-print — roughly halves both the
+   * stringify time and file size for large timelines; the temp+rename pattern in
+   * the commit helpers below preserves atomicity either way. */
+  function serialize(normalized) {
+    return `${JSON.stringify(normalized)}\n`;
+  }
+
+  /** Returns true when the incoming empty snapshot must be refused (disk has projects). */
+  function refuseEmptyOverwrite(normalized) {
+    const incomingCount = Object.keys(normalized.projectsById || {}).length;
+    if (incomingCount !== 0 || !fs.existsSync(stateFile)) return false;
+    try {
+      const existing = normalizeProductState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
+      const existingCount = Object.keys(existing.projectsById || {}).length;
+      if (existingCount > 0) {
+        logger(
+          `Refused to overwrite product-state with empty projects (disk has ${existingCount} project(s))`,
+        );
+        return true;
+      }
+    } catch (error) {
+      logger(`Product state empty-overwrite guard read failed: ${error.message}`);
+    }
+    return false;
+  }
+
+  /** M-perf: async save path. Keeps the main-process event loop unblocked while
+   * serializing+writing (timeline-heavy states used to freeze all IPC). */
+  async function save(value) {
     const normalized = normalizeProductState(value);
     // 防护：空项目快照不得覆盖磁盘上已有项目（常见于退出时 hydrate 未完成就 beforeunload flush）。
-    const incomingCount = Object.keys(normalized.projectsById || {}).length;
-    if (incomingCount === 0 && fs.existsSync(stateFile)) {
-      try {
-        const existing = normalizeProductState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
-        const existingCount = Object.keys(existing.projectsById || {}).length;
-        if (existingCount > 0) {
-          logger(
-            `Refused to overwrite product-state with empty projects (disk has ${existingCount} project(s))`,
-          );
-          return existing;
-        }
-      } catch (error) {
-        logger(`Product state empty-overwrite guard read failed: ${error.message}`);
-      }
-    }
+    if (refuseEmptyOverwrite(normalized)) return normalized;
     const tempFile = `${stateFile}.tmp`;
     const backupFile = `${stateFile}.bak`;
     fs.mkdirSync(userDataPath, { recursive: true });
     // L1: write with 0o600 so conversation/thread content is not world-readable
     // on multi-user machines. The temp+rename below preserves atomicity.
-    fs.writeFileSync(tempFile, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await fs.promises.writeFile(tempFile, serialize(normalized), { encoding: 'utf8', mode: 0o600 });
+    await commitStateFile(tempFile, backupFile);
+    return normalized;
+  }
+
+  /** Sync save path — only for the quit flow (sendSync), where the app must not
+   * exit before the snapshot lands. */
+  function saveSync(value) {
+    const normalized = normalizeProductState(value);
+    if (refuseEmptyOverwrite(normalized)) return normalized;
+    const tempFile = `${stateFile}.tmp`;
+    const backupFile = `${stateFile}.bak`;
+    fs.mkdirSync(userDataPath, { recursive: true });
+    fs.writeFileSync(tempFile, serialize(normalized), { encoding: 'utf8', mode: 0o600 });
+    commitStateFileSync(tempFile, backupFile);
+    return normalized;
+  }
+
+  async function commitStateFile(tempFile, backupFile) {
+    try {
+      if (fs.existsSync(backupFile)) await fs.promises.rm(backupFile, { force: true });
+      if (fs.existsSync(stateFile)) await fs.promises.rename(stateFile, backupFile);
+      await fs.promises.rename(tempFile, stateFile);
+      // L1: enforce 0o600 on the final file (rename may not preserve mode on all platforms).
+      try { await fs.promises.chmod(stateFile, 0o600); } catch { /* windows */ }
+    } catch (error) {
+      try {
+        if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
+          await fs.promises.copyFile(backupFile, stateFile);
+        }
+      } catch (_) {}
+      try { await fs.promises.rm(tempFile, { force: true }); } catch (_) {}
+      throw error;
+    }
+  }
+
+  function commitStateFileSync(tempFile, backupFile) {
     try {
       if (fs.existsSync(backupFile)) fs.rmSync(backupFile, { force: true });
       if (fs.existsSync(stateFile)) fs.renameSync(stateFile, backupFile);
@@ -209,10 +259,9 @@ function createProductStateStore(userDataPath, logger = () => {}) {
       try { fs.rmSync(tempFile, { force: true }); } catch (_) {}
       throw error;
     }
-    return normalized;
   }
 
-  return { load, save, stateFile };
+  return { load, save, saveSync, stateFile };
 }
 
 module.exports = {

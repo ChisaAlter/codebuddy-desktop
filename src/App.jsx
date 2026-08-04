@@ -472,16 +472,14 @@ function StatusBar() {
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
   const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
   const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
-  // Same empty-first contract as the workflow panel (deriveWorkflowView).
-  const activeThread = useStore((s) => s.threadsById?.[activeThreadId] || null);
+  // M-perf: subscribe to the scalar status only — a whole-thread selector would
+  // re-render the topbar on any thread mutation (e.g. draft persistence) even
+  // though the bar only shows the workflow highlight.
+  const activeThreadStatus = useStore((s) => s.threadsById?.[s.activeThreadId]?.status || 'idle');
   const workflowVisible = useMemo(() => {
     const runtime = activeThreadRuntime || {};
-    return presentWorkflowTopbarHighlight(
-      runtime,
-      activeThread?.status || 'idle',
-      runtime.timeline,
-    );
-  }, [activeThreadRuntime, activeThread?.status]);
+    return presentWorkflowTopbarHighlight(runtime, activeThreadStatus, runtime.timeline);
+  }, [activeThreadRuntime, activeThreadStatus]);
   const surfaceActive = Boolean(rightPanel);
 
   return (

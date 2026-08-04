@@ -854,8 +854,7 @@ export const useStore = create((set, get) => {
     return get().updateThreadRecord(get().activeThreadId, patch);
   },
 
-  setThreadDraft(value) {
-    const threadId = get().activeThreadId;
+  setThreadDraft(value, threadId = get().activeThreadId) {
     if (!threadId) return;
     const next = String(value || '');
     const current = get().threadsById[threadId]?.draft || '';

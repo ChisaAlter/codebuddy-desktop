@@ -60,7 +60,14 @@ export function defaultGuiKeybindings() {
   return Object.fromEntries(GUI_KEYBINDING_ACTIONS.map((action) => [action.id, action.defaultShortcut]));
 }
 
+// M-perf: module-level cache. The global keydown handler (capture phase, runs on
+// every keystroke including plain typing) used to re-read localStorage + JSON.parse
+// + re-normalize all shortcuts on every key press via the default parameter of
+// guiActionForShortcut. Cache the parsed bindings and invalidate on save/reset.
+let cachedGuiKeybindings = null;
+
 export function loadGuiKeybindings() {
+  if (cachedGuiKeybindings) return cachedGuiKeybindings;
   const defaults = defaultGuiKeybindings();
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -68,12 +75,17 @@ export function loadGuiKeybindings() {
     const shortcuts = new Set();
     for (const action of GUI_KEYBINDING_ACTIONS) {
       const shortcut = normalizeShortcut(stored?.[action.id]) || action.defaultShortcut;
-      if (guiShortcutValidationError(shortcut) || shortcuts.has(shortcut)) return defaults;
+      if (guiShortcutValidationError(shortcut) || shortcuts.has(shortcut)) {
+        cachedGuiKeybindings = defaults;
+        return defaults;
+      }
       normalized[action.id] = shortcut;
       shortcuts.add(shortcut);
     }
+    cachedGuiKeybindings = normalized;
     return normalized;
   } catch (_) {
+    cachedGuiKeybindings = defaults;
     return defaults;
   }
 }
@@ -91,11 +103,13 @@ export function saveGuiKeybindings(bindings) {
     normalized[action.id] = shortcut;
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+  cachedGuiKeybindings = normalized;
   window.dispatchEvent(new CustomEvent('codebuddy:gui-keybindings-changed', { detail: normalized }));
   return normalized;
 }
 
 export function resetGuiKeybindings() {
+  cachedGuiKeybindings = null;
   return saveGuiKeybindings(defaultGuiKeybindings());
 }
 

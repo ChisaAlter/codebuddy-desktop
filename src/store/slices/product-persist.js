@@ -16,8 +16,12 @@ import { terminalStateFromProject } from '../helpers/terminal-workspace-state';
 const COALESCED_TIMELINE_EVENTS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
 /** Hidden only: batch stream reduces so focus-return is one paint, not a multi-second backlog. */
 const TIMELINE_COALESCE_MS_HIDDEN = 200;
-const TIMELINE_PERSIST_MS_VISIBLE = 900;
+const TIMELINE_PERSIST_MS_VISIBLE = 1500;
 const TIMELINE_PERSIST_MS_HIDDEN = 2000;
+/** Draft-only persist debounce: long enough that normal typing never triggers a
+ * full product-state save — only a real pause in thought does. The renderer-side
+ * coalescing in persistProductState absorbs the rest. */
+const DRAFT_PERSIST_MS = 1500;
 /** Max timeline entries persisted to disk AND kept in the live runtime mirror
  * (store.js enforces the same cap on runtime.timeline). Keep in sync with
  * TIMELINE_MAX in src/store.js. */
@@ -42,6 +46,15 @@ export function createProductPersistSlice(set, get, ctx) {
     setProductStateSaveChain,
     serializePromptQueue,
   } = ctx;
+
+  // M-perf: coalescing flags for persistProductState. While one full snapshot
+  // save is queued/running, later requests only mark the chain dirty; the chain
+  // tail then runs one final save with the freshest state. Drops bursts of
+  // persist triggers (typing pauses, stream pauses, terminal output) to 1-2
+  // actual IPC round-trips instead of N full serializations.
+  let persistCoalesceBusy = false;
+  let persistCoalesceDirty = false;
+  let persistCoalesceTail = Promise.resolve(true);
 
   const takeTimelineCoalesce = (threadId) => {
     if (!threadId || !threadTimelineCoalesce) return null;
@@ -228,7 +241,7 @@ export function createProductPersistSlice(set, get, ctx) {
       threadDraftPersistTimers.delete(threadId);
       if (!get().threadsById[threadId]) return;
       await get().persistProductState();
-    }, 350);
+    }, DRAFT_PERSIST_MS);
     threadDraftPersistTimers.set(threadId, timer);
   },
 
@@ -236,26 +249,51 @@ export function createProductPersistSlice(set, get, ctx) {
     const saveProductState = window.electronAPI?.saveProductState;
     if (!saveProductState) return false;
     const silent = options?.silent === true;
+
+    // Coalesce: if a save is already queued or running, remember the state
+    // changed again and ride the tail of the chain; the tail performs one final
+    // save with the freshest state so no update is dropped.
+    if (persistCoalesceBusy) {
+      persistCoalesceDirty = true;
+      return persistCoalesceTail;
+    }
+    persistCoalesceBusy = true;
+
+    const runSave = async () => {
+      try {
+        const state = get();
+        // 未 hydrate 或空项目时不要落盘，避免退出/热杀时把真实项目列表写成空。
+        if (!state.productStateLoaded) return false;
+        const snapshot = productStateSnapshot(state);
+        const projectCount = Object.keys(snapshot.projectsById || {}).length;
+        if (projectCount === 0 && Object.keys(state.projectsById || {}).length === 0) {
+          // 允许用户真的删光项目后保存；但若从未加载过则上面已拦。
+        }
+        await saveProductState(snapshot);
+        return true;
+      } catch (error) {
+        if (!silent) set({ error: `保存项目状态失败: ${error.message}` });
+        return false;
+      }
+    };
+
     const operation = getProductStateSaveChain()
       .catch(() => false)
-      .then(async () => {
-        try {
-          const state = get();
-          // 未 hydrate 或空项目时不要落盘，避免退出/热杀时把真实项目列表写成空。
-          if (!state.productStateLoaded) return false;
-          const snapshot = productStateSnapshot(state);
-          const projectCount = Object.keys(snapshot.projectsById || {}).length;
-          if (projectCount === 0 && Object.keys(state.projectsById || {}).length === 0) {
-            // 允许用户真的删光项目后保存；但若从未加载过则上面已拦。
-          }
-          await saveProductState(snapshot);
-          return true;
-        } catch (error) {
-          if (!silent) set({ error: `保存项目状态失败: ${error.message}` });
-          return false;
+      .then(runSave)
+      .then((result) => {
+        // Requests that arrived while this save was in flight must not be lost:
+        // flush one more save with the latest state before releasing the chain.
+        if (persistCoalesceDirty) {
+          persistCoalesceDirty = false;
+          return runSave().then(() => result);
         }
+        return result;
+      })
+      .finally(() => {
+        persistCoalesceBusy = false;
       });
     setProductStateSaveChain(operation);
+    persistCoalesceTail = operation;
     return operation;
   },
 

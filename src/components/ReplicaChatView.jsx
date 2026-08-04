@@ -2329,8 +2329,55 @@ export default function ReplicaChatView() {
   const currentModelName = useStore(
     (s) => s.models.find((m) => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '',
   );
-  const input = useStore((s) => s.threadsById[s.activeThreadId]?.draft || '');
-  const setInput = useStore((s) => s.setThreadDraft);
+  // M-perf: the composer draft lives in local component state, not the global
+  // store. Typing must never rebuild `threadsById` (that re-rendered the whole
+  // sidebar/statusbar/workflow panel on every keystroke). The store stays the
+  // authority for persistence: a debounced sync lands the draft 1500ms after the
+  // last keystroke, plus immediate syncs on blur / send / thread switch.
+  const [input, setInputLocal] = useState(() => {
+    const state = useStore.getState();
+    return state.threadsById[state.activeThreadId]?.draft || '';
+  });
+  const inputRef = useRef(input);
+  inputRef.current = input;
+  const draftSyncTimerRef = useRef(null);
+  const previousThreadIdRef = useRef(useStore.getState().activeThreadId);
+  /** Sync the local draft into the store (value-short-circuited there). */
+  const syncDraftToStore = useCallback((threadId = useStore.getState().activeThreadId) => {
+    if (!threadId) return;
+    useStore.getState().setThreadDraft(inputRef.current, threadId);
+  }, []);
+  /** Local-only update + debounced store sync: typing is local, persistence is lazy. */
+  const setInput = useCallback((value) => {
+    setInputLocal(value);
+    if (draftSyncTimerRef.current) clearTimeout(draftSyncTimerRef.current);
+    draftSyncTimerRef.current = setTimeout(() => {
+      draftSyncTimerRef.current = null;
+      syncDraftToStore();
+    }, 1500);
+  }, [syncDraftToStore]);
+  const flushDraftSync = useCallback(() => {
+    if (draftSyncTimerRef.current) {
+      clearTimeout(draftSyncTimerRef.current);
+      draftSyncTimerRef.current = null;
+    }
+    syncDraftToStore();
+  }, [syncDraftToStore]);
+  // Thread switch: persist the previous thread's local draft (its debounce may
+  // not have fired yet), then restore the incoming thread's persisted draft.
+  useEffect(() => {
+    const prevThreadId = previousThreadIdRef.current;
+    previousThreadIdRef.current = activeThreadId;
+    if (prevThreadId && prevThreadId !== activeThreadId) {
+      if (draftSyncTimerRef.current) {
+        clearTimeout(draftSyncTimerRef.current);
+        draftSyncTimerRef.current = null;
+      }
+      useStore.getState().setThreadDraft(inputRef.current, prevThreadId);
+    }
+    const state = useStore.getState();
+    setInputLocal(state.threadsById[activeThreadId]?.draft || '');
+  }, [activeThreadId]);
   const [chatError, setChatError] = useState(null);
   // Non-error composer feedback (e.g. prompt was queued while busy).
   const [chatNotice, setChatNotice] = useState(null);
@@ -2703,11 +2750,19 @@ export default function ReplicaChatView() {
     ],
   );
   const slashSuggestions = useMemo(
-    () => (slashMenuDismissed ? [] : getSlashCommandSuggestions(input, availableCommands)),
+    // M-perf: return the stable EMPTY_ARRAY while dismissed so ChatComposer's
+    // React.memo never invalidates on a fresh `[]` allocation per keystroke.
+    () => (slashMenuDismissed ? EMPTY_ARRAY : getSlashCommandSuggestions(input, availableCommands)),
     [availableCommands, input, slashMenuDismissed],
   );
 
+  const lastInputRef = useRef(input);
   useEffect(() => {
+    // M-perf: ref-guard so this only fires on real draft changes (the old
+    // [input] effect re-ran its two setStates on every render where input was
+    // touched, adding an extra render pass per keystroke).
+    if (lastInputRef.current === input) return;
+    lastInputRef.current = input;
     setSelectedSlashCommandIndex(0);
     // Re-enable suggestions whenever the draft changes (including after Escape dismiss).
     setSlashMenuDismissed(false);
@@ -2903,6 +2958,10 @@ export default function ReplicaChatView() {
   }, [sendPrompt, compactState]);
 
   const onSubmit = useCallback(async () => {
+    // Make the store draft authoritative before sendPrompt reads/clears it
+    // (the send path clears the persisted draft on success and restores it on
+    // failure — the local input is aligned with the store result afterwards).
+    flushDraftSync();
     const value = input.trim();
     if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
     if (!canSend) {
@@ -2955,11 +3014,17 @@ export default function ReplicaChatView() {
       // Enter/click re-submit the same prompt). Also clear the visual flag.
       setSendLaunchInFlight(false);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
+      // Align the local draft with the store result: success cleared it, a
+      // failed send restored it (possibly merged with the failed draft).
+      if (isCurrent()) {
+        setInputLocal(useStore.getState().threadsById[threadId]?.draft || '');
+      }
     }
   }, [
     activeProjectId,
     activeThreadId,
     canSend,
+    flushDraftSync,
     input,
     pendingAttachments.length,
     scrollTranscriptToBottom,
@@ -3419,6 +3484,7 @@ export default function ReplicaChatView() {
         selectSlashCommand={selectSlashCommand}
         input={input}
         setInput={setInput}
+        flushDraftSync={flushDraftSync}
         handlePaste={handlePaste}
         handleKeyDown={handleKeyDown}
         chooseAttachments={chooseAttachments}
@@ -3502,6 +3568,7 @@ const ChatComposer = React.memo(function ChatComposer({
   selectSlashCommand,
   input,
   setInput,
+  flushDraftSync,
   handlePaste,
   handleKeyDown,
   chooseAttachments,
@@ -3822,6 +3889,9 @@ const ChatComposer = React.memo(function ChatComposer({
             rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            // Blur = the user left the composer (e.g. clicked another session):
+            // persist the draft immediately instead of waiting for the debounce.
+            onBlur={flushDraftSync}
             onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             placeholder={

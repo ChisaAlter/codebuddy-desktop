@@ -29,7 +29,7 @@ function ArchiveIcon() {
   );
 }
 
-export function ProjectSessionTree({
+export const ProjectSessionTree = React.memo(function ProjectSessionTree({
   projectsById,
   projectOrder,
   threadsById,
@@ -409,6 +409,6 @@ export function ProjectSessionTree({
       />
     </div>
   );
-}
+});
 
 export default ProjectSessionTree;

@@ -2886,10 +2886,55 @@ ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => 
 });
 
 ipcMain.handle('productState:load', () => productStateStore.load());
-ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));
+
+// M-perf: coalesce product-state saves in an 800ms window. Bursts of persist
+// triggers (typing pauses, stream pauses, terminal output) produce one disk
+// write instead of N — and, crucially, the main-process event loop is never
+// blocked by a synchronous writeFileSync while other IPC (keystrokes, route
+// switches) is queued. Only the freshest snapshot of a window is kept; the
+// returned promise resolves when the batch containing this snapshot has landed.
+const PRODUCT_STATE_SAVE_COALESCE_MS = 800;
+let productStateSaveTimer = null;
+let productStateSavePending = null;
+let productStateSaveChain = Promise.resolve(null);
+let productStateSaveWindowResolve = null;
+
+ipcMain.handle('productState:save', (_event, state) => {
+  productStateSavePending = state;
+  if (productStateSaveTimer) return productStateSaveChain;
+  const windowPromise = new Promise((resolve) => {
+    productStateSaveWindowResolve = resolve;
+  });
+  productStateSaveTimer = setTimeout(() => {
+    productStateSaveTimer = null;
+    const snapshot = productStateSavePending;
+    productStateSavePending = null;
+    const operation = productStateSaveChain
+      .catch(() => null)
+      .then(() => productStateStore.save(snapshot))
+      .catch((error) => {
+        logStartup(`Product state save failed: ${error.message}`);
+        return null;
+      });
+    productStateSaveChain = operation;
+    const resolveWindow = productStateSaveWindowResolve;
+    productStateSaveWindowResolve = null;
+    if (resolveWindow) resolveWindow(operation);
+  }, PRODUCT_STATE_SAVE_COALESCE_MS);
+  return windowPromise.then(() => productStateSaveChain);
+});
+
 ipcMain.on('productState:saveSync', (event, state) => {
+  // The sync quit-path save carries the freshest state: cancel any coalesced
+  // async save that is still pending so it cannot later overwrite the file with
+  // a stale snapshot (async saves run through the same .tmp/.bak rename dance).
+  if (productStateSaveTimer) {
+    clearTimeout(productStateSaveTimer);
+    productStateSaveTimer = null;
+  }
+  productStateSavePending = null;
   try {
-    event.returnValue = { ok: true, state: productStateStore.save(state) };
+    event.returnValue = { ok: true, state: productStateStore.saveSync(state) };
   } catch (error) {
     logStartup(`Synchronous product state save failed: ${error.message}`);
     event.returnValue = { ok: false, error: error.message };

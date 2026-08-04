@@ -670,7 +670,7 @@ export default function ReplicaSidebar() {
     return () => document.removeEventListener('pointerdown', onDoc, true);
   }, [projectMenuOpenId]);
 
-  const activateSidebarThread = async (threadId) => {
+  const activateSidebarThread = React.useCallback(async (threadId) => {
     setRoute('chat');
     try {
       return await activateThread(threadId);
@@ -679,9 +679,9 @@ export default function ReplicaSidebar() {
       console.error('[sidebar] activateThread failed', threadId, error);
       return false;
     }
-  };
+  }, [activateThread, setRoute]);
 
-  const createProjectThread = async (projectId) => {
+  const createProjectThread = React.useCallback(async (projectId) => {
     setRoute('chat');
     const state = useStore.getState();
     // 新建会话前先确保项目在侧栏中展开，便于立刻看到新会话
@@ -695,9 +695,9 @@ export default function ReplicaSidebar() {
       return activateProject(projectId, { preferNewThread: true });
     }
     return newSession();
-  };
+  }, [activateProject, newSession, setProjectSidebarExpanded, setRoute]);
 
-  const renameSidebarThread = async (threadId, title) => {
+  const renameSidebarThread = React.useCallback(async (threadId, title) => {
     const state = useStore.getState();
     const thread = state.threadsById[threadId];
     if (thread?.projectId !== state.activeProjectId) {
@@ -705,11 +705,18 @@ export default function ReplicaSidebar() {
       if (!activated) return false;
     }
     return renameThread(threadId, title);
-  };
+  }, [activateSidebarThread, renameThread]);
 
-  const deleteSidebarThread = async (threadId) => {
+  const deleteSidebarThread = React.useCallback(async (threadId) => {
     return deleteThread(threadId);
-  };
+  }, [deleteThread]);
+
+  // M-perf: stable callback so ProjectSessionTree (memoized) does not re-render
+  // when the sidebar re-renders for unrelated reasons (route, collapse state).
+  const openProjectMenu = React.useCallback((event, project) => {
+    setProjectMenuPosition({ x: event.clientX, y: event.clientY });
+    setProjectMenuOpenId(project.id);
+  }, []);
 
   const renderNavItem = (item) => {
     const isActive = route === item.id;
@@ -814,10 +821,7 @@ export default function ReplicaSidebar() {
                 onRenameThread={renameSidebarThread}
                 onDeleteThread={deleteSidebarThread}
                 onCreateProjectThread={createProjectThread}
-                onOpenProjectMenu={(event, project) => {
-                  setProjectMenuPosition({ x: event.clientX, y: event.clientY });
-                  setProjectMenuOpenId(project.id);
-                }}
+                onOpenProjectMenu={openProjectMenu}
               />
               {projectNavigationError ? (
                 <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{projectNavigationError}</div>

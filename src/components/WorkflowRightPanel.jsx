@@ -16,6 +16,11 @@ function useTranslate() {
   }, [locale]);
 }
 
+// M-perf: stable empty ref for scalar selectors (a fresh `[]` per evaluation
+// defeats Zustand's Object.is check and re-renders the panel on every store
+// mutation, e.g. each draft persistence).
+const EMPTY_TIMELINE = [];
+
 function statusColor(status) {
   if (status === 'failed') return 'var(--color-accent-red)';
   if (status === 'cancelled') return 'var(--color-text-muted)';
@@ -209,11 +214,15 @@ export default function WorkflowRightPanel({ payload = null }) {
   const activeThreadId = useStore((state) => state.activeThreadId);
   const threadId = payload?.threadId || activeThreadId;
   const runtime = useStore((state) => state.threadRuntimeById?.[threadId] || (threadId === state.activeThreadId ? state : null) || {});
-  const thread = useStore((state) => state.threadsById?.[threadId]);
-  const timeline = useMemo(() => resolveThreadTimeline(runtime.timeline, thread?.timeline), [runtime.timeline, thread?.timeline]);
+  // M-perf: scalar selectors only — a whole-thread selector re-renders the panel
+  // on every thread mutation (e.g. each draft persistence) even though only the
+  // status and timeline are consumed here.
+  const threadStatus = useStore((state) => state.threadsById?.[threadId]?.status || 'idle');
+  const threadTimeline = useStore((state) => state.threadsById?.[threadId]?.timeline || EMPTY_TIMELINE);
+  const timeline = useMemo(() => resolveThreadTimeline(runtime.timeline, threadTimeline), [runtime.timeline, threadTimeline]);
   const view = useMemo(
-    () => deriveWorkflowView({ runtime, threadStatus: thread?.status || 'idle', timeline }),
-    [runtime, thread?.status, timeline],
+    () => deriveWorkflowView({ runtime, threadStatus, timeline }),
+    [runtime, threadStatus, timeline],
   );
   const status = view;
   const goalState = useMemo(() => runtime.goalState || runtime.lastGoalState || goalsFromTimeline(timeline), [runtime.goalState, runtime.lastGoalState, timeline]);

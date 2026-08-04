@@ -88,6 +88,8 @@ import ReplicaChatView, {
 useStore.getState = () => ({
   activeProjectId: 'project-1',
   activeThreadId: 'thread-1',
+  threadsById: { 'thread-1': { id: 'thread-1', projectId: 'project-1', draft: mocks.draft, status: mocks.threadStatus } },
+  setThreadDraft: vi.fn(),
 });
 
 describe('ReplicaChatView cancellation', () => {
@@ -138,8 +140,16 @@ describe('ReplicaChatView cancellation', () => {
     );
 
     await act(async () => root.render(React.createElement(ReplicaChatView)));
-    mocks.draft = '停止测试';
-    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    // M-perf: the composer draft is local component state now — type into the
+    // textarea (React-controlled) instead of mutating a store mock.
+    const nativeTextareaSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      'value',
+    ).set;
+    await act(async () => {
+      nativeTextareaSetter.call(container.querySelector('textarea'), '停止测试');
+      container.querySelector('textarea').dispatchEvent(new Event('input', { bubbles: true }));
+    });
     await act(async () => {
       container.querySelector('button[title="发送"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
