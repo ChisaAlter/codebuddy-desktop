@@ -96,6 +96,14 @@ node scripts/test/manual-transport-reconnect-gui.cjs
 
 该脚本启动真实 Electron 窗口，通过 CDP 在渲染进程执行 8 项验收（有限重连、restore、401、分类、kill switch、无重发、delayed rebind、设置默认值）。截图与 JSON 报告写入 `gui-test-screenshots/transport-reconnect-*`。
 
+#### 实机性能验收（可选，UI 热路径改动后执行）
+
+```bash
+node scripts/test/manual-perf-gui.cjs
+```
+
+该脚本启动真实 Electron 窗口，通过 CDP 测量并验收：打字不重建 `threadsById`（本地输入状态）、1500ms 草稿防抖窗口内草稿不落 store（到期后持久化一次）、keep-alive 视图二次进入快于首次挂载、打字草稿跨路由切换保留。截图与 JSON 报告写入 `gui-test-screenshots/perf-*`。
+
 ## 发布门禁
 
 发布或跨 Electron 运行时变更执行：
