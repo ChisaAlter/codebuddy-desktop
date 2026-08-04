@@ -58,4 +58,48 @@ describe('WorkflowFloatingPanelHost', () => {
     expect(store.closeWorkflowPanel).toHaveBeenCalledTimes(1);
     root.unmount();
   });
+
+  it('goal-only run does not invent a fake subagent row from the goal title', async () => {
+    const now = Date.now();
+    store.threadRuntimeById = {
+      'thread-1': {
+        timeline: [],
+        activePromptRunId: 'run-goal',
+        promptStartedAt: now - 8000,
+        goalState: {
+          mode: 'goal',
+          goalsById: {
+            g1: {
+              goalId: 'g1',
+              title: '进行代码的全部检查，落实文档',
+              status: 'running',
+              message: '目标进行中',
+              updatedAt: now,
+            },
+          },
+          activeGoalId: 'g1',
+          eventCount: 1,
+          updatedAt: now,
+        },
+        teamState: null,
+        memberHistoriesByName: {},
+      },
+    };
+    store.threadsById = { 'thread-1': { id: 'thread-1', status: 'running', timeline: [] } };
+
+    const { createRoot } = await import('react-dom/client');
+    const root = createRoot(container);
+    await act(async () => root.render(React.createElement(WorkflowFloatingPanelHost)));
+
+    expect(container.querySelector('[data-testid="workflow-current-goal"]')).toBeTruthy();
+    expect(container.textContent).toContain('进行代码的全部检查，落实文档');
+    // Synthetic goal step must not appear under 子代理
+    expect(container.querySelector('[data-testid="workflow-members"]')).toBeNull();
+    expect(container.textContent).not.toContain('暂无任务详情');
+    expect(container.textContent).not.toMatch(/1\/1\s*项进行中/);
+    // Overview keeps a generic label; goal title only once in GoalCard
+    const titleHits = container.textContent.split('进行代码的全部检查，落实文档').length - 1;
+    expect(titleHits).toBe(1);
+    root.unmount();
+  });
 });

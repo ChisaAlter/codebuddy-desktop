@@ -8,6 +8,7 @@ import { subagentMetadata } from '../../src/lib/acp-workflow-events';
 import { collectSubagentReports, isBareAgentIdentity } from '../../src/lib/subagent-report';
 import { formatToolCollapsedSummary } from '../../src/lib/tool-output-format';
 import {
+  deriveWorkflowView,
   normalizeWorkflowStatus,
   presentWorkflowActivity,
   presentWorkflowAutoOpen,
@@ -74,25 +75,31 @@ describe('QA contract: reports and task summary', () => {
 
 describe('QA contract: workflow autoOpen / tools-only', () => {
   it('tools-only TaskCreate does not auto-open', () => {
+    const runtime = { activePromptRunId: 'run-1', promptStartedAt: 1000 };
+    const timeline = [
+      { type: 'message', role: 'user', content: 'go', createdAt: 1000 },
+      {
+        type: 'tool_call',
+        toolCallId: 't1',
+        title: 'TaskCreate',
+        status: 'in_progress',
+        rawInput: { description: '写样式' },
+        createdAt: 1100,
+      },
+    ];
     const status = normalizeWorkflowStatus({
       threadStatus: 'running',
-      runtime: { activePromptRunId: 'run-1', promptStartedAt: 1000 },
-      timeline: [
-        { type: 'message', role: 'user', content: 'go', createdAt: 1000 },
-        {
-          type: 'tool_call',
-          toolCallId: 't1',
-          title: 'TaskCreate',
-          status: 'in_progress',
-          rawInput: { description: '写样式' },
-          createdAt: 1100,
-        },
-      ],
+      runtime,
+      timeline,
     });
     expect(status.source).toBe('tools');
     expect(status.shouldAutoOpen).toBe(false);
     expect(presentWorkflowAutoOpen(status, { runId: 'run-1' })).toBe(false);
     expect(status.capabilityMessage).toBe('tools-only');
+    const view = deriveWorkflowView({ threadStatus: 'running', runtime, timeline });
+    expect(view.empty).toBe(true);
+    expect(view.toolsOnly).toBe(true);
+    expect(presentWorkflowAutoOpen(view, { runId: 'run-1' })).toBe(false);
   });
 
   it('team source may auto-open unless dismissed', () => {

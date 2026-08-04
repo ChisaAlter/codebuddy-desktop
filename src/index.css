@@ -917,6 +917,63 @@ select {
 .workflow-right-panel__member-line { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .workflow-right-panel__member-name { min-width: 0; flex: 1; overflow: hidden; color: var(--color-text-primary); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-right-panel__member-detail { display: block; overflow: hidden; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
+/* Tools-only list: readable name + path, not cramped member chrome */
+.workflow-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 8px;
+  max-height: min(420px, 52vh);
+  overflow-y: auto;
+}
+.workflow-tool-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+  border-top: 1px solid var(--color-border-muted);
+  padding: 7px 0;
+}
+.workflow-tool-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.workflow-tool-row .workflow-status-dot {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+.workflow-tool-row__main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.workflow-tool-row__line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.workflow-tool-row__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-tool-row__detail {
+  display: block;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .workflow-right-panel__member-id { overflow: hidden; margin: 2px 0 0 14px; color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-right-panel__report-list { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
 .workflow-right-panel__report { border-top: 1px solid var(--color-border-muted); padding-top: 7px; }
@@ -1038,7 +1095,11 @@ select {
 .workflow-floating-panel-host.is-closing { pointer-events: none; transform: translate3d(0, -10px, 0) scale(0.98); opacity: 0; }
 .workflow-floating-panel-host.is-open,
 .workflow-floating-panel-host.is-opening { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
-.workflow-floating-panel-host > .workflow-right-panel { min-height: 0; }
+.workflow-floating-panel-host > .workflow-right-panel {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
 
 /* Topbar surface / workflow icon buttons */
 .topbar-icon-btn {
@@ -1410,7 +1471,7 @@ select {
 
 
 .thinking-block {
-  margin-bottom: 12px;
+  margin-bottom: 4px;
   overflow: hidden;
 }
 .thinking-block-header {
@@ -1460,6 +1521,7 @@ select {
 }
 .execution-group {
   min-width: 0;
+  margin-bottom: 4px;
 }
 .tool-call-title {
   color: var(--color-text-secondary);
@@ -1499,11 +1561,14 @@ select {
   background: color-mix(in srgb, var(--color-accent-green) 70%, transparent);
 }
 
-/* Assistant prose lives inside WebUI-style outer mb-2; no extra bottom margin. */
+/* Assistant prose lives inside outer mb-2 turn wrapper; no extra bottom margin. */
 .chat-assistant-message {
   margin-bottom: 0;
 }
-/* Standalone thinking (before tools) still sits above execution chrome tightly. */
+/* Consecutive assistant fragments / tools stack tightly inside one turn. */
+[data-chat-role='assistant'] + [data-chat-role='assistant'] {
+  margin-top: 2px;
+}
 .thinking-block + .execution-group,
 .execution-group + [data-chat-role='assistant'],
 [data-chat-role='assistant'] + .execution-group {

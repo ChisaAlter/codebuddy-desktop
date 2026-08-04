@@ -114,10 +114,16 @@ function toolStep(item, index) {
         payload.message,
         '',
       );
+  // Prefer short toolName over long display titles that already embed paths.
+  const toolName = firstValue(item?.toolName, item?.name, item?.kind, '');
+  const title = firstValue(item?.title, toolName, 'Tool');
+  const shortName = toolName
+    ? String(toolName).replace(/Tool$/i, '')
+    : String(title).split(/\s+/)[0] || 'Tool';
   return {
     id: firstValue(item?.toolCallId, item?.id, `tool-${index + 1}`),
-    name: firstValue(item?.title, item?.toolName, item?.name, item?.kind, 'Tool'),
-    task: summary,
+    name: shortName,
+    task: summary || (title !== shortName ? title : ''),
     status: normalizeStatus(item?.status, 'running'),
     progress: null,
     startedAt: Number(item?.createdAt) || null,
@@ -245,9 +251,17 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   );
   const activeThread = ['running', 'waiting', 'cancelling'].includes(threadStatus);
   const toolsRunningCount = toolItems.filter((item) => isActive(item.status)).length;
+  const toolsFailedCount = toolItems.filter((item) => item.status === 'failed').length;
+  const toolsCompletedCount = toolItems.filter((item) => item.status === 'completed').length;
   const activeItems = items.filter((item) => isActive(item.status));
-  const failedCount = items.filter((item) => item.status === 'failed').length;
-  const completedCount = items.filter((item) => item.status === 'completed').length;
+  // When the panel falls back to tools-only, count tool terminal states — steps/members are empty.
+  const usingToolsAsItems = !members.length && !steps.length && toolItems.length > 0;
+  const failedCount = usingToolsAsItems
+    ? toolsFailedCount
+    : items.filter((item) => item.status === 'failed').length;
+  const completedCount = usingToolsAsItems
+    ? toolsCompletedCount
+    : items.filter((item) => item.status === 'completed').length;
   const progress = normalizeProgress(runtime.progress || runtime.workflowState?.progress || projectedGoal?.progress);
   const phase = pendingPermission
     ? 'waiting_for_permission'
@@ -358,6 +372,8 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
     activeCount: members.length || steps.length ? activeItems.length : toolsRunningCount,
     completedCount,
     failedCount,
+    toolsCompletedCount,
+    toolsFailedCount,
     startedAt,
     durationMs: startedAt ? Math.max(0, (active ? now : Number(runtime.completedAt) || now) - startedAt) : 0,
     teamName: firstValue(teamSnapshot?.teamName, teamSnapshot?.name, runtime.workflowState?.name, ''),
@@ -381,14 +397,15 @@ export function workflowHasActivity(status) {
 
 /**
  * Single product view-model for topbar / floating panel / activity strip.
- * Empty-first contract:
+ * Empty-first + orchestration-only panel contract (hybrid A):
  * - kind==='empty' ⇒ no status chrome, no phase chrome, no topbar highlight
  * - never emit status='completed' with visible=false
+ * - ordinary tools-only turns stay empty for the floating panel (process lives in chat)
+ * - panel/topbar only light up for real orchestration: team / goal / workflow / task steps / permission / reports
  */
 export function deriveWorkflowView({ runtime = {}, threadStatus = 'idle', timeline, now = Date.now() } = {}) {
   const base = normalizeWorkflowStatus({ runtime, threadStatus, timeline, now });
   const hasMembers = Array.isArray(base.members) && base.members.length > 0;
-  const hasTools = Array.isArray(base.tools) && base.tools.length > 0;
   const hasSteps = Array.isArray(base.steps) && base.steps.length > 0;
   const hasGoal = Boolean(base.currentGoal);
   const hasPermissionPhase = base.phase === 'waiting_for_permission';
@@ -398,24 +415,34 @@ export function deriveWorkflowView({ runtime = {}, threadStatus = 'idle', timeli
       ? runtime.lastSubagentReports
       : [];
   const hasReports = reports.length > 0;
+  const hasWorkflowAggregate = base.source === 'workflow' || Boolean(runtime.workflowState || runtime.lastWorkflowState);
 
+  // Panel kinds — tools-only is intentionally not a panel kind.
   let kind = 'empty';
   if (hasPermissionPhase) kind = 'permission';
-  else if (base.source === 'team' && hasMembers) kind = 'team';
+  else if (base.source === 'team' && (hasMembers || hasReports || base.active)) kind = 'team';
   else if (base.source === 'goal' || hasGoal) kind = 'goal';
-  else if (base.source === 'workflow') kind = 'workflow';
-  else if (base.source === 'tools' || hasTools) kind = 'tools';
+  else if (hasWorkflowAggregate) kind = 'workflow';
   else if (base.source === 'timeline' && hasSteps) kind = 'timeline';
-  else if (hasReports && (hasMembers || base.active)) kind = 'team';
+  else if (hasReports) kind = 'team';
   else kind = 'empty';
 
-  const empty = kind === 'empty' || (!base.visible && !hasGoal && !hasMembers && !hasTools && !hasSteps && !hasPermissionPhase);
+  const empty = kind === 'empty';
   const resolvedKind = empty ? 'empty' : kind;
 
   // Hard invariants for chrome
   const status = empty ? 'idle' : base.status === 'idle' && base.active ? 'running' : base.status;
   const phase = empty ? '' : base.phase || '';
-  const highlightTopbar = !empty && (base.active || hasMembers || hasGoal || hasReports || status === 'failed');
+  const highlightTopbar = !empty && (
+    base.active ||
+    hasMembers ||
+    hasGoal ||
+    hasReports ||
+    status === 'failed' ||
+    kind === 'team' ||
+    kind === 'goal' ||
+    kind === 'workflow'
+  );
   const showStatus = !empty && status && status !== 'idle';
   const showPhase = !empty && Boolean(phase);
 
@@ -428,6 +455,8 @@ export function deriveWorkflowView({ runtime = {}, threadStatus = 'idle', timeli
     phase,
     kind: resolvedKind,
     empty,
+    // Surface tools-only for debugging/tests without treating it as panel content.
+    toolsOnly: base.source === 'tools' || base.capabilityMessage === 'tools-only',
     highlightTopbar,
     showStatus,
     showPhase,
@@ -437,9 +466,17 @@ export function deriveWorkflowView({ runtime = {}, threadStatus = 'idle', timeli
 
 /** Presenter: one-line chat activity label keys/params (caller translates). */
 export function presentWorkflowActivity(status, t) {
-  const view = status?.kind ? status : null;
-  const model = view || status;
-  if (!model || model.empty || !workflowHasActivity(model)) return null;
+  const model = status;
+  if (!model) return null;
+  // Chat activity may still describe tools-only process; the floating panel stays empty for that case.
+  const toolsOnly = Boolean(
+    model.toolsOnly ||
+      model.source === 'tools' ||
+      model.kind === 'tools' ||
+      model.phase === 'tool_executing',
+  );
+  if (model.empty && !toolsOnly) return null;
+  if (!model.empty && !toolsOnly && !workflowHasActivity(model)) return null;
   if (model.source === 'team' && (model.activeCount || model.members?.length)) {
     return t('workflow.activityAgents', { count: model.activeCount || model.members.length });
   }
@@ -448,7 +485,7 @@ export function presentWorkflowActivity(status, t) {
     if (Number.isFinite(percent)) return t('workflow.activityGoalPercent', { percent: Math.round(percent) });
     return t('workflow.activityGoal');
   }
-  if (model.source === 'tools' || model.phase === 'tool_executing' || model.kind === 'tools') {
+  if (toolsOnly) {
     const count = model.toolsRunningCount || model.activeCount || 0;
     return count > 0 ? t('workflow.activityTools', { count }) : t('sessionActivity.tool');
   }

@@ -174,6 +174,36 @@ function GoalLog({ timeline, t }) {
   );
 }
 
+function overviewStats({ status, elapsed, totalTokens, t, hasGoal = false }) {
+  // Real agents / non-goal steps only — never count synthetic goal rows as "1/1 项".
+  const members = Array.isArray(status.members) ? status.members : [];
+  const steps = (Array.isArray(status.steps) ? status.steps : []).filter(
+    (item) => item?.kind && item.kind !== 'tool' && item.kind !== 'goal',
+  );
+  const itemCount = members.length || steps.length;
+  const activeCount = members.length
+    ? members.filter((item) => !['completed', 'failed', 'cancelled', 'idle'].includes(item.status)).length
+    : steps.filter((item) => !['completed', 'failed', 'cancelled', 'idle'].includes(item.status)).length;
+  const parts = [];
+  if (elapsed) parts.push({ key: 'elapsed', text: `${t('workflow.elapsedLabel')}: ${elapsed}` });
+  if (itemCount > 0) {
+    parts.push({ key: 'active', text: `${activeCount}/${itemCount} ${t('workflow.activeShort')}` });
+  } else if (hasGoal) {
+    // Goal-only: compact progress, not fake member counts.
+    const percent = status.progress?.percent;
+    if (Number.isFinite(percent)) {
+      parts.push({ key: 'goal', text: t('workflow.activityGoalPercent', { percent: Math.round(percent) }) });
+    } else {
+      parts.push({ key: 'goal', text: t('workflow.activityGoal') });
+    }
+  }
+  if (totalTokens) parts.push({ key: 'tokens', text: `${totalTokens.toLocaleString()} ${t('workflow.tokens')}` });
+  if (status.toolCallCount) {
+    parts.push({ key: 'tools', text: `${status.toolCallCount} ${t('workflow.tools')}` });
+  }
+  return parts;
+}
+
 export default function WorkflowRightPanel({ payload = null }) {
   const t = useTranslate();
   const activeThreadId = useStore((state) => state.activeThreadId);
@@ -193,7 +223,8 @@ export default function WorkflowRightPanel({ payload = null }) {
   const startedAt = status.startedAt;
   const elapsed = startedAt ? formatElapsed(status.active ? Date.now() - startedAt : status.durationMs, t) : '';
   const memberHistories = runtime.memberHistoriesByName || {};
-  const members = status.members.length ? status.members : status.items.filter((item) => item.kind !== 'tool');
+  // Only real team/subagent members. Never promote synthetic goal steps (or tools) into "子代理".
+  const members = Array.isArray(status.members) ? status.members : [];
   const reports = runtime.subagentReports || runtime.lastSubagentReports || collectSubagentReports({
     timeline,
     teamState: runtime.teamState,
@@ -202,54 +233,59 @@ export default function WorkflowRightPanel({ payload = null }) {
     subagentToolCalls: runtime.subagentToolCalls,
   });
   const totalTokens = Number(status.tokenTotals?.inputTokens || 0) + Number(status.tokenTotals?.outputTokens || 0);
+  const stats = overviewStats({ status, elapsed, totalTokens, t, hasGoal: Boolean(goal || goalModeWaiting) });
+  // Overview is session chrome (elapsed/status). Goal title lives only in GoalCard;
+  // members live only in the members section — never reuse goal text as a fake agent.
+  const overviewTitle = status.teamName || t('workflow.title');
 
-  // Empty-first: kind==='empty' draws only empty body — never status/phase chrome.
-  const empty = Boolean(view.empty) && !goal && !goalModeWaiting;
+  // Empty-first + orchestration-only: tools-only turns render empty (process stays in chat).
+  const empty = (Boolean(view.empty) || Boolean(view.toolsOnly)) && !goal && !goalModeWaiting && !members.length && !reports.length;
   const phaseLabel = (() => {
     if (!view.showPhase || !status.phase) return '';
+    // Goal-only runs often carry a generic phase that just restates "running".
+    if ((goal || goalModeWaiting) && !members.length && !status.teamName) return '';
     const key = `workflow.phase.${status.phase}`;
     const label = t(key);
     return label && label !== key ? label : t('workflow.phase.unknown');
   })();
 
   return (
-    <div className="workflow-right-panel" data-testid="workflow-right-panel" data-workflow-kind={view.kind}>
+    <div className="workflow-right-panel" data-testid="workflow-right-panel" data-workflow-kind={view.kind} data-tools-only={view.toolsOnly ? 'true' : 'false'}>
       <div className="workflow-right-panel__body">
         {empty ? (
           <section className="workflow-right-panel__section workflow-right-panel__empty" data-testid="workflow-empty-state">
-            {t('workflow.empty')}
+            <div>{t('workflow.empty')}</div>
+            <div className="workflow-right-panel__muted" style={{ marginTop: 6 }}>{t('workflow.emptyHint')}</div>
           </section>
         ) : (
           <>
         <section className="workflow-right-panel__section workflow-right-panel__overview">
           <div className="workflow-right-panel__overview-title">
             <ListTree size={15} aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">{status.teamName || (goal ? goal.title : t('workflow.title'))}</span>
+            <span className="min-w-0 flex-1 truncate">{overviewTitle}</span>
             {view.showStatus ? (
               <span className="workflow-right-panel__status" style={{ color: statusColor(status.status) }}>{statusText(status.status, t)}</span>
             ) : null}
           </div>
           {phaseLabel ? <div className="workflow-right-panel__summary">{phaseLabel}</div> : null}
-          <div className="workflow-right-panel__stats">
-            {elapsed ? <span>{t('workflow.elapsedLabel')}: {elapsed}</span> : null}
-            {status.items.length ? <span>{status.activeCount}/{status.items.length} {t('workflow.activeShort')}</span> : null}
-            {totalTokens ? <span>{totalTokens.toLocaleString()} {t('workflow.tokens')}</span> : null}
-            {status.toolCallCount ? <span>{status.toolCallCount} {t('workflow.tools')}</span> : null}
-          </div>
-          {status.progress?.percent != null ? (
+          {stats.length ? (
+            <div className="workflow-right-panel__stats">
+              {stats.map((part) => <span key={part.key}>{part.text}</span>)}
+            </div>
+          ) : null}
+          {status.progress?.percent != null && members.length > 0 ? (
             <div className="workflow-right-panel__progress">
               <div className="progress-bar"><div className="progress-fill" style={{ width: `${status.progress.percent}%` }} /></div>
               <span>{progressText(status.progress, t)}</span>
             </div>
           ) : null}
           {status.capabilityMessage === 'aggregate-only' ? <div className="workflow-right-panel__muted">{t('workflow.aggregateOnly')}</div> : null}
-          {status.capabilityMessage === 'tools-only' ? <div className="workflow-right-panel__muted">{t('workflow.toolsOnly')}</div> : null}
         </section>
 
         <GoalCard goal={goal} t={t} waitingOnly={goalModeWaiting} />
 
         {members.length ? (
-          <section className="workflow-right-panel__section">
+          <section className="workflow-right-panel__section" data-testid="workflow-members">
             <div className="workflow-right-panel__section-title">
               <span>{t('workflow.members')}</span>
               <span className="workflow-right-panel__count">{members.length}</span>
@@ -258,29 +294,7 @@ export default function WorkflowRightPanel({ payload = null }) {
               {members.map((member) => <MemberRow key={member.id} member={member} history={memberHistories[member.name]} t={t} />)}
             </div>
           </section>
-        ) : Array.isArray(status.tools) && status.tools.length ? (
-          <section className="workflow-right-panel__section" data-testid="workflow-tools-only">
-            <div className="workflow-right-panel__section-title">
-              <span>{t('workflow.tools')}</span>
-              <span className="workflow-right-panel__count">{status.tools.length}</span>
-            </div>
-            <div className="workflow-right-panel__members">
-              {status.tools.slice(-12).map((tool) => (
-                <div key={tool.id} className="workflow-right-panel__member">
-                  <span className="workflow-right-panel__member-name" title={tool.name}>{tool.name}</span>
-                  <span className="workflow-right-panel__status">{statusText(tool.status, t)}</span>
-                  {tool.task ? (
-                    <div className="workflow-right-panel__member-detail" title={tool.task}>{tool.task}</div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : goal || goalModeWaiting ? (
-          <section className="workflow-right-panel__section workflow-right-panel__empty">
-            {t('goal.waitingProgress')}
-          </section>
-        ) : (
+        ) : goal || goalModeWaiting || reports.length ? null : (
           <section className="workflow-right-panel__section workflow-right-panel__empty">
             {t('workflow.waitingForSteps')}
           </section>

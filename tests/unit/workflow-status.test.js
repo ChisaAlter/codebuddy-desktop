@@ -122,33 +122,43 @@ describe('workflow status normalization', () => {
   });
 
   it('does not auto-open for tools-only TaskCreate spam', () => {
+    const runtime = { activePromptRunId: 'run-tools', promptStartedAt: 2000 };
+    const timeline = [
+      { type: 'message', role: 'user', content: '实现', createdAt: 2000 },
+      {
+        type: 'tool_call',
+        toolCallId: 't1',
+        title: 'TaskCreate',
+        status: 'completed',
+        rawInput: { description: '写 token' },
+        createdAt: 2100,
+      },
+      {
+        type: 'tool_call',
+        toolCallId: 't2',
+        title: 'TaskCreate',
+        status: 'in_progress',
+        rawInput: { description: '写样式' },
+        createdAt: 2200,
+      },
+    ];
     const status = normalizeWorkflowStatus({
       threadStatus: 'running',
-      runtime: { activePromptRunId: 'run-tools', promptStartedAt: 2000 },
-      timeline: [
-        { type: 'message', role: 'user', content: '实现', createdAt: 2000 },
-        {
-          type: 'tool_call',
-          toolCallId: 't1',
-          title: 'TaskCreate',
-          status: 'completed',
-          rawInput: { description: '写 token' },
-          createdAt: 2100,
-        },
-        {
-          type: 'tool_call',
-          toolCallId: 't2',
-          title: 'TaskCreate',
-          status: 'in_progress',
-          rawInput: { description: '写样式' },
-          createdAt: 2200,
-        },
-      ],
+      runtime,
+      timeline,
     });
     expect(status.source).toBe('tools');
     expect(status.shouldAutoOpen).toBe(false);
     expect(status.toolsRunningCount).toBe(1);
     expect(status.phase).toBe('tool_executing');
+
+    // Hybrid A: tools-only is chat process, not floating-panel orchestration.
+    const view = deriveWorkflowView({ threadStatus: 'running', runtime, timeline });
+    expect(view.empty).toBe(true);
+    expect(view.kind).toBe('empty');
+    expect(view.toolsOnly).toBe(true);
+    expect(view.highlightTopbar).toBe(false);
+    expect(view.shouldAutoOpen).toBe(false);
   });
 
   it('ignores stale execution events from an earlier user turn', () => {

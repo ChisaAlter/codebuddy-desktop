@@ -1308,7 +1308,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
 
   if (toolCount === 1 && internalEventCount === 0 && !preferCollapsed) {
     return (
-      <div className="execution-group mb-2 w-full">
+      <div className="execution-group w-full">
         {isSubagentToolGroup && !isSubagentToolItem(toolItems[0]) ? <SubagentActivityLine items={toolItems} t={t} /> : null}
         {renderItem(toolItems[0], 0)}
       </div>
@@ -1319,7 +1319,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
   const showRail = toolCount > 1 && !hasSubagentParent;
 
   return (
-    <div className="execution-group mb-2 flex w-full flex-col gap-0">
+    <div className="execution-group flex w-full flex-col gap-0">
       {expanded ? (
         <>
           {isSubagentToolGroup ? <SubagentActivityLine items={toolItems} t={t} /> : null}
@@ -1993,35 +1993,21 @@ function DateSeparator({ label }) {
   );
 }
 
-function AssistantTurn({ item, t }) {
+function AssistantTurn({ item }) {
   const thinking = item.thinking && typeof item.thinking === 'object' ? item.thinking : null;
   const text = typeof item.content === 'string' ? item.content : '';
   const hasText = text.trim().length > 0;
-  const lineCount = hasText ? text.split('\n').length : 0;
-  const longMessage = hasText && !item.streaming && (lineCount > 80 || text.length > 8000);
-  const [expandedLong, setExpandedLong] = useState(false);
   if (!thinking && !hasText && !item.streaming) return null;
-  const displayText =
-    longMessage && !expandedLong
-      ? `${text.split('\n').slice(0, 40).join('\n')}${lineCount > 40 ? '\n…' : ''}`
-      : text;
+  // Keep assistant turns tight (mb-2): multi-fragment turns (text → tools → text)
+  // used to look sparse with mb-6. Always show full reply — no collapse chrome.
   return (
-    <div className="mb-6 w-full" data-chat-role="assistant">
+    <div className="mb-2 w-full" data-chat-role="assistant">
       {thinking ? <ThinkingCard item={thinking} /> : null}
       {hasText || item.streaming ? (
         <div className="chat-assistant-message group">
           <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
-            {hasText ? <MarkdownMessage text={displayText} streaming={Boolean(item.streaming)} /> : '...'}
+            {hasText ? <MarkdownMessage text={text} streaming={Boolean(item.streaming)} /> : '...'}
           </div>
-          {longMessage ? (
-            <button
-              type="button"
-              className="mt-2 text-[12px] text-[var(--color-accent-blue)] hover:underline"
-              onClick={() => setExpandedLong((v) => !v)}
-            >
-              {expandedLong ? t('tool.collapseMessage') : t('tool.expandMessage')}
-            </button>
-          ) : null}
           {hasText ? <CopyButton text={text} /> : null}
         </div>
       ) : null}
@@ -2236,7 +2222,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
   }
 
   if (item.role === 'assistant') {
-    return <AssistantTurn item={item} t={t} />;
+    return <AssistantTurn item={item} />;
   }
 
   return null;
@@ -2687,7 +2673,8 @@ export default function ReplicaChatView() {
         timeline,
         t,
       });
-      if (!workflowHasActivity(workflowStatus)) return baseLabel;
+      // Tools-only process is empty for the floating panel but may still contribute a chat activity hint.
+      if (!workflowHasActivity(workflowStatus) && !workflowStatus?.toolsOnly) return baseLabel;
       const workflowLabel = presentWorkflowActivity(workflowStatus, t);
       if (!workflowLabel) return baseLabel;
       return baseLabel ? `${workflowLabel} · ${baseLabel}` : workflowLabel;
