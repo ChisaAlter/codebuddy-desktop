@@ -42,6 +42,8 @@ export function emptyThreadRuntime() {
     compactState: null,
     compactCancelled: false,
     historyReplayActive: false,
+    // 重连成功后会话尚未 rebind（session_restored 前置位；不持久化）。
+    sessionRestoreNeeded: false,
     models: [],
     modes: [],
     currentModel: null,

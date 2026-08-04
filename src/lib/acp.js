@@ -42,6 +42,54 @@ export class AcpTimeoutError extends Error {
   }
 }
 
+/**
+ * 归一化 IPC 流错误（preload 可能传字符串或 {message,status,kind}），
+ * 供上层按 HTTP status / 错误种类分类。
+ */
+export function normalizeStreamError(error) {
+  if (error instanceof Error) {
+    return { message: error.message || String(error), status: error.status ?? null, kind: error.kind ?? null };
+  }
+  if (typeof error === 'string') {
+    return { message: error, status: null, kind: null };
+  }
+  if (error && typeof error === 'object') {
+    return {
+      message: typeof error.message === 'string' ? error.message : String(error.message ?? error.error ?? ''),
+      status: typeof error.status === 'number' ? error.status : null,
+      kind: typeof error.kind === 'string' ? error.kind : null,
+    };
+  }
+  return { message: String(error ?? ''), status: null, kind: null };
+}
+
+/**
+ * 分类 ACP 请求/流失败：
+ * - 'auth'          HTTP 401 —— 云端登录失效，走 announceAuthRequired，不拆连接
+ * - 'client'        HTTP 4xx（非 401）—— 请求/会话/参数错误，不拆连接
+ * - 'rate_limit'    HTTP 429 —— 限流，不拆连接
+ * - 'upstream'      HTTP 5xx —— 守护进程上游错误，不拆连接（重连无益）
+ * - 'transport'     真网络断开（status null + network/timeout/hard 超时）—— 拆连接并重连
+ * - 'idle'          长任务 idle 超时 —— 会话可恢复，不拆连接
+ * - 'rpc'           JSON-RPC 业务错误 —— 不拆连接
+ */
+export function classifyTransportFailure(info) {
+  const { status, kind, isLongRunningIdleTimeout, isRpcError } = info || {};
+  if (isRpcError) return 'rpc';
+  if (isLongRunningIdleTimeout) return 'idle';
+  if (typeof status === 'number') {
+    if (status === 401) return 'auth';
+    if (status === 429) return 'rate_limit';
+    if (status >= 400 && status < 500) return 'client';
+    if (status >= 500) return 'upstream';
+    return 'transport';
+  }
+  // status null：网络异常 / 硬超时 / parse / closed。仅 network 与 timeout 视为 transport。
+  if (kind === 'network' || kind === 'timeout') return 'transport';
+  if (kind === 'parse' || kind === 'closed') return 'client';
+  return 'transport';
+}
+
 export function getApiBase() {
   return _apiBase;
 }
@@ -315,6 +363,16 @@ export class AcpClient {
     this.reconnecting = false;
     this._reconnectTimer = null;
     this._connecting = false;
+    // 重连代际：markConnectionBroken 递增，connect() 在入口捕获、成功时校验，
+    // 避免「在飞 connect 成功」复活刚被标记断开的连接（撕裂 FSM）。
+    this._restoreGeneration = 0;
+    // 最近一次成功绑定的会话上下文，供 restoreConnection 自动 session/load。
+    this._lastSessionId = null;
+    this._lastCwd = '.';
+    // 会话是否已绑定到当前 connectionId。
+    this.sessionBound = false;
+    // kill switch：false 时 markConnectionBroken 只标断连，不调度自动重连。
+    this.autoReconnectEnabled = true;
 
     // 心跳相关
     this._heartbeatTimer = null;
@@ -339,6 +397,22 @@ export class AcpClient {
 
   setApiBase(base) {
     if (base) this.apiBase = base;
+  }
+
+  // kill switch：关闭后 markConnectionBroken 只标断连，不调度自动重连。
+  setAutoReconnectEnabled(enabled) {
+    this.autoReconnectEnabled = enabled !== false;
+  }
+
+  // 会话绑定（turn 终态后的 delayed rebind）：连接已存在，仅确认会话并 emit
+  // session_restored 供 store 清除 sessionRestoreNeeded。
+  markSessionBound(sessionId, cwd = '.') {
+    if (!sessionId) return false;
+    this.sessionBound = true;
+    this._lastSessionId = sessionId;
+    this._lastCwd = cwd;
+    this.emit('session_restored', { sessionId });
+    return true;
   }
 
   requestHttp(pathOrUrl, init = {}) {
@@ -816,7 +890,10 @@ export class AcpClient {
 
     this._connecting = true;
     this._connectionError = false;
-    this.reconnectAttempts = 0;
+    // NOTE: reconnectAttempts must NOT be reset here. The retry budget is owned
+    // by the reconnect cycle (_triggerReconnect/markConnectionBroken/reconnect),
+    // and connect() is also called by initializeSession for fresh connections.
+    const generation = this._restoreGeneration;
 
     try {
       const controller = new AbortController();
@@ -837,6 +914,13 @@ export class AcpClient {
       }
 
       const payload = await response.json();
+      // 连接被 markConnectionBroken 取代（在飞期间代际变化）：放弃应用新连接，
+      // 释放刚拿到的 connection，让新的重连周期重新发起。
+      if (generation !== this._restoreGeneration) {
+        this._connecting = false;
+        await this.releaseConnection(payload.connectionId).catch(() => null);
+        return;
+      }
       const previousConnectionId = this.connectionId;
       this.connectionId = payload.connectionId;
       this.sessionToken = payload.sessionToken || null;
@@ -844,6 +928,7 @@ export class AcpClient {
       this._connecting = false;
       this.reconnecting = false;
       this._connectionError = false;
+      this.sessionBound = false; // 新连接尚未绑定会话
       if (previousConnectionId && previousConnectionId !== this.connectionId) {
         this.invalidateInteractiveRequests('connection-replaced');
         this.releaseConnection(previousConnectionId);
@@ -876,6 +961,45 @@ export class AcpClient {
     this._scheduleReconnect(this.reconnectDelay);
   }
 
+  // 传输层失败后立即把连接标记为断开并触发指数退避重连，而不必等 ~90s 的心跳兜底。
+  // 复用 _triggerReconnect 的退避链路（1s→30s，最多 maxReconnectAttempts 次）。
+  // 仅供请求路径判定为真传输失败（classifyTransportFailure === 'transport'）时调用。
+  markConnectionBroken(reason = 'transport') {
+    const wasConnected = this.connected;
+    this._restoreGeneration += 1;
+    this.connected = false;
+    this.initialized = false;
+    this.sessionBound = false;
+    this._connectionError = true;
+    this.stopHeartbeat();
+    this.stopNotificationStream();
+    if (!this.autoReconnectEnabled) {
+      // kill switch：只标断连，不调度自动重连；由 UI/用户显式恢复。
+      this.reconnecting = false;
+      console.warn('[acp-restore] broken', {
+        reason,
+        autoReconnect: false,
+        generation: this._restoreGeneration,
+        sessionId: this._lastSessionId,
+      });
+      return wasConnected;
+    }
+    // 立即通知 UI 进入"重连中"，与心跳兜底路径表现一致。
+    if (!this.reconnecting) {
+      this.reconnecting = true;
+      this.reconnectAttempts = 0;
+      console.warn('[acp-restore] broken', {
+        reason,
+        autoReconnect: true,
+        generation: this._restoreGeneration,
+        sessionId: this._lastSessionId,
+      });
+      this.emit('reconnecting', { attempt: 0, max: this.maxReconnectAttempts, reason });
+      this._scheduleReconnect(this.reconnectDelay);
+    }
+    return wasConnected;
+  }
+
   _scheduleReconnect(delay) {
     this._reconnectTimer = setTimeout(async () => {
       this._reconnectTimer = null;
@@ -883,24 +1007,40 @@ export class AcpClient {
 
       this.emit('reconnecting', { attempt: this.reconnectAttempts, max: this.maxReconnectAttempts });
 
+      const generation = this._restoreGeneration;
       try {
-        await this.connect();
-        if (this.connected) {
+        await this.restoreConnection({
+          sessionId: this._lastSessionId,
+          cwd: this._lastCwd,
+        });
+        if (generation !== this._restoreGeneration) return; // 被更新的 broken 取代
+        if (this.connected && this.initialized) {
           this.reconnecting = false;
           const attempts = this.reconnectAttempts;
           this.reconnectAttempts = 0;
-          this.emit('reconnected', { attempts });
+          console.warn('[acp-restore] reconnected', {
+            attempts,
+            sessionBound: this.sessionBound,
+            generation,
+            sessionId: this._lastSessionId,
+          });
+          this.emit('reconnected', { attempts, sessionBound: this.sessionBound });
           return;
         }
-      } catch (_) {
-        // connect 内部已经设置了 _connectionError
+      } catch (error) {
+        // restoreConnection 内部已经设置了 _connectionError / 清理了半初始化状态
+        console.warn('[acp-restore] attempt failed', {
+          attempt: this.reconnectAttempts,
+          error: error?.message || String(error),
+        });
       }
 
       this.reconnectAttempts++;
-      if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
         this.reconnecting = false;
         this._connectionError = true;
-        this.emit('reconnect_failed', { attempts: this.maxReconnectAttempts });
+        console.warn('[acp-restore] failed', { attempts: this.reconnectAttempts });
+        this.emit('reconnect_failed', { attempts: this.reconnectAttempts });
         return;
       }
 
@@ -910,7 +1050,49 @@ export class AcpClient {
     }, delay);
   }
 
-  async reconnect() {
+  // 统一恢复入口：connect → initialize → session/load（无 active prompt 时）。
+  // 任何一步失败都会清理半初始化状态并 throw。成功且（需要时）会话已绑定才返回。
+  async restoreConnection({ sessionId = null, cwd = '.' } = {}) {
+    await this.connect();
+    if (!this.connected) throw new Error('ACP reconnect failed: not connected');
+    await this.initialize();
+    // 有 active prompt 时不 session/load：重放的历史 chunk 会污染进行中的 turn，
+    // 会话绑定推迟到 turn 结束后（由 store 的 session_restored 逻辑补齐）。
+    const hasActive = sessionId ? this.hasActivePrompt?.(sessionId) : false;
+    if (sessionId && !hasActive) {
+      try {
+        const loaded = await this.request('session/load', { sessionId, cwd, mcpServers: [] });
+        this.sessionBound = true;
+        this._lastSessionId = sessionId;
+        this._lastCwd = cwd;
+        this.emit('session_restored', { sessionId });
+        return { loaded };
+      } catch (error) {
+        const message = String(error?.message || '');
+        const sessionInvalid =
+          error?.sessionInvalid === true ||
+          /session not found|invalid session|unknown session|no such session|session.*expired/i.test(message);
+        const transport =
+          error?.type === 'timeout' ||
+          error?.sessionRecoverable === true ||
+          /idle timeout|timeout|ECONNREFUSED|network|fetch failed|408|502|503|504/i.test(message);
+        if (sessionInvalid && !transport) {
+          this.sessionBound = false;
+          this.emit('session_invalid', { sessionId });
+          return { sessionInvalid: true };
+        }
+        throw error; // 传输类失败继续退避
+      }
+    } else if (sessionId) {
+      // 有 active prompt：仅协议恢复，会话绑定状态未知。
+      this.sessionBound = false;
+    } else {
+      this.sessionBound = false;
+    }
+    return { loaded: null };
+  }
+
+  async reconnect(options = {}) {
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -922,9 +1104,18 @@ export class AcpClient {
     this.stopHeartbeat();
     this.stopNotificationStream();
 
+    // 有在飞的 connect()（后台退避已发起）：等待其完成，避免双调度/返回假 true。
+    if (this._connecting) {
+      // 由于 connect() 是异步且无 promise 句柄，这里等待代际稳定：直接尝试等待一个 tick，
+      // 然后由 restoreConnection 的 connected 检查兜底；若仍在连接则返回 false。
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (this._connecting) return false;
+    }
+
     try {
-      await this.connect();
-      return true;
+      const result = await this.restoreConnection(options);
+      const ok = this.connected && this.initialized;
+      return ok ? result : false;
     } catch (_) {
       this._scheduleReconnect(this.reconnectDelay);
       return false;
@@ -1105,6 +1296,13 @@ export class AcpClient {
     const loaded = sessionId
       ? await this.request('session/load', { sessionId, cwd, mcpServers: [] })
       : await this.request('session/new', { cwd, mcpServers: [] });
+    // 记住成功绑定的会话上下文，供传输失败后 restoreConnection 自动 rebind。
+    const boundSessionId = sessionId || loaded?.sessionId || null;
+    if (boundSessionId) {
+      this._lastSessionId = boundSessionId;
+      this._lastCwd = cwd;
+      this.sessionBound = true;
+    }
     return { init, loaded };
   }
 
@@ -1119,6 +1317,9 @@ export class AcpClient {
     this.connectionId = null;
     this.sessionToken = null;
     this.reconnectAttempts = 0;
+    this._restoreGeneration += 1;
+    this._lastSessionId = null;
+    this.sessionBound = false;
     this.permissionRequestIds.clear();
     this.permissionRequestToolCallIds.clear();
     this.questionRequestIds.clear();
@@ -1233,16 +1434,46 @@ export class AcpClient {
               if (matchedError) {
                 finish(reject, matchedError);
               } else {
-                finish(reject, streamFailure(error, `ACP stream failed: ${payload.method}`));
+                const info = normalizeStreamError(error);
+                const cls = classifyTransportFailure(info);
+                // 401 → 既有登录引导链路；4xx/5xx/idle → 不拆连接（业务/上游错误或会话可恢复）；
+                // 仅真网络断开（status null + network/timeout）标记连接断开并触发快速重连。
+                if (cls === 'auth') {
+                  announceAuthRequired(`${this.apiBase}/api/v1/acp`, 401);
+                } else if (cls === 'transport') {
+                  this.markConnectionBroken('stream-error');
+                }
+                const failure = streamFailure(info.message, `ACP stream failed: ${payload.method}`);
+                failure.transportFailure = cls === 'transport';
+                failure.failureClass = cls;
+                failure.status = info.status;
+                finish(reject, failure);
               }
             },
             onEnd: (result) => {
               if (result?.ok === false) {
-                finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
+                const cls = classifyTransportFailure({ status: result.status ?? null, kind: 'http' });
+                if (cls === 'auth') {
+                  announceAuthRequired(`${this.apiBase}/api/v1/acp`, result.status);
+                } else if (cls === 'transport') {
+                  this.markConnectionBroken('post-failed');
+                }
+                const failure = new Error(
+                  `ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim(),
+                );
+                failure.transportFailure = cls === 'transport';
+                failure.failureClass = cls;
+                failure.status = result.status ?? null;
+                finish(reject, failure);
               } else if (matchedError) {
                 finish(reject, matchedError);
               } else if (!matchedResponse) {
-                finish(reject, new Error(`ACP response stream ended before RPC result: ${payload.method}`));
+                // POST 以非匹配 id 的 JSON 通知正常结束（真正结果走 GET-SSE）：
+                // 不视为连接断开，交由上层 grace 等待 + 历史恢复。
+                const failure = new Error(`ACP response stream ended before RPC result: ${payload.method}`);
+                failure.transportFailure = false;
+                failure.failureClass = 'client';
+                finish(reject, failure);
               } else if (Number(result?.parseErrorCount) > 0) {
                 finish(
                   reject,
@@ -1320,7 +1551,9 @@ export class AcpClient {
       });
 
       if (!response.ok) {
-        throw new Error(`ACP POST failed: ${response.status}`);
+        const postError = new Error(`ACP POST failed: ${response.status}`);
+        postError.status = response.status;
+        throw postError;
       }
 
       const reader = response.body?.getReader?.();
@@ -1380,9 +1613,29 @@ export class AcpClient {
       if (err.name === 'AbortError') {
         if (cancelledByUser) throw new Error('ACP request cancelled by user');
         if (isLongRunning) {
+          // 长任务 idle 超时属于会话可恢复错误（AcpTimeoutError.sessionRecoverable），
+          // 不视为传输断开：守护进程仍可能在处理，重连会建立新连接而丢失当前会话。
           throw new AcpTimeoutError(method, { idleMs: LONG_REQUEST_IDLE_TIMEOUT_MS, kind: 'idle' });
         }
-        throw new AcpTimeoutError(method, { idleMs: DEFAULT_REQUEST_TIMEOUT_MS, kind: 'hard' });
+        // 短请求硬超时：连接大概率已死，立即重连。
+        this.markConnectionBroken('hard-timeout');
+        const timeoutErr = new AcpTimeoutError(method, { idleMs: DEFAULT_REQUEST_TIMEOUT_MS, kind: 'hard' });
+        timeoutErr.transportFailure = true;
+        timeoutErr.failureClass = 'transport';
+        throw timeoutErr;
+      }
+      // AcpRpcError 是服务端业务错误（鉴权/拒绝等），不视为传输断开。
+      // 其余错误按 HTTP status 分类：4xx/5xx 不拆连接，仅真网络断开（status null）触发重连。
+      if (!(err instanceof AcpRpcError) && !err.transportFailure) {
+        const info = normalizeStreamError(err);
+        const cls = classifyTransportFailure({ ...info, isLongRunningIdleTimeout: false });
+        if (cls === 'auth') {
+          announceAuthRequired(`${this.apiBase}/api/v1/acp`, err.status);
+        } else if (cls === 'transport') {
+          this.markConnectionBroken('request-error');
+        }
+        err.transportFailure = cls === 'transport';
+        err.failureClass = cls;
       }
       throw err;
     } finally {

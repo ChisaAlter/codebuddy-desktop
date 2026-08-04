@@ -23,6 +23,15 @@
 - 新增 Stop、Goal 聚合、Markdown 安全渲染、工作流状态和右侧面板回归测试。
 - 测试命令和当前 Windows 环境限制见 [`TESTING.md`](./TESTING.md)；完整发布门禁不因环境错误被伪造为通过。
 
+### 传输失败快速重连（无自动重发）
+
+- **真网络断开**（IPC 断流、连接拒绝等）秒级进入有限退避重连（1s→30s，最多 10 次），成功后自动 `initialize` + `session/load` 绑定旧会话；失败进入 `error` 终态，不再永久卡在「重连中」。
+- **不自动重发用户消息**：无后端幂等键时禁止二次 `session/prompt`，失败走历史恢复 / 错误卡 / 草稿恢复，避免重复执行工具副作用。
+- **错误分类**：HTTP 401 走登录引导；403/4xx/429 与上游 5xx 不拆连接；长任务 idle 超时视为会话可恢复，不拆连接。
+- **delayed rebind**：重连时若有进行中的 turn，先只恢复协议；turn 结束后再补 `session/load` 并清除 `sessionRestoreNeeded`，历史重放事件不会污染已终态时间线。
+- **kill switch**：`guiSettings.transportAutoReconnect`（默认 true）；设为 `false` 时只标记断连、不调度自动重连。
+- 新增回归：`tests/unit/acp-auto-reconnect.test.js`、`acp-error-classify.test.js`、`prompt-transport-recovery.test.js`。
+
 
 1.0.5 对照真实 CodeBuddy WebUI（CLI 2.125 `dist/web-ui`）逐功能修复差异：侧栏导航与各页标题对齐、附件阈值/数量上限对齐、新增 max_tokens 截断态、插件市场浏览、会话搜索、免打扰、会话级权限行为项、Keybindings 上下文文案、关于页等。
 

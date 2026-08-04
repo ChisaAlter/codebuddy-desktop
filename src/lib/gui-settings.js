@@ -25,6 +25,9 @@ export const DEFAULT_GUI_SETTINGS = {
   // Production structured tool/subagent/goal output (WebUI-aligned clamp + cards).
   // Default true; set false only as emergency rollback to legacy pre dumps.
   structuredOutputV1: true,
+  // Transport auto-reconnect on true network failures. Default true; set false
+  // as emergency rollback (failure only surfaces error, no reconnect attempts).
+  transportAutoReconnect: true,
   // Cloud account login site: cn (China) | global (international).
   // Default global = same as bare CLI (no INTERNET_ENVIRONMENT), so disk OAuth survives GUI restart.
   accountLoginSite: 'global',
@@ -55,6 +58,8 @@ export function normalizeGuiSettings(value) {
     requestPermissionOnFirstToolUse: source.requestPermissionOnFirstToolUse === true,
     // Default on; only explicit false disables.
     structuredOutputV1: source.structuredOutputV1 !== false,
+    // Default on; only explicit false disables auto-reconnect.
+    transportAutoReconnect: source.transportAutoReconnect !== false,
     accountLoginSite: normalizeAccountLoginSite(source.accountLoginSite),
     lastAccountUser: normalizeLastAccountUser(source.lastAccountUser),
   };
@@ -109,6 +114,7 @@ const STRIP_FROM_BACKEND_SETTINGS = Object.freeze([
   'sessionAutoAllowFileEdits',
   'requestPermissionOnFirstToolUse',
   'structuredOutputV1',
+  'transportAutoReconnect',
   'accountLoginSite',
   'lastAccountUser',
 ]);

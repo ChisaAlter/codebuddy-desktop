@@ -2347,7 +2347,12 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     if (!response.ok) {
       if (timeoutId) clearTimeout(timeoutId);
       codebuddyStreams.delete(streamId);
-      event.sender.send('codebuddy:streamError', { streamId, error: `ACP stream failed: ${response.status}` });
+      event.sender.send('codebuddy:streamError', {
+        streamId,
+        error: `ACP stream failed: ${response.status}`,
+        status: response.status,
+        kind: 'http',
+      });
       return { ok: false, status: response.status };
     }
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();
@@ -2371,6 +2376,8 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         event.sender.send('codebuddy:streamError', {
           streamId,
           error: `ACP JSON response parse failed: ${error.message}`,
+          status: null,
+          kind: 'parse',
         });
         return { ok: false, error: error.message };
       }
@@ -2397,7 +2404,12 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         });
         return { ok: true };
       }
-      event.sender.send('codebuddy:streamError', { streamId, error: 'ACP stream body unavailable' });
+      event.sender.send('codebuddy:streamError', {
+        streamId,
+        error: 'ACP stream body unavailable',
+        status: null,
+        kind: 'network',
+      });
       return { ok: false, error: 'stream body unavailable' };
     }
 
@@ -2456,7 +2468,12 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         codebuddyStreams.delete(streamId);
         if (!sender.isDestroyed()) {
           if (streamError) {
-            sender.send('codebuddy:streamError', { streamId, error: streamError });
+            sender.send('codebuddy:streamError', {
+              streamId,
+              error: streamError,
+              status: null,
+              kind: timedOut ? 'timeout' : 'network',
+            });
           } else if (method !== 'GET' && !controller.signal.aborted) {
             sender.send('codebuddy:streamEnd', {
               streamId,
@@ -2469,9 +2486,16 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
             sender.send('codebuddy:streamError', {
               streamId,
               error: `ACP stream contained ${parseErrorCount} invalid event(s)`,
+              status: null,
+              kind: 'parse',
             });
           } else if (method === 'GET' && !controller.signal.aborted) {
-            sender.send('codebuddy:streamError', { streamId, error: 'ACP stream closed' });
+            sender.send('codebuddy:streamError', {
+              streamId,
+              error: 'ACP stream closed',
+              status: null,
+              kind: 'closed',
+            });
           }
         }
       }
@@ -2483,6 +2507,8 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     event.sender.send('codebuddy:streamError', {
       streamId,
       error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message,
+      status: null,
+      kind: timedOut ? 'timeout' : 'network',
     });
     return { ok: false, error: error.message };
   }

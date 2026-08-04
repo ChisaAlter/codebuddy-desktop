@@ -124,7 +124,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const onError = (_event, payload) => {
       if (payload?.streamId !== streamId) return;
       openErrorReported = true;
-      handlers.onError?.(payload.error);
+      // Normalize stream errors so callers can classify by HTTP status / kind.
+      // Legacy string payloads (no status/kind) are treated as transport-unknown.
+      handlers.onError?.({
+        message:
+          typeof payload?.error === 'string'
+            ? payload.error
+            : payload?.error?.message || payload?.error || String(payload?.error),
+        status: typeof payload?.status === 'number' ? payload.status : null,
+        kind: payload?.kind || (payload?.status ? 'http' : null),
+      });
       if (String(request.method || 'GET').toUpperCase() !== 'GET') cleanup();
     };
     const onEnd = (_event, payload) => {
@@ -140,12 +149,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       .then((result) => {
         if (result?.ok !== false) return;
         if (!closed && !openErrorReported) {
-          handlers.onError?.(result.error || `ACP stream failed: ${result.status || 0}`);
+          handlers.onError?.({
+            message: result.error || `ACP stream failed: ${result.status || 0}`,
+            status: typeof result?.status === 'number' ? result.status : null,
+            kind: typeof result?.status === 'number' ? 'http' : null,
+          });
         }
         cleanup();
       })
       .catch((error) => {
-        if (!closed) handlers.onError?.(error?.message || String(error));
+        if (!closed)
+          handlers.onError?.({
+            message: error?.message || String(error),
+            status: null,
+            kind: null,
+          });
         cleanup();
       });
     return {

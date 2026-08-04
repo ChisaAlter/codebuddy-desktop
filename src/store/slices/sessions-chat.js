@@ -579,6 +579,43 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'reconnected') {
       get().patchThreadRuntime(threadId, { connectionState: 'connected' });
+      // 重连成功但会话未绑定：写标记，后续用户操作时再补齐（或等 session_invalid）。
+      if (detail?.sessionBound === false && thread?.sessionId) {
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        if (!latestRuntime.activePromptRunId) {
+          get().patchThreadRuntime(threadId, { sessionRestoreNeeded: true });
+        }
+      } else {
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        if (latestRuntime.sessionRestoreNeeded) {
+          get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
+        }
+      }
+      return;
+    }
+    if (type === 'session_restored') {
+      const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
+      if (!latestRuntime.activePromptRunId && get().activeThreadId === threadId) {
+        set({ sessionToken: client?.sessionToken || null, error: null });
+      }
+      return;
+    }
+    if (type === 'session_invalid') {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        connectionState: 'connected',
+        sessionRestoreNeeded: true,
+      });
+      // 会话失效：明确提示，不静默新建会话（避免丢历史）。
+      get().updateThreadRecord(threadId, {
+        status: runtime.activePromptRunId ? 'running' : 'idle',
+        metadata: {
+          ...(thread?.metadata || {}),
+          lastError: '会话已失效（服务端重启或连接重建），请新建会话继续',
+          sessionInvalid: true,
+        },
+      });
       return;
     }
     if (type === 'reconnect_failed') {
@@ -2353,6 +2390,18 @@ export function createSessionsChatSlice(set, get, ctx) {
     };
     const recoverPromptHistory = async () => {
       if (!runIsCurrent()) return false;
+      // 传输失败后连接可能已被 markConnectionBroken 置为断开：先恢复传输 + 协议，
+      // 再 session/load 拉历史。恢复失败直接返回 false（走草稿恢复 + 错误卡）。
+      // 仅显式 connected===false 才触发恢复（mock/未定义状态不误判）。
+      if (client.connected === false || client.initialized === false) {
+        const restored = await client
+          .reconnect?.({
+            sessionId: requestSessionId,
+            cwd: project?.workspacePath || '.',
+          })
+          .catch(() => false);
+        if (!restored) return false;
+      }
       get().patchThreadRuntime(threadId, { historyReplayActive: true });
       resetSeenContent(threadId);
       try {
@@ -2663,6 +2712,8 @@ export function createSessionsChatSlice(set, get, ctx) {
       } else {
         get().notifyThreadResult(threadId, 'success');
       }
+      // turn 终态：若重连后会话未绑定，补一次 session/load rebind（不阻塞，失败保留标记）。
+      void get().rebindSessionAfterTurn(threadId).catch(() => {});
       return true;
     } catch (error) {
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -2738,9 +2789,42 @@ export function createSessionsChatSlice(set, get, ctx) {
       // composer send button and have no reliable close path for /compact etc.
       if (get().activeThreadId === threadId) set({ error: null });
       get().notifyThreadResult(threadId, 'error');
+      // turn 终态（失败）：同样补一次会话 rebind（不阻塞，失败保留标记）。
+      void get().rebindSessionAfterTurn(threadId).catch(() => {});
       return false;
     }
   },
+  // turn 终态后的 delayed rebind：重连成功但会话未绑定（sessionRestoreNeeded）时，
+  // 在 active turn 结束后执行 session/load 确认会话并 emit session_restored。
+  // 事件在终态后被 handleConversationEvent 666-675 行门控丢弃，不会污染 timeline。
+  async rebindSessionAfterTurn(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const thread = get().threadsById[threadId];
+    const sessionId = thread?.sessionId || runtime.sessionId;
+    if (!runtime.sessionRestoreNeeded || runtime.activePromptRunId || !sessionId) return false;
+    const client = get().getThreadClient(threadId);
+    const project = thread ? get().projectsById[thread.projectId] : null;
+    if (!client || typeof client.request !== 'function') return false;
+    try {
+      // 不带 promptRunId 的 session/load：历史重放事件在终态后会被丢弃，
+      // 仅用 RPC result 确认会话存在并绑定。
+      await client.request(
+        'session/load',
+        { sessionId, cwd: project?.workspacePath || '.', mcpServers: [] },
+        { historyReplay: true },
+      );
+      if (typeof client.markSessionBound === 'function') {
+        client.markSessionBound(sessionId, project?.workspacePath || '.');
+      } else {
+        get().patchThreadRuntime(threadId, { sessionRestoreNeeded: false });
+      }
+      return true;
+    } catch (_) {
+      // 会话失效/传输失败：保留标记，下次操作再试；不阻塞当前 turn。
+      return false;
+    }
+  },
+
   async drainThreadPromptQueue(threadId) {
     const prepared = await queuePromptQueueOperation(threadId, async () => {
       const thread = get().threadsById[threadId];

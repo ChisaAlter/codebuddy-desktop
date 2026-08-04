@@ -746,7 +746,12 @@ export const useStore = create((set, get) => {
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project?.runtimePort) return null;
-    return conversations.getClient(threadId, `http://127.0.0.1:${project.runtimePort}`);
+    const client = conversations.getClient(threadId, `http://127.0.0.1:${project.runtimePort}`);
+    // 传输自动重连 kill switch：每次获取 client 时同步最新 GUI 设置。
+    if (client && typeof client.setAutoReconnectEnabled === 'function') {
+      client.setAutoReconnectEnabled(get().guiSettings?.transportAutoReconnect !== false);
+    }
+    return client;
   },
 
   resolveDirtyFileConfirmation(confirmed) {

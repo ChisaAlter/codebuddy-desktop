@@ -55,6 +55,46 @@ npm run build:dir
 | Goal 归一化、去重、乱序和 timeline 恢复 | `tests/unit/goal-state.test.js` |
 | workflow / goal ACP 事件处理 | `tests/unit/workflow-status.test.js` 及相关 store 测试 |
 | 思考强度保留 `ultracode` | `tests/unit/i18n.test.js`、`tests/unit/store-prompt-session.test.js` |
+| 传输失败快速重连 / 错误分类 / 无自动重发 | `tests/unit/acp-auto-reconnect.test.js`、`tests/unit/acp-error-classify.test.js`、`tests/unit/prompt-transport-recovery.test.js`、`tests/unit/store-prompt-session.test.js` |
+| 传输重连 kill switch 设置 | `tests/unit/gui-settings.test.js` |
+
+### 传输失败快速重连（v2）门禁
+
+涉及 `src/lib/acp.js`、`electron/main.cjs`、`electron/preload.cjs`、`sessions-chat` 传输恢复时，提交前至少执行：
+
+```bash
+npm run lint
+npx vitest run \
+  tests/unit/acp-auto-reconnect.test.js \
+  tests/unit/acp-error-classify.test.js \
+  tests/unit/prompt-transport-recovery.test.js \
+  tests/unit/store-prompt-session.test.js \
+  tests/unit/store-cancel.test.js \
+  tests/unit/acp-stream.test.js \
+  tests/unit/gui-settings.test.js
+npm test
+```
+
+通过标准：
+
+- 错误分类：401→auth、429→rate_limit、4xx→client、5xx→upstream、真网络断开→transport、长任务 idle→idle。
+- 有限退避：`maxReconnectAttempts` 后触发 `reconnect_failed`，不永久 `reconnecting`。
+- `restoreConnection` 成功路径：`connect` → `initialize` → `session/load`（无 active prompt 时）。
+- **不自动二次** `session/prompt`；失败走历史恢复 / 错误卡 / 草稿恢复。
+- turn 终态 delayed rebind：`sessionRestoreNeeded` 时补 `session/load` + `markSessionBound`。
+- kill switch：`guiSettings.transportAutoReconnect=false` 时不调度自动重连。
+
+#### 实机验收（可选，推荐 Electron / 传输层改动后执行）
+
+```bash
+# 终端 1
+npm run dev:vite
+
+# 终端 2
+node scripts/test/manual-transport-reconnect-gui.cjs
+```
+
+该脚本启动真实 Electron 窗口，通过 CDP 在渲染进程执行 8 项验收（有限重连、restore、401、分类、kill switch、无重发、delayed rebind、设置默认值）。截图与 JSON 报告写入 `gui-test-screenshots/transport-reconnect-*`。
 
 ## 发布门禁
 
