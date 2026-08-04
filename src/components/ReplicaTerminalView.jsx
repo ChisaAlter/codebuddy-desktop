@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 import { PtySocket } from '../lib/pty';
 
 function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBusy, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
@@ -238,6 +239,9 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
 }
 
 export default function ReplicaTerminalView() {
+  // M-perf (keep-alive): the terminal view stays mounted while hidden; pane
+  // shortcuts must not fire when the route is not visible.
+  const viewActive = useViewActive('terminal');
   const panes = useStore((s) => s.terminalPanes);
   const activePaneId = useStore((s) => s.activePaneId);
   const activeProjectId = useStore((s) => s.activeProjectId);
@@ -395,6 +399,9 @@ export default function ReplicaTerminalView() {
       // open (e.g. ActionConfirmDialog), so Ctrl+Shift+W in a confirm does not
       // close a terminal pane underneath the overlay.
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      // M-perf (keep-alive): the terminal view stays mounted while hidden — only
+      // react to pane shortcuts while the terminal route is actually visible.
+      if (!viewActive) return;
       if (event.ctrlKey && event.shiftKey && event.key === 'N') {
         event.preventDefault();
         if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
@@ -422,7 +429,7 @@ export default function ReplicaTerminalView() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [panes, activePaneId, splitPane, closeTerminalPane, setActivePane]);
+  }, [panes, activePaneId, splitPane, closeTerminalPane, setActivePane, viewActive]);
 
   const gridClass = useMemo(() => {
     if (panes.length <= 1) return 'grid-cols-1';

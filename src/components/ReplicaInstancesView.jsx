@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 import ReplicaBackgroundSessionsView from './ReplicaBackgroundSessionsView';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import { translate, resolveLocaleMode } from '../lib/i18n';
@@ -24,6 +25,8 @@ export function statusLabel(status) {
 }
 
 export default function ReplicaInstancesView() {
+  // M-perf (keep-alive): pause polling while this view is hidden.
+  const active = useViewActive('instances');
   const [view, setView] = useState('projects');
   const projectsById = useStore((state) => state.projectsById);
   const projectOrder = useStore((state) => state.projectOrder);
@@ -84,6 +87,9 @@ export default function ReplicaInstancesView() {
   }, [applyProjectRuntimeStatus]);
 
   useEffect(() => {
+    // M-perf (keep-alive): pause polling while this view is hidden; the
+    // refresh runs again on re-activation.
+    if (!active) return undefined;
     mountedRef.current = true;
     refresh();
     const refreshTimer = setInterval(() => refresh({ silent: true }), 10000);
@@ -99,7 +105,7 @@ export default function ReplicaInstancesView() {
       for (const timer of messageTimerByProjectRef.current.values()) clearTimeout(timer);
       messageTimerByProjectRef.current.clear();
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   const runAction = async (projectId, action, actionName, successMessage) => {
     if (activeActionsRef.current.has(projectId)) return;

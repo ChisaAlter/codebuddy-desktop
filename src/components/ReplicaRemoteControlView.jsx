@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 
 function normalizeRemoteControlPayload(payload) {
   const data = payload?.data ?? payload ?? {};
@@ -214,6 +215,9 @@ function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh
 }
 
 export default function ReplicaRemoteControlView() {
+  // M-perf (keep-alive): pause the 5s channel refresh while this view is hidden.
+  // The QR login poll (a stateful flow) deliberately keeps running.
+  const active = useViewActive('remote-control');
   const setRoute = useStore((state) => state.setRoute);
   const activeProjectId = useStore((state) => state.activeProjectId);
   const [channels, setChannels] = useState([]);
@@ -300,6 +304,7 @@ export default function ReplicaRemoteControlView() {
     setWecomBotId('');
     setWecomSecret('');
     setWecomError(null);
+    if (!active) return undefined;
     load();
     const refreshTimer = setInterval(() => load({ silent: true }), 5000);
     return () => {
@@ -314,7 +319,7 @@ export default function ReplicaRemoteControlView() {
         qrPollRef.current = null;
       }
     };
-  }, [load]);
+  }, [active, load]);
 
   // 微信：创建实例后轮询二维码（对照源 bundle 每 1s 拉，最长 180s）
   const stopQrPoll = () => {

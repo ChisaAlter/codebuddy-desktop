@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 import { copyTextToClipboard } from '../lib/clipboard';
 
 export function highlightText(text, term) {
@@ -15,6 +16,8 @@ export function highlightText(text, term) {
 }
 
 export default function ReplicaLogsView() {
+  // M-perf (keep-alive): pause the 5s auto-refresh while this view is hidden.
+  const active = useViewActive('logs');
   const workers = useStore((s) => s.workers);
   const refreshWorkers = useStore((s) => s.refreshWorkers);
   const workersError = useStore((s) => s.workersError);
@@ -141,10 +144,10 @@ export default function ReplicaLogsView() {
   };
 
   useEffect(() => {
-    if (!autoRefresh || !workerPid) return;
+    if (!active || !autoRefresh || !workerPid) return;
     const interval = setInterval(loadLogs, 5000);
     return () => clearInterval(interval);
-  }, [autoRefresh, loadLogs, workerPid]);
+  }, [active, autoRefresh, loadLogs, workerPid]);
 
   useEffect(() => {
     if (!logError) return;

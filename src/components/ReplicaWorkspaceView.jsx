@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
+import { useViewActive } from '../lib/use-view-active';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { createTokenizationSupport } from 'monaco-editor/esm/vs/language/json/tokenization.js';
@@ -428,6 +429,8 @@ export function EditorPane() {
 }
 
 export default function ReplicaWorkspaceView() {
+  // M-perf (keep-alive): watcher + polling fully stop while this view is hidden.
+  const active = useViewActive('editor');
   const initializeWorkspace = useStore((s) => s.initializeWorkspace);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const runtimePort = useStore((s) => s.projectsById[s.activeProjectId]?.runtimePort || null);
@@ -473,6 +476,9 @@ export default function ReplicaWorkspaceView() {
 
   useEffect(() => {
     if (!runtimePort || !fileCwd) return undefined;
+    // M-perf (keep-alive): while the editor view is hidden, fully stop the
+    // watcher + polling (the effect cleans up and re-runs on re-activation).
+    if (!active) return undefined;
     let disposed = false;
     let polling = false;
     let fallbackTicks = 0;
@@ -528,6 +534,7 @@ export default function ReplicaWorkspaceView() {
       stopWatcher();
     };
   }, [
+    active,
     checkSelectedFileForExternalChanges,
     fileCwd,
     pollWatcher,

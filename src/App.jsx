@@ -37,6 +37,37 @@ const ReplicaMonitorView = lazy(() => import('./components/ReplicaMonitorView'))
 const ReplicaKeybindingsView = lazy(() => import('./components/ReplicaKeybindingsView'));
 const ReplicaDocsView = lazy(() => import('./components/ReplicaDocsView'));
 
+// M-perf (keep-alive): route -> component map used by MainContent. Views stay
+// mounted after their first visit and are hidden with display:none, so switching
+// back to chat/terminal/editor never rebuilds heavy subtrees (ReactMarkdown
+// transcript, xterm + PTY reconnect, Monaco).
+const MAIN_VIEW_COMPONENTS = {
+  chat: ReplicaChatView,
+  instances: ReplicaInstancesView,
+  'remote-control': ReplicaRemoteControlView,
+  terminal: ReplicaTerminalView,
+  docs: ReplicaDocsView,
+  models: ReplicaModelsView,
+  settings: ReplicaSettingsView,
+  editor: ReplicaWorkspaceView,
+  changes: ReplicaChangesView,
+  canvas: ReplicaCanvasView,
+  workers: ReplicaWorkersView,
+  metrics: ReplicaMetricsView,
+  plugins: ReplicaPluginsView,
+  skills: ReplicaSkillsView,
+  agents: ReplicaAgentsView,
+  mcp: ReplicaMcpView,
+  sandboxes: ReplicaSandboxesView,
+  tasks: ReplicaTasksView,
+  archived: ReplicaArchivedView,
+  stats: ReplicaStatsView,
+  traces: ReplicaTracesView,
+  monitor: ReplicaMonitorView,
+  keybindings: ReplicaKeybindingsView,
+  logs: ReplicaLogsView,
+};
+
 function WindowControls({ height = 'h-11' }) {
   return (
     <div className={`titlebar-no-drag flex ${height} items-stretch`}>
@@ -552,6 +583,23 @@ function MainContent() {
   const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
   const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
 
+  // M-perf (keep-alive): every route that has ever been visited stays mounted
+  // (non-active ones hidden via display:none), so returning to a heavy view is
+  // one paint instead of a full rebuild. Visited routes reset when the active
+  // project changes — view content is project-scoped and must never leak across
+  // projects.
+  const [visitedRoutes, setVisitedRoutes] = React.useState(() => new Set([route]));
+  const visitedProjectRef = React.useRef(activeProjectId);
+  React.useEffect(() => {
+    if (visitedProjectRef.current !== activeProjectId) {
+      visitedProjectRef.current = activeProjectId;
+      setVisitedRoutes(new Set([route]));
+    }
+  }, [activeProjectId, route]);
+  React.useEffect(() => {
+    setVisitedRoutes((prev) => (prev.has(route) ? prev : new Set(prev).add(route)));
+  }, [route]);
+
   if (!productStateLoaded) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
@@ -598,88 +646,22 @@ function MainContent() {
     );
   }
 
-  let content;
-  switch (route) {
-    case 'chat':
-      content = <ReplicaChatView />;
-      break;
-    case 'instances':
-      content = <ReplicaInstancesView />;
-      break;
-    case 'remote-control':
-      content = <ReplicaRemoteControlView />;
-      break;
-    case 'terminal':
-      content = <ReplicaTerminalView />;
-      break;
-    case 'docs':
-      content = <ReplicaDocsView />;
-      break;
-    case 'models':
-      content = <ReplicaModelsView />;
-      break;
-    case 'settings':
-      content = <ReplicaSettingsView />;
-      break;
-    case 'editor':
-      content = <ReplicaWorkspaceView />;
-      break;
-    case 'changes':
-      content = <ReplicaChangesView />;
-      break;
-    case 'canvas':
-      content = <ReplicaCanvasView />;
-      break;
-    case 'workers':
-      content = <ReplicaWorkersView />;
-      break;
-    case 'metrics':
-      content = <ReplicaMetricsView />;
-      break;
-    case 'plugins':
-      content = <ReplicaPluginsView />;
-      break;
-    case 'skills':
-      content = <ReplicaSkillsView />;
-      break;
-    case 'agents':
-      content = <ReplicaAgentsView />;
-      break;
-    case 'mcp':
-      content = <ReplicaMcpView />;
-      break;
-    case 'sandboxes':
-      content = <ReplicaSandboxesView />;
-      break;
-    case 'tasks':
-      content = <ReplicaTasksView />;
-      break;
-    case 'archived':
-      content = <ReplicaArchivedView />;
-      break;
-    case 'stats':
-      content = <ReplicaStatsView />;
-      break;
-    case 'traces':
-      content = <ReplicaTracesView />;
-      break;
-    case 'monitor':
-      content = <ReplicaMonitorView />;
-      break;
-    case 'keybindings':
-      content = <ReplicaKeybindingsView />;
-      break;
-    case 'logs':
-      content = <ReplicaLogsView />;
-      break;
-    default:
-      content = (
+  if (!MAIN_VIEW_COMPONENTS[route]) {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] text-sm text-[var(--color-text-muted)]">
+            正在加载页面...
+          </div>
+        }
+      >
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
           <button className="btn-primary px-4 py-2 text-sm" onClick={() => useStore.getState().setRoute('chat')}>
             返回对话
           </button>
         </div>
-      );
+      </Suspense>
+    );
   }
   return (
     <Suspense
@@ -689,7 +671,22 @@ function MainContent() {
         </div>
       }
     >
-      {content}
+      <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col">
+        {Array.from(visitedRoutes).map((visitedRoute) => {
+          const View = MAIN_VIEW_COMPONENTS[visitedRoute];
+          if (!View) return null;
+          const active = visitedRoute === route;
+          return (
+            <div
+              key={visitedRoute}
+              className={`${active ? 'flex' : 'hidden'} h-full min-h-0 w-full min-w-0`}
+              aria-hidden={active ? undefined : true}
+            >
+              <View />
+            </div>
+          );
+        })}
+      </div>
     </Suspense>
   );
 }

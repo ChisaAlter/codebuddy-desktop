@@ -1,6 +1,7 @@
 import React from 'react';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
   attachBackgroundSession,
@@ -131,6 +132,8 @@ function BackgroundLogsDialog({ value, autoRefresh, copyStatus, onClose, onRefre
 }
 
 export default function ReplicaBackgroundSessionsView() {
+  // M-perf (keep-alive): pause the 10s refresh while this view is hidden.
+  const active = useViewActive('instances');
   const projectsById = useStore((state) => state.projectsById);
   const projectOrder = useStore((state) => state.projectOrder);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -184,6 +187,8 @@ export default function ReplicaBackgroundSessionsView() {
   }, []);
 
   React.useEffect(() => {
+    // M-perf (keep-alive): pause the 10s refresh while this view is hidden.
+    if (!active) return undefined;
     mountedRef.current = true;
     refresh({ initial: true });
     const timer = setInterval(() => refresh({ silent: true }), 10000);
@@ -194,7 +199,7 @@ export default function ReplicaBackgroundSessionsView() {
       clearInterval(timer);
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   const submitStart = async (request) => {
     if (operationRef.current) return;

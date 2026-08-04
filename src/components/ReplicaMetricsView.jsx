@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 
 // ── 工具函数 ──
 
@@ -273,6 +274,8 @@ export function pruneHistory(history) {
 // ── 主组件 ──
 
 export default function ReplicaMetricsView() {
+  // M-perf (keep-alive): pause auto-refresh while this view is hidden.
+  const active = useViewActive('metrics');
   const metrics = useStore((s) => s.metrics);
   const refreshMetrics = useStore((s) => s.refreshMetrics);
   const activeProjectId = useStore((s) => s.activeProjectId);
@@ -337,12 +340,12 @@ export default function ReplicaMetricsView() {
 
   // 自动刷新
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!active || !autoRefresh) return;
     const id = setInterval(() => {
       doRefresh();
     }, 30000);
     return () => clearInterval(id);
-  }, [autoRefresh, doRefresh]);
+  }, [active, autoRefresh, doRefresh]);
 
   // 当 metrics 更新后记录历史
   useEffect(() => {
