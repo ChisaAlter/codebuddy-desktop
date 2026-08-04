@@ -92,6 +92,15 @@ export function createProductPersistSlice(set, get, ctx) {
 
     // Foreground: keep live streaming immediate (and unit tests deterministic).
     // Background / unfocused: reduce offline so focus-return is one paint, not a multi-second backlog.
+    //
+    // M-perf note (deliberate, see RELEASE_NOTES 1.1.0 perf section): foreground
+    // chunks are intentionally NOT coalesced into a 50ms window. The IPC-side of
+    // the stream storm is already handled in electron/main.cjs (33ms batching
+    // per stream), high-frequency terminal output has its own 50ms store merge
+    // (appendPaneOutput), and chat text chunks arrive at 1-5/s — a 50ms window
+    // rarely contains more than one chunk, so the added 50ms display latency
+    // buys nothing measurable while breaking the synchronous-assertion contract
+    // of 20+ store integration tests.
     if (!documentIsHidden() || !threadTimelineCoalesce) {
       // If a hidden-window batch was mid-flight and the window became visible, fold it first.
       const pending = takeTimelineCoalesce(threadId);
