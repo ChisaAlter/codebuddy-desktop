@@ -579,9 +579,12 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'reconnected') {
       get().patchThreadRuntime(threadId, { connectionState: 'connected' });
-      // 重连成功但会话未绑定：无论是否有 active turn，都必须打标。
-      // 有 active turn 时延后 rebind；无 active turn 时立刻补 session/load。
-      if (detail?.sessionBound === false && thread?.sessionId) {
+      // 会话已判定失效时不再打 restore 标记，避免与 session_invalid 重复报错。
+      const sessionInvalid =
+        detail?.sessionInvalid === true || thread?.metadata?.sessionInvalid === true;
+      if (!sessionInvalid && detail?.sessionBound === false && thread?.sessionId) {
+        // 重连成功但会话未绑定：无论是否有 active turn，都必须打标。
+        // 有 active turn 时延后 rebind；无 active turn 时立刻补 session/load。
         get().patchThreadRuntime(threadId, { sessionRestoreNeeded: true });
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
         if (!latestRuntime.activePromptRunId) {

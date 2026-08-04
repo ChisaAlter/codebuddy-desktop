@@ -290,6 +290,30 @@ describe('prompt transport failure recovery (no auto-resend)', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(false);
   });
 
+  it('reconnected(sessionInvalid:true) 不再打 sessionRestoreNeeded，避免与 session_invalid 重复报错', () => {
+    useStore.setState((state) => ({
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': {
+          ...state.threadRuntimeById['thread-1'],
+          sessionRestoreNeeded: false,
+          activePromptRunId: null,
+        },
+      },
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], metadata: { sessionInvalid: true } },
+      },
+    }));
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'reconnected',
+      detail: { attempts: 1, sessionBound: false, sessionInvalid: true },
+    });
+    // 会话已失效：不重新标记 restore
+    expect(useStore.getState().threadRuntimeById['thread-1'].sessionRestoreNeeded).toBe(false);
+  });
+
   it('session_invalid 写明确错误且不静默新建会话', async () => {
     useStore.getState().handleConversationEvent({
       threadId: 'thread-1',

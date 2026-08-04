@@ -449,7 +449,8 @@ describe('ACP auto-reconnect on transport failure', () => {
     client.markConnectionBroken('concurrent-break');
 
     releaseConnect();
-    await connecting;
+    // 代际不符：connect 放弃应用并抛 superseded（AbortError），由调用方 catch。
+    await expect(connecting).rejects.toThrow('ACP connect superseded');
 
     // 旧 connect 结果被放弃：connected 保持 false
     expect(client.connected).toBe(false);
@@ -578,7 +579,7 @@ describe('ACP auto-reconnect on transport failure', () => {
     expect(client.initialized).toBe(true);
   });
 
-  it('markConnectionBroken 在已 reconnecting 时会重排调度并重置 attempts', async () => {
+  it('markConnectionBroken 在已 reconnecting 时重排调度但保留 attempts 预算', async () => {
     const client = makeRealClient();
     client.autoReconnectEnabled = true;
     client.reconnectDelay = 1000;
@@ -593,8 +594,100 @@ describe('ACP auto-reconnect on transport failure', () => {
 
     client.reconnectAttempts = 5;
     client.markConnectionBroken('second');
-    expect(client.reconnectAttempts).toBe(0);
+    // 预算必须保留：清零会让 reconnect_failed 永不触发，破坏有限重连 SLI。
+    expect(client.reconnectAttempts).toBe(5);
     expect(client._reconnectTimer).toBeTruthy();
     expect(client._reconnectTimer).not.toBe(firstTimer);
+  });
+
+  it('rearm 时 attempts 已达 max 则直接 reconnect_failed，不再重排', async () => {
+    const client = makeRealClient();
+    client.autoReconnectEnabled = true;
+    client.maxReconnectAttempts = 3;
+    client.reconnectDelay = 1000;
+    client.requestHttp = vi.fn(async () => {
+      throw new Error('connect refused');
+    });
+    const failed = vi.fn();
+    client.on('reconnect_failed', (event) => failed(event.detail));
+
+    client.markConnectionBroken('first');
+    client.reconnectAttempts = 3; // 预算已耗尽
+    client.markConnectionBroken('second');
+
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(client.reconnecting).toBe(false);
+    expect(client._reconnectTimer).toBeNull();
+  });
+
+  it('restoreConnection 返回 sessionInvalid 时 reconnected 事件携带标记', async () => {
+    const client = makeRealClient();
+    client._lastSessionId = 'sess-invalid';
+    client.requestHttp = vi.fn(async (path, init) => {
+      if (path === '/api/v1/acp/connect') {
+        return { ok: true, status: 200, json: async () => ({ connectionId: 'conn-sinv', sessionToken: 'tok' }) };
+      }
+      const body = JSON.parse(init.body || '{}');
+      if (body.method === 'initialize') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }) };
+      }
+      if (body.method === 'session/load') {
+        // 会话不存在 → sessionInvalid 判定（HTTP 4xx，避免被归为 transport）
+        const err = new Error('session not found');
+        err.status = 404;
+        throw err;
+      }
+      throw new Error('unexpected');
+    });
+    const reconnected = vi.fn();
+    client.on('reconnected', (event) => reconnected(event.detail));
+    const invalid = vi.fn();
+    client.on('session_invalid', (event) => invalid(event.detail));
+
+    client.markConnectionBroken('test');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(invalid).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess-invalid' }));
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    expect(reconnected.mock.calls[0][0].sessionInvalid).toBe(true);
+    expect(reconnected.mock.calls[0][0].sessionBound).toBe(false);
+  });
+
+  it('reconnect() 对 sessionInvalid 返回 false（session_invalid 事件已发出）', async () => {
+    const client = makeRealClient();
+    client.requestHttp = vi.fn(async (path, init) => {
+      if (path === '/api/v1/acp/connect') {
+        return { ok: true, status: 200, json: async () => ({ connectionId: 'conn-r2', sessionToken: 'tok' }) };
+      }
+      const body = JSON.parse(init.body || '{}');
+      if (body.method === 'initialize') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }) };
+      }
+      if (body.method === 'session/load') {
+        const err = new Error('unknown session');
+        err.status = 404;
+        throw err;
+      }
+      throw new Error('unexpected');
+    });
+
+    const result = await client.reconnect({ sessionId: 'sess-gone', cwd: 'C:/Project' });
+    expect(result).toBe(false);
+  });
+
+  it('kill switch 关闭时 connect 失败不触发自动重连', async () => {
+    const client = makeRealClient();
+    client.setAutoReconnectEnabled(false);
+    client.requestHttp = vi.fn(async () => {
+      throw new Error('connect refused');
+    });
+    const reconnecting = vi.fn();
+    client.on('reconnecting', (event) => reconnecting(event.detail));
+
+    await expect(client.connect()).rejects.toThrow('connect refused');
+    expect(client.connected).toBe(false);
+    expect(client.reconnecting).toBe(false);
+    expect(client._reconnectTimer).toBeNull();
+    expect(reconnecting).not.toHaveBeenCalled();
   });
 });

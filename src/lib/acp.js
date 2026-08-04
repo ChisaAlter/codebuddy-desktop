@@ -926,7 +926,9 @@ export class AcpClient {
         // 释放刚拿到的 connection，让新的重连周期重新发起。
         if (generation !== this._restoreGeneration) {
           await this.releaseConnection(payload.connectionId).catch(() => null);
-          return;
+          const superseded = new Error('ACP connect superseded');
+          superseded.name = 'AbortError';
+          throw superseded;
         }
         const previousConnectionId = this.connectionId;
         this.connectionId = payload.connectionId;
@@ -950,8 +952,8 @@ export class AcpClient {
         if (err.name === 'AbortError') {
           this._connectionError = true;
         }
-        // 非重连触发的 connect() 失败也走重连流程
-        if (!this.reconnecting) {
+        // 非重连触发的 connect() 失败也走重连流程；kill switch 关闭时不自动恢复。
+        if (!this.reconnecting && this.autoReconnectEnabled) {
           this._triggerReconnect();
         }
         throw err;
@@ -995,20 +997,34 @@ export class AcpClient {
       });
       return wasConnected;
     }
-    // 已在重连周期中再次 broken：升代际让在飞 restore 失效，并重置预算、尽快重排下一轮。
+    // 已在重连周期中再次 broken：升代际让在飞 restore 失效，并**保留** attempts
+    // 预算、按当前指数退避尽快重排（不清零，否则有限重连 SLI 失效）。
     if (this.reconnecting) {
       if (this._reconnectTimer) {
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
       }
-      this.reconnectAttempts = 0;
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        // 预算已耗尽：直接终态，不重排。
+        this.reconnecting = false;
+        this._connectionError = true;
+        console.warn('[acp-restore] broken-rearm-exhausted', {
+          reason,
+          generation: this._restoreGeneration,
+        });
+        this.emit('reconnect_failed', { attempts: this.reconnectAttempts });
+        return wasConnected;
+      }
+      const nextDelay = Math.min(this.reconnectDelay * 2 ** this.reconnectAttempts, 30000);
       console.warn('[acp-restore] broken-rearm', {
         reason,
         generation: this._restoreGeneration,
+        attempt: this.reconnectAttempts,
+        nextDelay,
         sessionId: this._lastSessionId,
       });
-      this.emit('reconnecting', { attempt: 0, max: this.maxReconnectAttempts, reason });
-      this._scheduleReconnect(this.reconnectDelay);
+      this.emit('reconnecting', { attempt: this.reconnectAttempts, max: this.maxReconnectAttempts, reason });
+      this._scheduleReconnect(nextDelay);
       return wasConnected;
     }
     // 立即通知 UI 进入"重连中"，与心跳兜底路径表现一致。
@@ -1034,7 +1050,7 @@ export class AcpClient {
 
       const generation = this._restoreGeneration;
       try {
-        await this.restoreConnection({
+        const result = await this.restoreConnection({
           sessionId: this._lastSessionId,
           cwd: this._lastCwd,
         });
@@ -1046,10 +1062,15 @@ export class AcpClient {
           console.warn('[acp-restore] reconnected', {
             attempts,
             sessionBound: this.sessionBound,
+            sessionInvalid: result?.sessionInvalid === true,
             generation,
             sessionId: this._lastSessionId,
           });
-          this.emit('reconnected', { attempts, sessionBound: this.sessionBound });
+          this.emit('reconnected', {
+            attempts,
+            sessionBound: this.sessionBound,
+            sessionInvalid: result?.sessionInvalid === true,
+          });
           return;
         }
       } catch (error) {
@@ -1167,6 +1188,8 @@ export class AcpClient {
       const result = await this.restoreConnection(options);
       // 显式 reconnect 的成功语义：协议已恢复；会话绑定由调用方/sessionBound 判断。
       if (!(this.connected && this.initialized)) return false;
+      // 会话已失效：session_invalid 事件已发出（错误可见），此处干净地返回失败。
+      if (result?.sessionInvalid === true) return false;
       return result && typeof result === 'object' ? result : { ok: true };
     } catch (_) {
       this._scheduleReconnect(this.reconnectDelay);
