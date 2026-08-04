@@ -39,6 +39,12 @@ import {
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
 
+// Stable empty refs for useStore selectors: `|| []` / `|| {}` allocate a new object on
+// every selector evaluation, which defeats Zustand's Object.is equality check and forces
+// a re-render on every store mutation (including every keystroke via setThreadDraft).
+const EMPTY_ARRAY = [];
+const EMPTY_OBJECT = {};
+
 function useResolvedTheme() {
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'dark');
   useEffect(() => {
@@ -2287,7 +2293,7 @@ export default function ReplicaChatView() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[s.activeThreadId] || null);
-  const promptQueue = useStore((s) => s.promptQueue || []);
+  const promptQueue = useStore((s) => s.promptQueue || EMPTY_ARRAY);
   // Prefer the runtime snapshot, then rebuild from timeline for restored threads.
   const subagentReports = useMemo(() => {
     if (Array.isArray(activeThreadRuntime?.subagentReports) && activeThreadRuntime.subagentReports.length) {
@@ -2307,12 +2313,12 @@ export default function ReplicaChatView() {
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
-  const pendingAttachments = useStore((s) => s.pendingAttachments || []);
+  const pendingAttachments = useStore((s) => s.pendingAttachments || EMPTY_ARRAY);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
   const addDroppedAttachments = useStore((s) => s.addDroppedAttachments);
   const addClipboardImageAttachment = useStore((s) => s.addClipboardImageAttachment);
   const removePendingAttachment = useStore((s) => s.removePendingAttachment);
-  const capabilities = useStore((s) => s.capabilities || {});
+  const capabilities = useStore((s) => s.capabilities || EMPTY_OBJECT);
   const models = useStore((s) => s.models);
   const modes = useStore((s) => s.modes);
   const setModel = useStore((s) => s.setModel);
@@ -2663,6 +2669,10 @@ export default function ReplicaChatView() {
   );
   const responseActivityLabel = useMemo(
     () => {
+      // 防御门控：会话已空闲（无活动 run / 未在加载历史）时活动标签必须为 null。
+      // presenter 各分支理论上已在终态收敛，但此处兜底可防止未来新增分支
+      // 把「正在执行工具」等陈旧提示残留在输入框上方。
+      if (!sessionResponseBusy && !historyReplayActive) return null;
       const baseLabel = getResponseActivityLabel({
         connectionState,
         historyReplayActive,
@@ -2689,6 +2699,7 @@ export default function ReplicaChatView() {
       timeline,
       t,
       workflowStatus,
+      sessionResponseBusy,
     ],
   );
   const slashSuggestions = useMemo(
@@ -3527,7 +3538,7 @@ const ChatComposer = React.memo(function ChatComposer({
   const [showWorkspaceDirsMenu, setShowWorkspaceDirsMenu] = useState(false);
   // P1-6: overlays must start after the actual (possibly collapsed) sidebar.
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
-  const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || []);
+  const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || EMPTY_ARRAY);
   const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
   const workspaceDirsError = useStore((s) => s.workspaceDirsError);
   const chooseAndAddWorkspaceExtraDir = useStore((s) => s.chooseAndAddWorkspaceExtraDir);

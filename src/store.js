@@ -857,12 +857,17 @@ export const useStore = create((set, get) => {
   setThreadDraft(value) {
     const threadId = get().activeThreadId;
     if (!threadId) return;
+    const next = String(value || '');
+    const current = get().threadsById[threadId]?.draft || '';
+    // 值短路：打字时 onChange 可能传入与当前 draft 相同的值（如 IME 组合、
+    // 焦点事件等）。跳过无意义的 store 写入，避免触发全应用 selector fan-out。
+    if (current === next) return;
     set((state) => ({
       threadsById: {
         ...state.threadsById,
         [threadId]: {
           ...state.threadsById[threadId],
-          draft: String(value || ''),
+          draft: next,
           updatedAt: new Date().toISOString(),
         },
       },
