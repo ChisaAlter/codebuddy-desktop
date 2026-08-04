@@ -185,3 +185,38 @@ describe('timeline stream coalescing', () => {
     );
   });
 });
+
+describe('persistProductState coalescing (M-perf)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { electronAPI: { saveProductState: vi.fn().mockResolvedValue(true) } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('coalesces a burst of persist triggers into a chain with one final save', async () => {
+    const { api } = createHarness();
+    const saveProductState = vi.mocked(window.electronAPI.saveProductState);
+
+    // Three full-state persist triggers in the same tick (typing pause +
+    // stream pause + terminal pause all landing together).
+    const first = api.persistProductState();
+    const second = api.persistProductState();
+    const third = api.persistProductState();
+    await Promise.all([first, second, third]);
+
+    // Exactly two writes: the in-flight save plus the chain-tail save that
+    // carries the freshest state (requests that arrived while busy are not lost
+    // but are folded into one final write instead of N serializations).
+    expect(saveProductState).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists immediately when the chain is idle', async () => {
+    const { api } = createHarness();
+    const saveProductState = vi.mocked(window.electronAPI.saveProductState);
+
+    await api.persistProductState();
+    expect(saveProductState).toHaveBeenCalledTimes(1);
+  });
+});
