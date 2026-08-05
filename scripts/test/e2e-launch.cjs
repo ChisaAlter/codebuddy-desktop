@@ -266,10 +266,23 @@ async function main(signal) {
   check('connected target is an Electron renderer with React content', identity.rootChildren > 0, identity.href);
 
   await driveByRole(client, { role: 'navigation', name: 'Main navigation', timeoutMs: 15000, signal });
+  const desktopExtensionsExpanded = await client.evaluate(
+    `(() => document.querySelector('aside[role="navigation"] button[aria-label$="桌面扩展"]')?.getAttribute('aria-expanded') === 'true')()`,
+  );
+  if (!desktopExtensionsExpanded) {
+    await driveByRole(client, {
+      role: 'button',
+      name: '展开桌面扩展',
+      action: 'invoke',
+      root: 'aside[role="navigation"]',
+      timeoutMs: 15000,
+      signal,
+    });
+  }
   // "添加项目" is on Instances, not the default chat shell.
   await driveByRole(client, {
     role: 'button',
-    name: '实例',
+    name: '实例列表',
     action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,

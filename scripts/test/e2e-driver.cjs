@@ -369,7 +369,45 @@ function seedProductState(options = {}) {
   if (!userDataDir || !projectRoot) throw new Error('seedProductState requires userDataDir and projectRoot');
   const now = new Date().toISOString();
   const projectId = 'project-e2e';
-  const threadId = 'thread-e2e';
+  const activeThreadId = options.activeThreadId || 'thread-e2e';
+  // Perf runs seed the 300-entry fixture transcript via options.timeline on
+  // 'thread-fixture'; the default thread-e2e stays empty for baseline typing.
+  const threadTemplate = (id, title, timeline, modelId) => ({
+    id,
+    projectId,
+    sessionId: null,
+    title,
+    draft: '',
+    timeline: Array.isArray(timeline) ? timeline : [],
+    status: 'idle',
+    unread: false,
+    pinned: false,
+    archivedAt: null,
+    modelId: modelId || null,
+    modeId: 'default',
+    createdAt: now,
+    updatedAt: now,
+    lastOpenedAt: now,
+    metadata: {},
+  });
+  const threadIds = [activeThreadId];
+  const threadsById = {
+    [activeThreadId]: threadTemplate(
+      activeThreadId,
+      activeThreadId === 'thread-fixture' ? '性能验证会话' : '新对话',
+      activeThreadId === 'thread-fixture' ? options.timeline : [],
+      activeThreadId === 'thread-fixture' ? options.modelId || 'perf-model' : null,
+    ),
+  };
+  if (activeThreadId !== 'thread-e2e') {
+    threadsById['thread-e2e'] = threadTemplate('thread-e2e', '新对话', [], null);
+    threadIds.push('thread-e2e');
+  }
+  for (const extra of options.extraThreads || []) {
+    if (threadsById[extra.id]) continue;
+    threadsById[extra.id] = threadTemplate(extra.id, extra.title || '新对话', extra.timeline, extra.modelId || null);
+    threadIds.push(extra.id);
+  }
   const productState = {
     version: 1,
     guiSettings: {},
@@ -386,29 +424,10 @@ function seedProductState(options = {}) {
       },
     },
     projectOrder: [projectId],
-    threadsById: {
-      [threadId]: {
-        id: threadId,
-        projectId,
-        sessionId: null,
-        title: '新对话',
-        draft: '',
-        timeline: [],
-        status: 'idle',
-        unread: false,
-        pinned: false,
-        archivedAt: null,
-        modelId: null,
-        modeId: 'default',
-        createdAt: now,
-        updatedAt: now,
-        lastOpenedAt: now,
-        metadata: {},
-      },
-    },
-    threadOrderByProject: { [projectId]: [threadId] },
+    threadsById,
+    threadOrderByProject: { [projectId]: threadIds },
     activeProjectId: projectId,
-    activeThreadId: threadId,
+    activeThreadId,
   };
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, 'product-state.json'), `${JSON.stringify(productState, null, 2)}\n`, 'utf8');
@@ -2241,9 +2260,10 @@ function roleActionInPage(options) {
   const candidates = Array.from(root.querySelectorAll('*')).filter((element) => implicitRole(element) === options.role);
   const named = candidates.map((element) => ({ element, name: accessibleName(element) }));
   const wanted = normalize(options.name);
-  const match = named.find(({ name }) =>
-    options.exact === false ? name.toLocaleLowerCase().includes(wanted.toLocaleLowerCase()) : name === wanted,
-  );
+  const matchesName = ({ name }) =>
+    options.exact === false ? name.toLocaleLowerCase().includes(wanted.toLocaleLowerCase()) : name === wanted;
+  const matching = named.filter(matchesName);
+  const match = matching.find(({ element }) => !visibilityProblem(element)) || matching[0];
 
   if (!match) {
     return {

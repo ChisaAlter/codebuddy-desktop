@@ -55,7 +55,7 @@ describe('electron product-state store', () => {
       guiSettings: { theme: 'dark' },
     });
 
-    expect(saved.activeProjectId).toBe('project-1');
+    expect(saved).toMatchObject({ ok: true, disposition: 'committed' });
     expect(store.load().threadsById['thread-1'].timeline[0].content).toBe('hi');
     expect(store.load().guiSettings.theme).toBe('dark');
   });
@@ -124,6 +124,47 @@ describe('electron product-state store', () => {
     fs.writeFileSync(store.stateFile, '{bad', 'utf8');
     fs.writeFileSync(`${store.stateFile}.bak`, '{also-bad', 'utf8');
     expect(store.load()).toEqual(emptyProductState());
+  });
+
+  it('prevents an older async save from overwriting a newer sync save', async () => {
+    const { store } = makeStore();
+    const originalWriteFile = fs.promises.writeFile;
+    let releaseOldWrite;
+    const oldWriteBlocked = new Promise((resolve) => {
+      releaseOldWrite = resolve;
+    });
+    let oldWriteStarted;
+    const started = new Promise((resolve) => {
+      oldWriteStarted = resolve;
+    });
+    fs.promises.writeFile = async (...args) => {
+      oldWriteStarted();
+      await oldWriteBlocked;
+      return originalWriteFile(...args);
+    };
+
+    try {
+      const oldSave = store.save({ ...emptyProductState(), guiSettings: { step: 'old' } });
+      await started;
+      const syncResult = store.saveSync({ ...emptyProductState(), guiSettings: { step: 'new' } });
+      expect(syncResult).toMatchObject({ ok: true, disposition: 'committed' });
+      releaseOldWrite();
+      await expect(oldSave).resolves.toMatchObject({ ok: true, disposition: 'superseded' });
+      expect(store.load().guiSettings.step).toBe('new');
+    } finally {
+      fs.promises.writeFile = originalWriteFile;
+      releaseOldWrite?.();
+    }
+  });
+
+  it('uses generation-specific temp files and leaves none after saves settle', async () => {
+    const { dir, store } = makeStore();
+    await Promise.all([
+      store.save({ ...emptyProductState(), guiSettings: { step: 1 } }),
+      store.save({ ...emptyProductState(), guiSettings: { step: 2 } }),
+    ]);
+    expect(fs.readdirSync(dir).filter((name) => name.includes('.tmp.'))).toEqual([]);
+    expect(store.load().guiSettings.step).toBe(2);
   });
 
   // L1: product-state.json must be written with 0o600 so conversation/thread

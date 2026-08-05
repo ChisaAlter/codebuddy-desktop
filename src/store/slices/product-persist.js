@@ -10,7 +10,7 @@ import {
 import { normalizeGuiSettings } from '../../lib/gui-settings';
 import { reduceAcpEvent } from '../../lib/timeline';
 import { emptyThreadRuntime } from '../helpers/thread-runtime';
-import { terminalStateFromProject } from '../helpers/terminal-workspace-state';
+import { terminalStateFromProject, terminalStateSnapshot } from '../helpers/terminal-workspace-state';
 
 /** High-frequency ACP stream chunks — coalesce before React store commits. */
 const COALESCED_TIMELINE_EVENTS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
@@ -55,6 +55,7 @@ export function createProductPersistSlice(set, get, ctx) {
   let persistCoalesceBusy = false;
   let persistCoalesceDirty = false;
   let persistCoalesceTail = Promise.resolve(true);
+  let persistReportErrors = false;
 
   const takeTimelineCoalesce = (threadId) => {
     if (!threadId || !threadTimelineCoalesce) return null;
@@ -258,6 +259,7 @@ export function createProductPersistSlice(set, get, ctx) {
     const saveProductState = window.electronAPI?.saveProductState;
     if (!saveProductState) return false;
     const silent = options?.silent === true;
+    if (!silent) persistReportErrors = true;
 
     // Coalesce: if a save is already queued or running, remember the state
     // changed again and ride the tail of the chain; the tail performs one final
@@ -278,10 +280,11 @@ export function createProductPersistSlice(set, get, ctx) {
         if (projectCount === 0 && Object.keys(state.projectsById || {}).length === 0) {
           // 允许用户真的删光项目后保存；但若从未加载过则上面已拦。
         }
-        await saveProductState(snapshot);
+        const result = await saveProductState(snapshot);
+        if (!result?.ok) throw new Error(result?.error || '项目状态保存未完成');
         return true;
       } catch (error) {
-        if (!silent) set({ error: `保存项目状态失败: ${error.message}` });
+        if (persistReportErrors) set({ error: `保存项目状态失败: ${error.message}` });
         return false;
       }
     };
@@ -289,13 +292,9 @@ export function createProductPersistSlice(set, get, ctx) {
     const operation = getProductStateSaveChain()
       .catch(() => false)
       .then(async () => {
-        // Save unconditionally, then drain coalesce-drain requests: bursts that
-        // landed while a save was in flight — including while THIS drain save is
-        // running (the main process coalesces for ~800ms, so a save can stay in
-        // flight long enough for new requests to arrive) — set the dirty flag.
-        // Drain until quiescent so no request is dropped. The resolved value is
-        // the LAST save's result so callers (e.g. setThreadPinned rollback) can
-        // tell a failed persistence apart from a successful one.
+        // Save unconditionally, then drain requests that arrived while this save
+        // was in flight. flushProductStateSync clears pre-flush dirty work; a
+        // dirty flag observed here therefore always represents a newer request.
         let saved = await runSave();
         while (persistCoalesceDirty) {
           persistCoalesceDirty = false;
@@ -305,6 +304,7 @@ export function createProductPersistSlice(set, get, ctx) {
       })
       .finally(() => {
         persistCoalesceBusy = false;
+        persistReportErrors = false;
       });
     setProductStateSaveChain(operation);
     persistCoalesceTail = operation;
@@ -353,27 +353,28 @@ export function createProductPersistSlice(set, get, ctx) {
           };
         }
 
-    for (const [projectId] of pendingTerminalStates) {
-      const project = projectsById[projectId];
-      if (!project) continue;
-      // M-perf: terminal timers no longer carry a scheduled-time snapshot (the
-      // 5s debounce made it stale); fold the freshest panes at flush time.
-      const panes = state.terminalPanes.map((pane) => ({
-        ...pane,
-        output: String(pane.output || '').slice(-200000),
-      }));
-      projectsById[projectId] = {
-        ...project,
-        preferences: {
-          ...(project.preferences || {}),
-          terminalState: {
-            activePaneId: state.activePaneId,
-            panes,
-          },
-        },
-        updatedAt: now,
-      };
-    }
+        const activeTerminalProjectId = state.activeProjectId;
+        if (activeTerminalProjectId && pendingTerminalStates.some(([projectId]) => projectId === activeTerminalProjectId)) {
+          const project = projectsById[activeTerminalProjectId];
+          if (project) {
+            const terminalState = terminalStateSnapshot(
+              activeTerminalProjectId,
+              state.terminalPanes,
+              state.activePaneId,
+            );
+            projectsById[activeTerminalProjectId] = {
+              ...project,
+              preferences: {
+                ...(project.preferences || {}),
+                terminalState: {
+                  activePaneId: terminalState.activePaneId,
+                  panes: terminalState.panes,
+                },
+              },
+              updatedAt: now,
+            };
+          }
+        }
 
         for (const [projectId, pending] of pendingWorkspaceStates) {
           const project = projectsById[projectId];
@@ -396,6 +397,7 @@ export function createProductPersistSlice(set, get, ctx) {
         set({ error: `退出前保存项目状态失败: ${result?.error || '未知错误'}` });
         return false;
       }
+      persistCoalesceDirty = false;
       return true;
     } catch (error) {
       set({ error: `退出前保存项目状态失败: ${error.message}` });

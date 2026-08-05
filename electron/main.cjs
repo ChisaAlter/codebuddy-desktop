@@ -7,6 +7,7 @@ const { parse: parseJsonc } = require('jsonc-parser');
 const http = require('http');
 const express = require('express');
 const { createProductStateStore } = require('./product-state.cjs');
+const { createProductStateSaveController } = require('./product-state-save-controller.cjs');
 const {
   codeBuddyFetchOptions,
   createCodeBuddyRuntimeManager,
@@ -100,6 +101,36 @@ let tray = null;
 let windowCreationPromise = null;
 let closeToTrayHintShown = false;
 const activeTaskNotifications = new Set();
+const senderAbortRegistrations = new WeakMap();
+
+function registerSenderAbort(sender, controller, streamId = null) {
+  if (!sender || sender.isDestroyed()) return () => {};
+  let registration = senderAbortRegistrations.get(sender);
+  if (!registration) {
+    registration = { entries: new Set(), listener: null };
+    registration.listener = () => {
+      for (const entry of registration.entries) {
+        try { entry.controller.abort(); } catch (_) {}
+        if (entry.streamId) codebuddyStreams.delete(entry.streamId);
+      }
+      registration.entries.clear();
+      senderAbortRegistrations.delete(sender);
+    };
+    sender.once('destroyed', registration.listener);
+    senderAbortRegistrations.set(sender, registration);
+  }
+  const entry = { controller, streamId };
+  registration.entries.add(entry);
+  return () => {
+    const current = senderAbortRegistrations.get(sender);
+    if (!current) return;
+    current.entries.delete(entry);
+    if (!current.entries.size) {
+      try { sender.removeListener('destroyed', current.listener); } catch (_) {}
+      senderAbortRegistrations.delete(sender);
+    }
+  };
+}
 let pendingNotificationTarget = null;
 // startup.log 放 userData：打包后 __dirname 在 asar 内（只读虚拟路径），相对路径写失败被静默吞
 const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
@@ -107,6 +138,11 @@ const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
 // 窗口状态持久化文件（P0-3）
 const WINDOW_STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
 const productStateStore = createProductStateStore(app.getPath('userData'), logStartup);
+const productStateSaveController = createProductStateSaveController({
+  store: productStateStore,
+  delayMs: 800,
+  logger: logStartup,
+});
 
 function readWindowState() {
   try {
@@ -2434,17 +2470,9 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     const decoder = new TextDecoder();
     let buffer = '';
     const sender = event.sender;
-    // L7: abort the stream when the renderer is destroyed so the read loop does
-    // not keep running (consuming CPU/network) for an orphaned sender. The loop
-    // already checks sender.isDestroyed() before sending, but it continues to
-    // read from the network until done/abort/timeout.
-    const onSenderDestroyed = () => {
-      try { controller.abort(); } catch (_) {}
-      codebuddyStreams.delete(streamId);
-    };
-    if (sender && !sender.isDestroyed()) {
-      sender.once('destroyed', onSenderDestroyed);
-    }
+    // A single sender-level listener fans out to all in-flight streams. This
+    // avoids adding one EventEmitter listener per concurrent stream/request.
+    const unregisterSenderAbort = registerSenderAbort(sender, controller, streamId);
     (async () => {
       // M-perf: batch stream messages in a 33ms window so high-frequency output
       // (terminal logs, progress bars, chat chunks) is one IPC round-trip per
@@ -2507,8 +2535,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           streamError = timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
-        // L7: remove the destroyed listener now that the loop is exiting.
-        try { sender?.removeListener?.('destroyed', onSenderDestroyed); } catch (_) {}
+        unregisterSenderAbort();
         try {
           reader.releaseLock?.();
         } catch (_) {}
@@ -2584,12 +2611,7 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
   // the renderer is gone — wasting main-process memory and CPU. Mirrors the
   // pattern used by codebuddy:openStream (sender.once('destroyed') → abort).
   const sender = event.sender;
-  const onSenderDestroyed = () => {
-    try { timeout.controller.abort(); } catch (_) {}
-  };
-  if (sender && !sender.isDestroyed()) {
-    try { sender.once('destroyed', onSenderDestroyed); } catch (_) {}
-  }
+  const unregisterSenderAbort = registerSenderAbort(sender, timeout.controller);
   // Cap the accumulated SSE body so a runaway/malicious stream cannot grow
   // main-process memory without bound (the only other bound is the timeout).
   const MAX_SSE_BODY_BYTES = 8 * 1024 * 1024;
@@ -2687,9 +2709,7 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
     };
   } finally {
     timeout.cleanup();
-    if (sender && !sender.isDestroyed()) {
-      try { sender.removeListener('destroyed', onSenderDestroyed); } catch (_) {}
-    }
+    unregisterSenderAbort();
   }
 });
 ipcMain.on('window:minimize', () => {
@@ -2941,56 +2961,10 @@ ipcMain.handle('productState:load', () => productStateStore.load());
 // blocked by a synchronous writeFileSync while other IPC (keystrokes, route
 // switches) is queued. Only the freshest snapshot of a window is kept; the
 // returned promise resolves when the batch containing this snapshot has landed.
-const PRODUCT_STATE_SAVE_COALESCE_MS = 800;
-let productStateSaveTimer = null;
-let productStateSavePending = null;
-let productStateSaveChain = Promise.resolve(null);
-let productStateSaveWindowResolve = null;
-/** Promise for the current 800ms window — every request in the window resolves
- * through it so callers actually wait for the batch (containing their snapshot)
- * to land, not for the previous window's chain. */
-let productStateSaveWindow = Promise.resolve(null);
-
-ipcMain.handle('productState:save', (_event, state) => {
-  productStateSavePending = state;
-  if (productStateSaveTimer) return productStateSaveWindow;
-  productStateSaveWindow = new Promise((resolve) => {
-    productStateSaveWindowResolve = resolve;
-  });
-  productStateSaveTimer = setTimeout(() => {
-    productStateSaveTimer = null;
-    const snapshot = productStateSavePending;
-    productStateSavePending = null;
-    const operation = productStateSaveChain
-      .catch(() => null)
-      .then(() => productStateStore.save(snapshot))
-      .catch((error) => {
-        logStartup(`Product state save failed: ${error.message}`);
-        return null;
-      });
-    productStateSaveChain = operation;
-    const resolveWindow = productStateSaveWindowResolve;
-    productStateSaveWindowResolve = null;
-    if (resolveWindow) resolveWindow(operation);
-  }, PRODUCT_STATE_SAVE_COALESCE_MS);
-  return productStateSaveWindow.then(() => productStateSaveChain);
-});
+ipcMain.handle('productState:save', (_event, state) => productStateSaveController.request(state));
 
 ipcMain.on('productState:saveSync', (event, state) => {
-  // The sync quit-path save carries the freshest state: cancel any coalesced
-  // async save that is still pending so it cannot later overwrite the file with
-  // a stale snapshot (async saves run through the same .tmp/.bak rename dance).
-  if (productStateSaveTimer) {
-    clearTimeout(productStateSaveTimer);
-    productStateSaveTimer = null;
-  }
-  productStateSavePending = null;
-  try {
-    event.returnValue = { ok: true, state: productStateStore.saveSync(state) };
-  } catch (error) {
-    logStartup(`Synchronous product state save failed: ${error.message}`);
-    event.returnValue = { ok: false, error: error.message };
-  }
+  event.returnValue = productStateSaveController.saveSync(state);
 });
 ipcMain.on('window:openDevTools', () => {
   // L2: only allow DevTools in development; production builds ignore the IPC.

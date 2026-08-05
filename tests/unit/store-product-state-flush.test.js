@@ -92,6 +92,17 @@ describe('store product state flush', () => {
     expect(useStore.getState().error).toContain('disk full');
   });
 
+  it('treats malformed and failed async save envelopes as persistence failures', async () => {
+    saveProductState.mockResolvedValueOnce(null);
+    await expect(useStore.getState().persistProductState()).resolves.toBe(false);
+    expect(useStore.getState().error).toContain('保存项目状态失败');
+
+    useStore.setState({ error: null });
+    saveProductState.mockResolvedValueOnce({ ok: false, error: 'disk full' });
+    await expect(useStore.getState().persistProductState()).resolves.toBe(false);
+    expect(useStore.getState().error).toContain('disk full');
+  });
+
   it('flushes pending timeline timers into the sync snapshot', () => {
     useStore.getState().scheduleThreadTimelinePersist('thread-1');
     useStore.getState().patchThreadRuntime('thread-1', {

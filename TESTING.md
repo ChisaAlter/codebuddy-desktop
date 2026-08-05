@@ -96,13 +96,46 @@ node scripts/test/manual-transport-reconnect-gui.cjs
 
 该脚本启动真实 Electron 窗口，通过 CDP 在渲染进程执行 8 项验收（有限重连、restore、401、分类、kill switch、无重发、delayed rebind、设置默认值）。截图与 JSON 报告写入 `gui-test-screenshots/transport-reconnect-*`。
 
-#### 实机性能验收（可选，UI 热路径改动后执行）
+#### 实机性能验收（推荐，UI 热路径或 Electron 运行时改动后执行）
 
 ```bash
-node scripts/test/manual-perf-gui.cjs
+npm run test:perf:production
 ```
 
-该脚本启动真实 Electron 窗口，通过 CDP 测量并验收：打字不重建 `threadsById`（本地输入状态）、1500ms 草稿防抖窗口内草稿不落 store（到期后持久化一次）、keep-alive 视图二次进入快于首次挂载、打字草稿跨路由切换保留。截图与 JSON 报告写入 `gui-test-screenshots/perf-*`。
+该脚本先构建并启动真实 Windows packaged Electron 窗口，通过 CDP 严格确认 renderer 来自 `127.0.0.1:<port>/index.html`，再验收：打字不重建 `threadsById`、1500ms 草稿防抖、流式期间输入响应、终端输出 50ms 合并、keep-alive 视图实例保留，以及进程树和临时 profile 清理。切换耗时只记录稳定样本，不再错误地要求“返回一定快于首次挂载”。截图与 JSON 报告写入 `gui-test-screenshots/perf-*`。
+
+Bundle 预算单独执行：
+
+```bash
+npm run build:dir
+npm run test:bundle-budget
+```
+
+预算报告写入 `out/bundle-budget-report.json`，用于阻止入口、编辑器或终端 chunk 无意增长。
+
+`test:bundle-budget` 同时检查绝对预算（每个 chunk 的 maxBytes）和已提交历史基线 `scripts/test/bundle-baseline.json` 的增长率（raw >10% 且 >50KB，gzip >10% 且 >10KB 才失败，按 label 比较、不比较文件名 hash）。**普通检查永远不会自动更新基线**；只有显式执行下面命令（需人工审查 diff）才会更新：
+
+```bash
+npm run test:bundle-budget:update
+```
+
+### 实机内存 / DOM / listener soak
+
+```bash
+npm run build:dir
+npm run test:perf:probe          # 首次或升级 Electron 后探测 CDP 指标可用性 → out/perf-capability-probe.json
+node scripts/test/perf-memory.cjs --collect-baseline   # 首轮只采集，写入 scripts/test/perf-memory-baseline.json
+npm run test:perf:memory         # 正式门禁：按基线判定 slope / retained / DOM / listener
+```
+
+soak 启动真实 packaged 窗口并加载 300 条 transcript fixture，强制 GC 后采样 `Runtime.getHeapUsage` 与 `Memory.getDOMCounters`，核心 4 路由（chat/terminal/editor/settings）切换 10 轮，按以下规则判定（阈值见 `perf-memory.cjs` 的 `RULES`）：
+
+- heap slope ≤ 1 MiB/轮；
+- 全路由访问 + GC 后 retained heap 增量 ≤ 80 MiB（相对已提交基线）；
+- DOM nodes ≤ 基线 × 1.25；
+- jsEventListeners 末轮 − 首轮 ≤ 100，且不得出现连续 3 轮单调增长。
+
+报告写入 `out/perf-memory-report.json`。任何不支持的内存指标都会阻塞门禁（记录替代采样或阻塞原因），不会静默跳过。
 
 ## 发布门禁
 
@@ -116,15 +149,30 @@ npm run test:release
 
 ```bash
 npm run test:gate
+npm run test:bundle-budget
 npm run test:e2e
 npm run test:packaged
+npm run test:perf:production
+npm run test:perf:memory
 ```
 
 其中：
 
+- `test:gate` = lint + `git diff --check` + 全量单测（含 perf fixtures/report/timeline-path/bundle-budget/perf-memory 单测）+ mobile-remote 单测。
 - `test:e2e` 先构建 renderer，再执行 unpackaged Electron launch / renderer 场景。
 - `test:packaged` 先执行 `build:dir`，再执行 packaged-style Electron 场景。
+- `test:perf:production` 先执行 `build:dir`，再运行 packaged 实机性能门禁（300-entry 首次可交互、真实按键输入、流式输入、long-task 预算、路由返回、草稿防抖、终端批处理、进程清理），报告 `out/perf-report.json` + `gui-test-screenshots/perf-*`。
+- `test:perf:memory` 运行 packaged 内存/DOM/listener soak（需要 `scripts/test/perf-memory-baseline.json` 已提交；缺失时先按上文 collect-baseline 流程建立并人工审查）。
+- 任一 gate 失败都返回非零并保留 JSON 报告路径；release 脚本不会自动刷新基线、删除失败证据或覆盖已有报告。
 - packaged-style 测试通过后，仍需按发布需求执行 `npm run release:prepare`，检查安装包、签名、`latest.yml` 和 `SHA256SUMS.txt`。
+
+门禁分层：
+
+- 快速开发检查：`npm test` / `npm run test:gate`（不启动 Electron soak，保持反馈速度）。
+- 普通 CI gate：`test:gate` + `test:bundle-budget` + `test:e2e`。
+- packaged 发布门禁：`test:release`（含性能与内存 soak，固定 fixture/profile/窗口，预计运行 10-20 分钟）。
+- 基线更新流程：bundle / memory baseline 都只能显式更新并人工审查 diff。
+- Windows Job / AV 文件锁软失败：见下文「当前环境限制与处理原则」。
 
 ## 当前环境限制与处理原则
 

@@ -68,7 +68,12 @@ function MarkdownTable(props) {
   );
 }
 
-const MAX_MARKDOWN_RENDER_CHARS = 200000;
+// Bounded markdown render (production perf gate): remark-gfm table parsing is
+// pathological on long content — measured ~5.6KB/s in Electron 34 (a 171KB
+// table-heavy message blocks the main thread ~30s). Messages above this cap
+// render as plain text so a large pasted transcript can never freeze the UI.
+// The 300-entry perf fixture (20 messages ~200KB) exercises exactly this path.
+const MAX_MARKDOWN_RENDER_CHARS = 4096;
 const MAX_MARKDOWN_URL_LENGTH = 4096;
 const MARKDOWN_UPDATE_DELAY_MS = 120;
 
@@ -115,11 +120,21 @@ function MarkdownLink({ href, children, ...props }) {
   );
 }
 
-function MarkdownRenderFallback({ text }) {
+function MarkdownRenderFallback({ text, reason = 'error' }) {
   return (
     <div className="rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3">
-      <div className="mb-2 text-xs text-[var(--color-text-muted)]">消息渲染失败，已切换为纯文本</div>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-[var(--color-text-secondary)]">{text}</pre>
+      <div className="mb-2 text-xs text-[var(--color-text-muted)]">
+        {reason === 'long' ? '消息内容较长，已按纯文本显示' : '消息渲染失败，已切换为纯文本'}
+      </div>
+      {/* M-perf: skip layout of the (potentially ~200KB) fallback text while the
+          block is off-screen; the parent chat-transcript-item already contains
+          layout, this bounds the per-message cost when it scrolls near. */}
+      <pre
+        className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-[var(--color-text-secondary)]"
+        style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
+      >
+        {text}
+      </pre>
     </div>
   );
 }
@@ -152,7 +167,7 @@ function MarkdownMessage({ text, streaming }) {
   }, [text, streaming]);
 
   if (text.length > MAX_MARKDOWN_RENDER_CHARS) {
-    return <MarkdownRenderFallback text={text} />;
+    return <MarkdownRenderFallback text={text} reason="long" />;
   }
 
   return (
@@ -2340,28 +2355,36 @@ export default function ReplicaChatView() {
   });
   const inputRef = useRef(input);
   inputRef.current = input;
+  const inputRevisionRef = useRef(0);
+  const draftSyncGenerationRef = useRef(0);
   const draftSyncTimerRef = useRef(null);
   const previousThreadIdRef = useRef(useStore.getState().activeThreadId);
-  /** Sync the local draft into the store (value-short-circuited there). */
-  const syncDraftToStore = useCallback((threadId = useStore.getState().activeThreadId) => {
+  /** Sync a captured local draft into its owning thread. */
+  const syncDraftToStore = useCallback((threadId, value) => {
     if (!threadId) return;
-    useStore.getState().setThreadDraft(inputRef.current, threadId);
+    useStore.getState().setThreadDraft(value, threadId);
   }, []);
-  /** Local-only update + debounced store sync: typing is local, persistence is lazy. */
+  /** Local-only update + thread-bound debounced store sync. */
   const setInput = useCallback((value) => {
+    const threadId = activeThreadId;
+    const generation = draftSyncGenerationRef.current + 1;
+    draftSyncGenerationRef.current = generation;
+    inputRevisionRef.current += 1;
     setInputLocal(value);
     if (draftSyncTimerRef.current) clearTimeout(draftSyncTimerRef.current);
     draftSyncTimerRef.current = setTimeout(() => {
       draftSyncTimerRef.current = null;
-      syncDraftToStore();
+      if (draftSyncGenerationRef.current !== generation) return;
+      syncDraftToStore(threadId, value);
     }, 1500);
-  }, [syncDraftToStore]);
-  const flushDraftSync = useCallback(() => {
+  }, [activeThreadId, syncDraftToStore]);
+  const flushDraftSync = useCallback((threadId) => {
+    draftSyncGenerationRef.current += 1;
     if (draftSyncTimerRef.current) {
       clearTimeout(draftSyncTimerRef.current);
       draftSyncTimerRef.current = null;
     }
-    syncDraftToStore();
+    syncDraftToStore(threadId, inputRef.current);
   }, [syncDraftToStore]);
   // Thread switch: persist the previous thread's local draft (its debounce may
   // not have fired yet), then restore the incoming thread's persisted draft.
@@ -2369,6 +2392,7 @@ export default function ReplicaChatView() {
     const prevThreadId = previousThreadIdRef.current;
     previousThreadIdRef.current = activeThreadId;
     if (prevThreadId && prevThreadId !== activeThreadId) {
+      draftSyncGenerationRef.current += 1;
       if (draftSyncTimerRef.current) {
         clearTimeout(draftSyncTimerRef.current);
         draftSyncTimerRef.current = null;
@@ -2376,6 +2400,7 @@ export default function ReplicaChatView() {
       useStore.getState().setThreadDraft(inputRef.current, prevThreadId);
     }
     const state = useStore.getState();
+    inputRevisionRef.current += 1;
     setInputLocal(state.threadsById[activeThreadId]?.draft || '');
   }, [activeThreadId]);
   const [chatError, setChatError] = useState(null);
@@ -2958,10 +2983,12 @@ export default function ReplicaChatView() {
   }, [sendPrompt, compactState]);
 
   const onSubmit = useCallback(async () => {
-    // Make the store draft authoritative before sendPrompt reads/clears it
-    // (the send path clears the persisted draft on success and restores it on
-    // failure — the local input is aligned with the store result afterwards).
-    flushDraftSync();
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const stateAtSubmit = useStore.getState();
+    if (projectId !== stateAtSubmit.activeProjectId || threadId !== stateAtSubmit.activeThreadId) return;
+    // Make this thread's store draft authoritative before sendPrompt reads/clears it.
+    flushDraftSync(threadId);
     const value = input.trim();
     if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
     if (!canSend) {
@@ -2969,10 +2996,9 @@ export default function ReplicaChatView() {
       return;
     }
     const operation = {};
+    const submittedRevision = inputRevisionRef.current;
     sendLaunchInFlightRef.current = operation;
     setSendLaunchInFlight(true);
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
     const isCurrent = () =>
       projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
     setChatError(null);
@@ -3014,9 +3040,9 @@ export default function ReplicaChatView() {
       // Enter/click re-submit the same prompt). Also clear the visual flag.
       setSendLaunchInFlight(false);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
-      // Align the local draft with the store result: success cleared it, a
-      // failed send restored it (possibly merged with the failed draft).
-      if (isCurrent()) {
+      // Align only if the user has not typed another draft while dispatch was in
+      // flight. A newer local revision owns the composer and its debounce timer.
+      if (isCurrent() && inputRevisionRef.current === submittedRevision) {
         setInputLocal(useStore.getState().threadsById[threadId]?.draft || '');
       }
     }
@@ -3369,10 +3395,20 @@ export default function ReplicaChatView() {
             <div>
               <div className="text-xs text-[var(--color-text-muted)] text-center py-2">{t('chat.disclaimer')}</div>
               {timelineWithDates.map(({ item, showDate }, idx) => (
-                <React.Fragment key={item.id || `${item.type || 'item'}-${idx}-${item.createdAt || 0}`}>
+                // M-perf (bounded render): content-visibility skips layout/paint
+                // for off-screen transcript blocks — a 300-entry transcript with
+                // near-200KB messages otherwise forces tens of seconds of layout
+                // (measured on the production perf fixture). Blocks render on
+                // approach to the viewport; contain-intrinsic-size keeps
+                // scrollHeight sane for the scroll-follow logic.
+                <div
+                  key={item.id || `${item.type || 'item'}-${idx}-${item.createdAt || 0}`}
+                  className="chat-transcript-item"
+                  style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
+                >
                   {showDate && <DateSeparator label={getDayLabel(item.createdAt, t)} />}
                   <TimelineItem item={item} />
-                </React.Fragment>
+                </div>
               ))}
               {!sessionResponseBusy ? (
                 <WorkflowSummaryStrip
@@ -3891,7 +3927,7 @@ const ChatComposer = React.memo(function ChatComposer({
             onChange={(e) => setInput(e.target.value)}
             // Blur = the user left the composer (e.g. clicked another session):
             // persist the draft immediately instead of waiting for the debounce.
-            onBlur={flushDraftSync}
+            onBlur={() => flushDraftSync(useStore.getState().activeThreadId)}
             onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             placeholder={

@@ -23,6 +23,13 @@
 
 ### 聊天可靠性与安全渲染
 
+- 新增**生产性能门禁**（`npm run test:perf:production` + `test:perf:memory`，已接入 `test:release`）：
+  - 固定 300 条 transcript fixture（≥100 条 Markdown、≥50 条 fenced code block 覆盖 js/json/python/shell、20 条约 200KB 边界消息），fixture 通过真实 `reduceAcpEvent` reducer 水合，测试脚本禁止 `patchThreadRuntime({ timeline })` 重建；
+  - 输入延迟使用真实 `Input.dispatchKeyEvent` 按键路径测量（空 transcript p95 ≤ 35ms、max ≤ 100ms；300-entry 及流式期间 p95 ≤ 50ms），10 秒窗口 long task >100ms 为 0、>50ms 不超过 2 次；
+  - 300-entry chat 首次可交互 median ≤ 1.5s；terminal/editor/settings 返回 chat p95 ≤ 150ms；
+  - heap slope ≤ 1 MiB/轮、全路由 retained 增量 ≤ 80 MiB、DOM nodes ≤ 基线 × 1.25、jsEventListeners 增量 ≤ 100 且无连续 3 轮单调增长（基线由首轮 collect-only 确立并人工审查）；
+  - bundle 绝对预算之上增加按 label 的已提交历史基线增长门禁（raw >10% 且 >50KB / gzip >10% 且 >10KB 才失败），基线只能显式 `test:bundle-budget:update` 更新。
+- **消息 Markdown 渲染上限**：remark-gfm 对长内容存在病态解析（实测 ~5.6KB/s，171KB 表格密集消息会阻塞主线程约 30 秒），单条消息 Markdown 渲染上限从 200KB 收紧到 4KB，超限消息按纯文本展示（「消息内容较长，已按纯文本显示」），保证大 transcript 首屏与流式期间不再冻结。
 - 点击 Stop 先立即结束本地流和线程运行态，后端取消通知异步发送；正常用户取消不再显示红色发送失败，迟到状态也不会覆盖 `cancelled` 终态。
 - assistant Markdown 禁止执行原始 HTML；外部链接交给隔离的右侧浏览器面板，危险协议、凭据 URL、超长或异常消息按单条消息安全降级。
 - 右侧文件浏览器复用真实工作区文件状态和操作，浏览器、文件和工作流面板默认收起；中文和英文思考强度均保留 `ultracode` 原始小写名称。

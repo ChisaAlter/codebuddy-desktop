@@ -1,0 +1,651 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-05T05:37:08.887Z",
+  "commit": "d1f6dbe7eeb0ee52420cbc2d3ad98920f91a0c5e",
+  "toolchain": {
+    "node": "v24.15.0",
+    "electron": "packaged",
+    "vite": "5.4.21"
+  },
+  "fixture": {
+    "hash": "cb687ddee263daf76b67c564e736eced55782ba5644d2bb267413386270e0e46",
+    "entryCount": 300
+  },
+  "metricsSource": "cdp:Memory.getDOMCounters",
+  "baseline": {
+    "heapUsed": 26092528,
+    "heapTotal": 32636928,
+    "nodes": 13838,
+    "documents": 1,
+    "listeners": 1008
+  },
+  "retained": {
+    "heapUsed": 30191868,
+    "heapTotal": 35885056,
+    "nodes": 15377,
+    "documents": 2,
+    "listeners": 1232
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "heapUsed": 29598748,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 20,
+          "heapUsed": 29773760,
+          "heapTotal": 34574336,
+          "nodes": 15205,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 40,
+          "heapUsed": 29711392,
+          "heapTotal": 31690752,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 26,
+          "heapUsed": 30068268,
+          "heapTotal": 32477184,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 66,
+          "heapUsed": 29598748,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "heapUsed": 29422876,
+      "heapTotal": 31952896,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 5832,
+          "heapUsed": 29651504,
+          "heapTotal": 31952896,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 30,
+          "heapUsed": 29566864,
+          "heapTotal": 31690752,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 28,
+          "heapUsed": 29559764,
+          "heapTotal": 31952896,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 30,
+          "heapUsed": 29422876,
+          "heapTotal": 31952896,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "heapUsed": 29475784,
+      "heapTotal": 31690752,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 5506,
+          "heapUsed": 29711996,
+          "heapTotal": 32215040,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 279,
+          "heapUsed": 29579460,
+          "heapTotal": 31952896,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 81,
+          "heapUsed": 29660896,
+          "heapTotal": 31690752,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 44,
+          "heapUsed": 29475784,
+          "heapTotal": 31690752,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 4,
+      "heapUsed": 28890460,
+      "heapTotal": 31166464,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 6502,
+          "heapUsed": 29206884,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 34,
+          "heapUsed": 29051028,
+          "heapTotal": 31166464,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 19,
+          "heapUsed": 29032324,
+          "heapTotal": 31166464,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 25,
+          "heapUsed": 28890460,
+          "heapTotal": 31166464,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 5,
+      "heapUsed": 28928092,
+      "heapTotal": 31166464,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 6626,
+          "heapUsed": 29236392,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 53,
+          "heapUsed": 29067872,
+          "heapTotal": 31166464,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 30,
+          "heapUsed": 29155480,
+          "heapTotal": 31166464,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 32,
+          "heapUsed": 28928092,
+          "heapTotal": 31166464,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 6,
+      "heapUsed": 28942708,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 6809,
+          "heapUsed": 29268208,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 43,
+          "heapUsed": 29099784,
+          "heapTotal": 31166464,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 24,
+          "heapUsed": 29082764,
+          "heapTotal": 31166464,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 30,
+          "heapUsed": 28942708,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 7,
+      "heapUsed": 28951664,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 6061,
+          "heapUsed": 29303100,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 28,
+          "heapUsed": 29137620,
+          "heapTotal": 31428608,
+          "nodes": 15112,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 18,
+          "heapUsed": 29096184,
+          "heapTotal": 31428608,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 23,
+          "heapUsed": 28951664,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 8,
+      "heapUsed": 28977436,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 5983,
+          "heapUsed": 28996208,
+          "heapTotal": 31428608,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 50,
+          "heapUsed": 29126900,
+          "heapTotal": 31428608,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 23,
+          "heapUsed": 29117616,
+          "heapTotal": 31428608,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 32,
+          "heapUsed": 28977436,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 9,
+      "heapUsed": 28991244,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 41162,
+          "heapUsed": 29322216,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 70,
+          "heapUsed": 29163612,
+          "heapTotal": 31428608,
+          "nodes": 15112,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 40,
+          "heapUsed": 29215552,
+          "heapTotal": 31428608,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 44,
+          "heapUsed": 28991244,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    },
+    {
+      "round": 10,
+      "heapUsed": 29010408,
+      "heapTotal": 31428608,
+      "nodes": 15117,
+      "documents": 2,
+      "listeners": 1199,
+      "routes": [
+        {
+          "route": "chat",
+          "readyMs": 41571,
+          "heapUsed": 29348096,
+          "heapTotal": 31690752,
+          "nodes": 15211,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "terminal",
+          "readyMs": 53,
+          "heapUsed": 29171160,
+          "heapTotal": 31428608,
+          "nodes": 15104,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "editor",
+          "readyMs": 22,
+          "heapUsed": 29156376,
+          "heapTotal": 31428608,
+          "nodes": 15096,
+          "documents": 2,
+          "listeners": 1201,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        },
+        {
+          "route": "settings",
+          "readyMs": 28,
+          "heapUsed": 29010408,
+          "heapTotal": 31428608,
+          "nodes": 15117,
+          "documents": 2,
+          "listeners": 1199,
+          "source": "cdp:Memory.getDOMCounters",
+          "gcError": null,
+          "domError": null,
+          "blocking": false
+        }
+      ]
+    }
+  ]
+}

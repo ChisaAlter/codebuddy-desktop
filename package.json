@@ -36,11 +36,16 @@
     "test:e2e:unpackaged": "vite build && node scripts/test/e2e-launch.cjs && node scripts/test/e2e-renderer.cjs",
     "test:e2e": "npm run test:e2e:unpackaged",
     "test:packaged": "npm run build:dir && node scripts/test/e2e-packaged.cjs",
-    "test:release": "npm run test:gate && npm run test:e2e && npm run test:packaged",
+    "test:bundle-budget": "node scripts/test/bundle-budget.cjs",
+    "test:perf:production": "npm run build:dir && node scripts/test/manual-perf-gui.cjs --packaged",
+    "test:release": "npm run test:gate && npm run test:bundle-budget && npm run test:e2e && npm run test:packaged && npm run test:perf:production && npm run test:perf:memory",
     "prepublishOnly": "npm run test",
     "lint": "eslint electron src --ext .js,.jsx,.cjs",
     "lint:fix": "eslint electron src --ext .js,.jsx,.cjs --fix",
-    "format": "prettier --write \"electron/**/*.{js,cjs}\" \"src/**/*.{js,jsx}\" \"tests/**/*.{js,jsx}\""
+    "format": "prettier --write \"electron/**/*.{js,cjs}\" \"src/**/*.{js,jsx}\" \"tests/**/*.{js,jsx}\"",
+    "test:bundle-budget:update": "node scripts/test/bundle-budget.cjs --update-baseline",
+    "test:perf:memory": "node scripts/test/perf-memory.cjs",
+    "test:perf:probe": "node scripts/test/perf-capability-probe.cjs"
   },
   "dependencies": {
     "@codebuddy/mobile-remote-crypto": "0.1.0",

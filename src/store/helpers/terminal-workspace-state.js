@@ -31,6 +31,20 @@ function normalizePaneCwd(value) {
   return cwd || null;
 }
 
+export function terminalStateSnapshot(projectId, panes, activePaneId) {
+  const capturedPanes = (Array.isArray(panes) ? panes : []).map((pane) => ({
+    ...pane,
+    output: String(pane.output || '').slice(-200000),
+  }));
+  return {
+    projectId,
+    panes: capturedPanes,
+    activePaneId: capturedPanes.some((pane) => pane.id === activePaneId)
+      ? activePaneId
+      : capturedPanes[0]?.id || null,
+  };
+}
+
 export function terminalStateFromProject(project, resetSessions = false) {
   const saved = project?.preferences?.terminalState;
   const panes =

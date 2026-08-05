@@ -393,6 +393,37 @@ describe('execution timeline grouping', () => {
     ])).toMatchObject({ status: '有失败项', tone: 'error' });
   });
 
+  it('returns IDENTITY-STABLE derived objects for unchanged entries (M-perf memo contract)', () => {
+    // Derived objects (thinking-merge + execution_group) must keep object
+    // identity across calls when their sources did not change — otherwise
+    // TimelineItem's React.memo is defeated and every stream chunk re-renders
+    // the whole transcript. This is the contract the 300-entry perf fixture
+    // gate depends on (append cost was ~1s before this fix, ~30ms after).
+    const base = [
+      { id: 'user-1', type: 'message', role: 'user', content: '分析项目', createdAt: 1 },
+      { id: 'think-1', type: 'thinking', role: 'assistant', content: '思考中', streaming: false, createdAt: 2 },
+      { id: 'answer-1', type: 'message', role: 'assistant', content: '已分析', streaming: false, createdAt: 3 },
+      { id: 'tool-1', type: 'tool_call', status: 'completed', title: 'Read', createdAt: 4 },
+      { id: 'user-2', type: 'message', role: 'user', content: '继续', createdAt: 5 },
+      { id: 'answer-2', type: 'message', role: 'assistant', content: '进行中', streaming: true, createdAt: 6 },
+    ];
+    const first = groupTimelineForDisplay(base);
+    // Append a new chunk to the LAST message (same as a real stream append:
+    // untouched entries keep references, the tail changes).
+    const mutated = [...base.slice(0, -1), { ...base[base.length - 1], content: '进行中…新内容' }];
+    const second = groupTimelineForDisplay(mutated);
+
+    expect(first.length).toBe(second.length);
+    // All entries except the changed tail must be the SAME objects.
+    for (let i = 0; i < first.length - 1; i += 1) {
+      expect(first[i]).toBe(second[i]);
+    }
+    // The thinking-merged answer keeps its identity too.
+    const thinkingAnswer = first.find((item) => item.thinking);
+    const thinkingAnswerAgain = second.find((item) => item.thinking);
+    expect(thinkingAnswer).toBe(thinkingAnswerAgain);
+  });
+
   it('merges consecutive thinking and co-locates it on the following assistant answer (WebUI Px)', () => {
     const grouped = groupTimelineForDisplay([
       { id: 'user', type: 'message', role: 'user', content: '/init' },

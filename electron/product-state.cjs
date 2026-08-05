@@ -116,6 +116,16 @@ function normalizeProductState(value) {
 
 function createProductStateStore(userDataPath, logger = () => {}) {
   const stateFile = path.join(userDataPath, 'product-state.json');
+  let saveGeneration = 0;
+
+  function nextSaveGeneration() {
+    saveGeneration += 1;
+    return saveGeneration;
+  }
+
+  function tempFileForGeneration(generation) {
+    return `${stateFile}.tmp.${process.pid}.${generation}`;
+  }
 
   function quarantineInvalid(filePath, label = '') {
     if (!fs.existsSync(filePath)) return null;
@@ -199,48 +209,52 @@ function createProductStateStore(userDataPath, logger = () => {}) {
   /** M-perf: async save path. Keeps the main-process event loop unblocked while
    * serializing+writing (timeline-heavy states used to freeze all IPC). */
   async function save(value) {
+    const generation = nextSaveGeneration();
     const normalized = normalizeProductState(value);
     // 防护：空项目快照不得覆盖磁盘上已有项目（常见于退出时 hydrate 未完成就 beforeunload flush）。
-    if (refuseEmptyOverwrite(normalized)) return normalized;
-    const tempFile = `${stateFile}.tmp`;
+    if (refuseEmptyOverwrite(normalized)) {
+      return {
+        ok: false,
+        generation,
+        code: 'EMPTY_OVERWRITE_REFUSED',
+        error: 'Refused empty product-state overwrite',
+      };
+    }
+    const tempFile = tempFileForGeneration(generation);
     const backupFile = `${stateFile}.bak`;
     fs.mkdirSync(userDataPath, { recursive: true });
     // L1: write with 0o600 so conversation/thread content is not world-readable
     // on multi-user machines. The temp+rename below preserves atomicity.
     await fs.promises.writeFile(tempFile, serialize(normalized), { encoding: 'utf8', mode: 0o600 });
-    await commitStateFile(tempFile, backupFile);
-    return normalized;
+    if (generation !== saveGeneration) {
+      await fs.promises.rm(tempFile, { force: true }).catch(() => {});
+      return { ok: true, generation, disposition: 'superseded', supersededBy: saveGeneration };
+    }
+    // Keep the primary/backup rename sequence synchronous and short. No await can
+    // let saveSync interleave after primary is moved but before the new file lands.
+    commitStateFileSync(tempFile, backupFile);
+    return { ok: true, generation, disposition: 'committed' };
   }
 
   /** Sync save path — only for the quit flow (sendSync), where the app must not
    * exit before the snapshot lands. */
   function saveSync(value) {
+    const generation = nextSaveGeneration();
     const normalized = normalizeProductState(value);
-    if (refuseEmptyOverwrite(normalized)) return normalized;
-    const tempFile = `${stateFile}.tmp`;
+    if (refuseEmptyOverwrite(normalized)) {
+      return {
+        ok: false,
+        generation,
+        code: 'EMPTY_OVERWRITE_REFUSED',
+        error: 'Refused empty product-state overwrite',
+      };
+    }
+    const tempFile = tempFileForGeneration(generation);
     const backupFile = `${stateFile}.bak`;
     fs.mkdirSync(userDataPath, { recursive: true });
     fs.writeFileSync(tempFile, serialize(normalized), { encoding: 'utf8', mode: 0o600 });
     commitStateFileSync(tempFile, backupFile);
-    return normalized;
-  }
-
-  async function commitStateFile(tempFile, backupFile) {
-    try {
-      if (fs.existsSync(backupFile)) await fs.promises.rm(backupFile, { force: true });
-      if (fs.existsSync(stateFile)) await fs.promises.rename(stateFile, backupFile);
-      await fs.promises.rename(tempFile, stateFile);
-      // L1: enforce 0o600 on the final file (rename may not preserve mode on all platforms).
-      try { await fs.promises.chmod(stateFile, 0o600); } catch { /* windows */ }
-    } catch (error) {
-      try {
-        if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
-          await fs.promises.copyFile(backupFile, stateFile);
-        }
-      } catch (_) {}
-      try { await fs.promises.rm(tempFile, { force: true }); } catch (_) {}
-      throw error;
-    }
+    return { ok: true, generation, disposition: 'committed' };
   }
 
   function commitStateFileSync(tempFile, backupFile) {

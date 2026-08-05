@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => ({
   activePromptRunId: null,
   workflowRuntime: null,
   sendPrompt: vi.fn(),
+  setThreadDraft: vi.fn(),
   draft: '',
+  activeThreadId: 'thread-1',
 }));
 
 vi.mock('../../src/store', () => ({
@@ -20,13 +22,15 @@ vi.mock('../../src/store', () => ({
     return selector({
       timeline: mocks.timeline,
       activeProjectId: 'project-1',
-      activeThreadId: 'thread-1',
+      activeThreadId: mocks.activeThreadId,
       projectsById: { 'project-1': { id: 'project-1', name: 'Project' } },
       threadsById: {
         'thread-1': { id: 'thread-1', projectId: 'project-1', draft: mocks.draft, status: mocks.threadStatus },
+        'thread-2': { id: 'thread-2', projectId: 'project-1', draft: '', status: 'idle' },
       },
-      threadRuntimeById: { 'thread-1': mocks.workflowRuntime || {} },
+      threadRuntimeById: { 'thread-1': mocks.workflowRuntime || {}, 'thread-2': {} },
       guiSettings: { locale: 'zh' },
+      setThreadDraft: mocks.setThreadDraft,
       capabilities: {},
       connectionState: mocks.connectionState,
       currentModel: 'test-model',
@@ -87,9 +91,12 @@ import ReplicaChatView, {
 
 useStore.getState = () => ({
   activeProjectId: 'project-1',
-  activeThreadId: 'thread-1',
-  threadsById: { 'thread-1': { id: 'thread-1', projectId: 'project-1', draft: mocks.draft, status: mocks.threadStatus } },
-  setThreadDraft: vi.fn(),
+  activeThreadId: mocks.activeThreadId,
+  threadsById: {
+    'thread-1': { id: 'thread-1', projectId: 'project-1', draft: mocks.draft, status: mocks.threadStatus },
+    'thread-2': { id: 'thread-2', projectId: 'project-1', draft: '', status: 'idle' },
+  },
+  setThreadDraft: mocks.setThreadDraft,
 });
 
 describe('ReplicaChatView cancellation', () => {
@@ -111,6 +118,8 @@ describe('ReplicaChatView cancellation', () => {
     mocks.workflowRuntime = null;
     mocks.sendPrompt.mockReset();
     mocks.sendPrompt.mockResolvedValue(true);
+    mocks.setThreadDraft.mockReset();
+    mocks.activeThreadId = 'thread-1';
     mocks.draft = '';
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -122,6 +131,54 @@ describe('ReplicaChatView cancellation', () => {
     container.remove();
     Element.prototype.scrollIntoView = originalScrollIntoView;
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it('keeps new composer text typed while an earlier send is in flight', async () => {
+    let resolveSend;
+    mocks.isAwaitingResponse = false;
+    mocks.sendPrompt.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    const textarea = container.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    await act(async () => {
+      setter.call(textarea, '第一条');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      setter.call(textarea, '第二条');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    resolveSend({ ok: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('第二条');
+  });
+
+  it('does not allow a stale draft timer to write after its thread changes', async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    const textarea = container.querySelector('textarea');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    await act(async () => {
+      setter.call(textarea, '旧线程草稿');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const oldThreadDraft = mocks.setThreadDraft;
+    mocks.activeThreadId = 'thread-2';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(oldThreadDraft).not.toHaveBeenCalledWith('旧线程草稿', 'thread-2');
+    expect(oldThreadDraft).toHaveBeenCalledWith('旧线程草稿', 'thread-1');
+    vi.useRealTimers();
   });
 
   it('does not show a send failure when Stop cancels a pending send', async () => {

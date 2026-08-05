@@ -44,7 +44,8 @@ scripts/test/test_all.py
 docs/
 
 # Accidental empty junk files
-/{
+/nul
 
 # 本地临时产物（Electron 测试用户数据、验证截图、临时脚本）
 .tmp-*
+/gui-test-screenshots/

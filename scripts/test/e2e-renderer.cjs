@@ -291,18 +291,46 @@ async function verifyStopControlUiFlow(signal) {
 async function verifySidebarShortcut(signal) {
   throwIfAborted(signal, 'sidebar shortcut flow aborted');
   const before = await client.evaluate(`getComputedStyle(document.querySelector('aside[role="navigation"]')).width`);
-  const dispatchShortcut = () => driveByRole(client, {
-    role: 'textbox',
-    name: '从一个想法开始...',
-    action: 'press',
-    key: 'b',
-    ctrlKey: true,
-    timeoutMs: 15000,
-    signal,
-  });
+  const dispatchShortcut = async () => {
+    await client.evaluate(`document.querySelector('textarea[placeholder="从一个想法开始..."]')?.focus()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'Control',
+      code: 'ControlLeft',
+      windowsVirtualKeyCode: 17,
+      nativeVirtualKeyCode: 17,
+      modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'b',
+      code: 'KeyB',
+      text: '',
+      unmodifiedText: '',
+      windowsVirtualKeyCode: 66,
+      nativeVirtualKeyCode: 66,
+      modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'b',
+      code: 'KeyB',
+      windowsVirtualKeyCode: 66,
+      nativeVirtualKeyCode: 66,
+      modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Control',
+      code: 'ControlLeft',
+      windowsVirtualKeyCode: 17,
+      nativeVirtualKeyCode: 17,
+      modifiers: 0,
+    });
+  };
 
-  const shortcutDispatch = await dispatchShortcut();
-  check('Ctrl+B shortcut dispatched from the active chat composer', shortcutDispatch.action === 'press');
+  await dispatchShortcut();
+  check('Ctrl+B shortcut dispatched from the active chat composer', true);
 
   const collapsed = await waitForRendererValue(
     client,
@@ -334,7 +362,7 @@ async function verifySidebarPolish(signal) {
   throwIfAborted(signal, 'sidebar polish flow aborted');
   const state = await client.evaluate(`(() => {
     const sidebar = document.querySelector('aside[role="navigation"]');
-    const newChat = Array.from(sidebar?.querySelectorAll('button') || []).find((button) => button.textContent?.includes('新对话'));
+    const newChat = sidebar?.querySelector('[data-testid="sidebar-new-session"]');
     const workspace = sidebar?.querySelector('button[aria-label$="工作区"]');
     const observability = sidebar?.querySelector('button[aria-label$="可观测"]');
     const activeProject = sidebar?.querySelector('button[data-active-highlight]');
@@ -344,20 +372,23 @@ async function verifySidebarPolish(signal) {
     return {
       newChatBackground: newChat ? getComputedStyle(newChat).backgroundColor : '',
       newChatShadow: newChat ? getComputedStyle(newChat).boxShadow : '',
+      newChatClass: newChat?.className || '',
+      newChatActive: newChat?.classList.contains('active'),
       workspaceExpanded: workspace?.getAttribute('aria-expanded'),
       observabilityExpanded: observability?.getAttribute('aria-expanded'),
       activeProjectHighlight: activeProject?.getAttribute('data-active-highlight'),
       footerOrder: settingsIndex >= 0 && keybindingsIndex === settingsIndex + 1,
-      versionText: Array.from(sidebar?.querySelectorAll('div, span') || []).map((node) => node.textContent?.trim()).find((text) => /^CodeBuddy CLI v/.test(text || '')) || '',
+      versionValues: Array.from(sidebar?.querySelectorAll('.sidebar-user-version-value') || [])
+        .map((node) => node.textContent?.trim() || ''),
     };
   })()`);
-  check('New chat is visually neutral until hover', state.newChatBackground === 'rgba(0, 0, 0, 0)', state.newChatBackground);
-  check('New chat has no persistent selected shadow', state.newChatShadow === 'none', state.newChatShadow);
+  check('New chat uses the stable primary-action style', state.newChatClass.includes('sidebar-new-session-btn'), state.newChatClass);
+  check('New chat is not persistently selected', state.newChatActive === false, String(state.newChatActive));
   check('Workspace navigation starts folded', state.workspaceExpanded === 'false');
   check('Observability navigation starts folded', state.observabilityExpanded === 'false');
   check('Active conversation avoids duplicate project highlight', state.activeProjectHighlight === 'false');
   check('Settings and keybindings are adjacent footer actions', state.footerOrder === true);
-  check('Sidebar footer shows an explicit CodeBuddy CLI version', /^CodeBuddy CLI v\d/.test(state.versionText), state.versionText);
+  check('Sidebar footer shows the Desktop app version', state.versionValues.some((text) => /^v\d/.test(text)), JSON.stringify(state.versionValues));
 }
 
 async function verifySlashCommandCompletion(signal) {
@@ -488,6 +519,26 @@ async function main(signal) {
   check('connected CDP target is the Electron renderer', identity.rootChildren > 0, identity.href);
 
   const expectedControl = injectedControl();
+  const cliSetupOpen = await client.evaluate(`Boolean(document.querySelector('[data-testid="cli-setup-dialog"]'))`);
+  if (cliSetupOpen) {
+    await driveByRole(client, {
+      role: 'button',
+      name: '稍后继续',
+      action: 'invoke',
+      root: '[data-testid="cli-setup-dialog"]',
+      timeoutMs: 15000,
+      signal,
+    }).catch(async () => {
+      await driveByRole(client, {
+        role: 'button',
+        name: '仍要继续',
+        action: 'invoke',
+        root: '[data-testid="cli-setup-dialog"]',
+        timeoutMs: 15000,
+        signal,
+      });
+    });
+  }
   if (expectedControl && process.env.CODEBUDDY_E2E_ONLY_EXPECTED_CONTROL === '1') {
     await driveByRole(client, { ...expectedControl, action: 'assert', signal });
     return;

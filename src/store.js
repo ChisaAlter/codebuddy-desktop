@@ -93,6 +93,7 @@ import { createQueueHelpers } from './store/helpers/queues';
 import {
   makePane,
   terminalStateFromProject,
+  terminalStateSnapshot,
   workspaceStateFromProject,
   workspaceStateSnapshot,
 } from './store/helpers/terminal-workspace-state';
@@ -1417,11 +1418,8 @@ export const useStore = create((set, get) => {
 
   async persistProjectTerminalState(projectId, snapshot) {
     const project = get().projectsById[projectId];
-    if (!project) return;
-    const terminalState = snapshot || {
-      panes: get().terminalPanes,
-      activePaneId: get().activePaneId,
-    };
+    if (!project) return false;
+    const terminalState = snapshot || terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
     set((state) => ({
       projectsById: {
         ...state.projectsById,
@@ -1431,10 +1429,7 @@ export const useStore = create((set, get) => {
             ...(state.projectsById[projectId].preferences || {}),
             terminalState: {
               activePaneId: terminalState.activePaneId,
-              panes: terminalState.panes.map((pane) => ({
-                ...pane,
-                output: String(pane.output || '').slice(-200000),
-              })),
+              panes: terminalState.panes,
             },
           },
           updatedAt: new Date().toISOString(),
@@ -1442,6 +1437,7 @@ export const useStore = create((set, get) => {
       },
     }));
     await get().persistProductState();
+    return true;
   },
 
   scheduleTerminalStatePersist() {
@@ -1449,51 +1445,49 @@ export const useStore = create((set, get) => {
     if (!projectId) return;
     const previous = terminalStatePersistTimers.get(projectId);
     if (previous) clearTimeout(previous.timer || previous);
-    // M-perf: capture the snapshot at flush time, not schedule time — with the
-    // 5s debounce a scheduled-time snapshot would be stale when written.
-    const timer = setTimeout(() => {
+    const entry = { projectId, timer: null };
+    entry.timer = setTimeout(() => {
+      if (terminalStatePersistTimers.get(projectId) !== entry) return;
       terminalStatePersistTimers.delete(projectId);
+      if (get().activeProjectId !== projectId) return;
       get().flushPendingPaneOutputs();
-      get().persistProjectTerminalState(projectId, {
-        panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
-        activePaneId: get().activePaneId,
-      });
+      const snapshot = terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
+      get().persistProjectTerminalState(projectId, snapshot);
     }, TERMINAL_STATE_PERSIST_MS);
-    terminalStatePersistTimers.set(projectId, timer);
+    terminalStatePersistTimers.set(projectId, entry);
   },
 
   async persistActiveProjectTerminalState() {
     const projectId = get().activeProjectId;
-    if (!projectId) return;
+    if (!projectId) return false;
     const pending = terminalStatePersistTimers.get(projectId);
     if (pending) {
       clearTimeout(pending.timer || pending);
       terminalStatePersistTimers.delete(projectId);
     }
-    // Fold any output chunks that have not been committed yet.
     get().flushPendingPaneOutputs();
-    // Best-effort refresh of live PTY cwd before snapshotting so project switch /
-    // app quit can reopen terminals in the directory the user last left them in.
-    const livePanes = get().terminalPanes;
+    const captured = terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
+    // Land the project-owned snapshot in memory before any cwd request yields.
+    // Navigation may replace the root terminal state while these requests run.
+    await get().persistProjectTerminalState(projectId, captured);
+
     const cwdByPaneId = new Map();
     await Promise.all(
-      livePanes.map(async (pane) => {
+      captured.panes.map(async (pane) => {
         if (!pane.sessionId) return;
         const cwd = await get().fetchPtyCwd(pane.sessionId);
         if (cwd) cwdByPaneId.set(pane.id, cwd);
       }),
     );
-    if (cwdByPaneId.size && get().activeProjectId === projectId) {
-      set((state) => ({
-        terminalPanes: state.terminalPanes.map((pane) =>
-          cwdByPaneId.has(pane.id) ? { ...pane, cwd: cwdByPaneId.get(pane.id) } : pane,
-        ),
-      }));
-    }
-    await get().persistProjectTerminalState(projectId, {
-      panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
-      activePaneId: get().activePaneId,
-    });
+    if (!cwdByPaneId.size) return true;
+    const withCwd = {
+      ...captured,
+      panes: captured.panes.map((pane) =>
+        cwdByPaneId.has(pane.id) ? { ...pane, cwd: cwdByPaneId.get(pane.id) } : pane,
+      ),
+    };
+    await get().persistProjectTerminalState(projectId, withCwd);
+    return true;
   },
 
   initializeTerminal() {

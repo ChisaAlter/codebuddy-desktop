@@ -3260,14 +3260,17 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('asserts the current project entrypoint instead of a removed workspace-switch button', () => {
-    for (const relativePath of [
-      'scripts/test/e2e-launch.cjs',
-      'scripts/test/e2e-packaged.cjs',
-    ]) {
-      const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
-      expect(script, relativePath).toContain("name: '添加项目'");
-      expect(script, relativePath).not.toContain("name: '切换工作区目录'");
-    }
+    const launchScript = fs.readFileSync(path.join(process.cwd(), 'scripts/test/e2e-launch.cjs'), 'utf8');
+    expect(launchScript).toContain("name: '展开桌面扩展'");
+    expect(launchScript).toContain("name: '实例列表'");
+    expect(launchScript).toContain("name: '添加项目'");
+    expect(launchScript).not.toContain("name: '切换工作区目录'");
+
+    const packagedScript = fs.readFileSync(path.join(process.cwd(), 'scripts/test/e2e-packaged.cjs'), 'utf8');
+    expect(packagedScript).toContain('driveRoutes(client');
+    expect(packagedScript).toContain('ROUTE_EXPECTATIONS');
+    expect(packagedScript).not.toContain("name: '添加项目'");
+    expect(packagedScript).not.toContain("name: '切换工作区目录'");
   });
 
   it('uses strict disposable Electron profiles and documents persistent dedicated-runner backend state', () => {

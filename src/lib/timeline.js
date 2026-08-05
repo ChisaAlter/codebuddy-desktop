@@ -242,9 +242,22 @@ function mergeConsecutiveThinkingEntries(parts) {
   };
 }
 
+// Identity-stable grouping caches (M-perf): groupTimelineForDisplay must return
+// the SAME derived object for unchanged source entries, otherwise React.memo on
+// TimelineItem is defeated — every stream chunk then re-renders the whole
+// 300-entry transcript (measured ~1s/append on the perf fixture, mostly
+// remark/rehype-highlight re-running). Keyed by SOURCE entry references, which
+// are stable across appends because reduceAcpEvent never mutates untouched
+// entries (id-string keys would collide across sessions/tests with repeated ids).
+const thinkingMergeCache = new WeakMap();
+const executionGroupCache = new WeakMap();
+
 export function groupTimelineForDisplay(timeline) {
   const grouped = [];
   let turn = [];
+
+  const clusterKeyOf = (entries) =>
+    entries.map((entry) => entry?.id || `${entry?.type}:${entry?.createdAt}:${String(entry?.content || '').length}`).join('|');
 
   const flushTurn = () => {
     if (!turn.length) return;
@@ -267,10 +280,19 @@ export function groupTimelineForDisplay(timeline) {
           next?.type === 'message' &&
           next?.role === 'assistant'
         ) {
-          grouped.push({
-            ...next,
-            thinking: merged,
-          });
+          const clusterKey = clusterKeyOf(cluster);
+          const cached = thinkingMergeCache.get(next);
+          let combined;
+          if (cached && cached.key === clusterKey) {
+            combined = cached.combined;
+          } else {
+            combined = {
+              ...next,
+              thinking: merged,
+            };
+            thinkingMergeCache.set(next, { key: clusterKey, combined });
+          }
+          grouped.push(combined);
           index += 1;
           continue;
         }
@@ -297,14 +319,23 @@ export function groupTimelineForDisplay(timeline) {
           candidate.streaming !== true,
       );
       const first = cluster[0];
-      grouped.push({
-        id: `execution-${first.id || grouped.length}-${clusterStart}`,
-        type: 'execution_group',
-        role: 'system',
-        createdAt: first.createdAt,
-        items: cluster,
-        autoCollapse: finalAnswerCompleted,
-      });
+      const clusterKey = clusterKeyOf(cluster);
+      const cached = executionGroupCache.get(first);
+      let group;
+      if (cached && cached.key === clusterKey && cached.autoCollapse === finalAnswerCompleted) {
+        group = cached.group;
+      } else {
+        group = {
+          id: `execution-${first.id || clusterKey}-${clusterStart}`,
+          type: 'execution_group',
+          role: 'system',
+          createdAt: first.createdAt,
+          items: cluster,
+          autoCollapse: finalAnswerCompleted,
+        };
+        executionGroupCache.set(first, { key: clusterKey, autoCollapse: finalAnswerCompleted, group });
+      }
+      grouped.push(group);
     }
     turn = [];
   };

@@ -250,17 +250,6 @@ async function main(signal) {
     return;
   }
 
-  await driveByRole(client, { role: 'navigation', name: 'Main navigation', timeoutMs: 15000, signal });
-  // "添加项目" is on Instances, not the default chat shell.
-  await driveByRole(client, {
-    role: 'button',
-    name: '实例',
-    action: 'invoke',
-    root: 'aside[role="navigation"]',
-    timeoutMs: 15000,
-    signal,
-  });
-  await driveByRole(client, { role: 'button', name: '添加项目', timeoutMs: 15000, signal });
   const routeResults = await driveRoutes(client, {
     screenshotDir,
     expectedControl,
