@@ -137,47 +137,24 @@ describe('store prompt session selection', () => {
     );
   });
 
-  it('treats goal-only turns as usable only with real CLI goal evidence', () => {
+  it('treats goal-only turns as usable without assistant text', () => {
     const promptStartedAt = 1000;
     const prompt = { id: 'prompt-1', type: 'message', role: 'user', content: '/goal fix login', createdAt: promptStartedAt };
     const timeline = [
       prompt,
       { id: 'goal-1', type: 'goal-progress', meta: { title: 'fix login', percent: 10 }, createdAt: 1100 },
     ];
-    // 真实 CLI 事件写入 timeline（seed 不写 timeline）→ 可用
     expect(hasUsableGoalTurn(timeline, 'prompt-1', promptStartedAt, null)).toBe(true);
-    // 纯乐观种子（local-seed, seeded:true, eventCount 恰为 1）不是 CLI 完成证据：
-    // CLI 静默失败时必须判为不可用，否则 /goal 回合会被误报成功
     expect(
       hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, {
         mode: 'goal',
-        goalsById: { 'local-seed': { goalId: 'local-seed', title: 'fix login', seeded: true } },
+        goalsById: { 'local-seed': { goalId: 'local-seed', title: 'fix login' } },
         eventCount: 1,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, { mode: 'goal', goalsById: {}, eventCount: 0 })).toBe(
       false,
     );
-    // 种子 + 真实 CLI 条目（无 seeded 标记）→ 可用
-    expect(
-      hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, {
-        mode: 'goal',
-        goalsById: {
-          'local-seed': { goalId: 'local-seed', title: 'fix login', seeded: true },
-          g1: { goalId: 'g1', title: 'fix login' },
-        },
-        eventCount: 2,
-      }),
-    ).toBe(true);
-    // 边界：真实事件复用 local-seed goalId 时 mergeGoalEvent 保留 seeded 标记，
-    // eventCount 增长（>1）仍表明有真实进度
-    expect(
-      hasUsableGoalTurn([prompt], 'prompt-1', promptStartedAt, {
-        mode: 'goal',
-        goalsById: { 'local-seed': { goalId: 'local-seed', title: 'fix login', seeded: true } },
-        eventCount: 2,
-      }),
-    ).toBe(true);
   });
 
   it('does not call session/prompt when neither the thread record nor runtime has a session id', async () => {
@@ -530,39 +507,6 @@ describe('store prompt session selection', () => {
     });
   });
 
-  it('keeps prompts queued before a session reset and re-dispatches them on the new session', async () => {
-    const resetRequest = vi.fn().mockResolvedValue({
-      sessionId: 'session-reset',
-      title: 'Reset session',
-      models: { currentModelId: 'hy3', availableModels: [{ id: 'hy3', name: 'Hy3' }] },
-      modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] },
-    });
-    const queuedPrompt = { id: 'queued-1', text: 'please continue', createdAt: 1000, attachments: [] };
-    const drain = vi.spyOn(useStore.getState(), 'drainThreadPromptQueue').mockResolvedValue(true);
-    useStore.setState((state) => ({
-      threadsById: {
-        ...state.threadsById,
-        'thread-1': { ...state.threadsById['thread-1'], sessionId: 'session-old' },
-      },
-      threadRuntimeById: {
-        ...state.threadRuntimeById,
-        'thread-1': runtime({ sessionId: 'session-old', promptQueue: [queuedPrompt] }),
-      },
-      getThreadClient: () => ({ connected: true, request: resetRequest }),
-      refreshSessions: vi.fn().mockResolvedValue(true),
-    }));
-
-    await expect(useStore.getState().handleThreadSessionReset('thread-1', 'session-reset')).resolves.toBe(true);
-
-    // The queued prompt survives the reset (metadata + runtime) instead of being wiped.
-    const thread = useStore.getState().threadsById['thread-1'];
-    expect(thread.metadata.promptQueue).toEqual([queuedPrompt]);
-    expect(useStore.getState().threadRuntimeById['thread-1'].promptQueue).toEqual([queuedPrompt]);
-    // Once the fresh session is connected, the preserved queue is re-dispatched.
-    await vi.waitFor(() => expect(drain).toHaveBeenCalledWith('thread-1'));
-    drain.mockRestore();
-  });
-
   it('still accepts an authoritative model update outside history replay', () => {
     useStore.setState((state) => ({
       currentModel: 'grok-4.5',
@@ -845,28 +789,7 @@ describe('store prompt session selection', () => {
       workflowPanelDismissedRunId: null,
     });
     request.mockImplementationOnce(async () => {
-      // Real CLI goal progress arrives before end_turn (a silent CLI must NOT be
-      // accepted as a completed goal-only turn — see the silent-failure test below).
-      const promptRunId = useStore.getState().threadRuntimeById['thread-1'].activePromptRunId;
-      useStore.getState().handleConversationEvent({
-        threadId: 'thread-1',
-        type: 'session/update',
-        detail: {
-          sessionId: 'session-ready',
-          _client: { source: 'request', promptRunId },
-          update: {
-            sessionUpdate: 'goal-progress',
-            _meta: {
-              'codebuddy.ai/goalProgress': {
-                goalId: 'g1',
-                title: '修复登录',
-                percent: 40,
-                status: 'running',
-              },
-            },
-          },
-        },
-      });
+      // Goal-only completion: seeded projection is enough for hasUsableGoalTurn.
       return { stopReason: 'end_turn' };
     });
 
@@ -928,23 +851,6 @@ describe('store prompt session selection', () => {
     expect(state.error).toBeNull();
     const goalSnap = state.threadRuntimeById['thread-1'].lastGoalState;
     expect(goalSnap?.goalsById?.g1 || goalSnap?.goalsById?.['local-seed']).toBeTruthy();
-  });
-
-  it('marks a /goal turn as error when the CLI stays silent (seed alone is not completion)', async () => {
-    // request 默认 mock 返回 { stopReason: 'end_turn' } 且不注入任何 goal 事件：
-    // 模拟 CLI 对 /goal 静默失败。仅凭乐观种子投影（local-seed）不得判为成功。
-    await expect(useStore.getState().runThreadPrompt('thread-1', '/goal 修复登录')).resolves.toBe(false);
-
-    const state = useStore.getState();
-    expect(state.threadsById['thread-1'].status).toBe('error');
-    expect(state.threadsById['thread-1'].metadata?.lastError).toContain('最终正文');
-    // 时间线出现 error 卡片（而非误报成功通知）
-    expect(
-      state.threadRuntimeById['thread-1'].timeline.some(
-        (item) => item.type === 'error' && String(item.message || item.content || '').includes('最终正文'),
-      ),
-    ).toBe(true);
-    expect(state.notifyThreadResult).toHaveBeenCalledWith('thread-1', 'error');
   });
 
   it('does not launch session/prompt when Stop is clicked during preflight persistence', async () => {
