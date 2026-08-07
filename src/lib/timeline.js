@@ -137,7 +137,9 @@ export function closeAssistantStream(timeline) {
   const completedAt = Date.now();
   return timeline.map((item) =>
     item.type === 'message' && item.role === 'assistant'
-      ? { ...item, streaming: false }
+      ? item.streaming
+        ? { ...item, streaming: false, completedAt }
+        : item
       : item.type === 'thinking'
         ? finalizeThinkingEntry(item, completedAt)
         : item,

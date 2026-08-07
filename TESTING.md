@@ -6,7 +6,7 @@
 
 - 在仓库根目录执行命令。
 - Node.js、npm、Electron 依赖和可用的 CodeBuddy CLI 必须已安装。
-- 当前仓库没有启用 GitHub Actions，也没有 active pre-commit / pre-push hook；门禁需要显式执行并在提交说明中报告。
+- 当前仓库没有启用 GitHub Actions；无论本机是否配置 pre-commit / pre-push hook，门禁都需要显式执行并在提交说明中报告。
 - 门禁命令按顺序执行，失败即停止。不要用 `--no-verify`、跳过测试或伪造成功结果。
 
 ## 提交门禁
@@ -28,7 +28,7 @@ npm run test:mobile-remote
 
 通过标准：
 
-- ESLint 无 error、无 warning。
+- ESLint 无 error；warning 必须在报告中列出，且本次变更不得新增 warning。
 - Git diff 无空白错误。
 - Vitest 全部通过；允许仓库明确标记的 skip，但不得忽略失败 suite。
 - mobile-remote protocol、crypto、relay 和 Electron mobile-remote Node tests 全部通过。
@@ -54,6 +54,7 @@ npm run build:dir
 | 文件 / 浏览器 / 工作流右侧面板 | `tests/unit/right-panel.test.jsx`、`tests/unit/workflow-status.test.js` |
 | Goal 归一化、去重、乱序和 timeline 恢复 | `tests/unit/goal-state.test.js` |
 | workflow / goal ACP 事件处理 | `tests/unit/workflow-status.test.js` 及相关 store 测试 |
+| prompt idle 后的后台 workflow 进度与最终汇总 | `tests/unit/workflow-progress.test.js`、`tests/unit/acp-stream.test.js`、`tests/unit/store-conversation-events.test.js`、`tests/unit/store-prompt-session.test.js`、`tests/unit/timeline.test.js` |
 | 思考强度保留 `ultracode` | `tests/unit/i18n.test.js`、`tests/unit/store-prompt-session.test.js` |
 | 传输失败快速重连 / 错误分类 / 无自动重发 | `tests/unit/acp-auto-reconnect.test.js`、`tests/unit/acp-error-classify.test.js`、`tests/unit/prompt-transport-recovery.test.js`、`tests/unit/store-prompt-session.test.js` |
 | 传输重连 kill switch 设置 | `tests/unit/gui-settings.test.js` |
@@ -83,6 +84,49 @@ npm test
 - **不自动二次** `session/prompt`；失败走历史恢复 / 错误卡 / 草稿恢复。
 - turn 终态 delayed rebind：`sessionRestoreNeeded` 时补 `session/load` + `markSessionBound`。
 - kill switch：`guiSettings.transportAutoReconnect=false` 时不调度自动重连。
+
+### 后台 Workflow 汇总门禁
+
+涉及 `electron/workflow-progress.cjs`、ACP 请求归属、`sessions-chat` 工作流监视/后台接收或 timeline 流关闭时，先执行专项回归：
+
+```powershell
+npx vitest run `
+  tests/unit/workflow-progress.test.js `
+  tests/unit/acp-stream.test.js `
+  tests/unit/store-conversation-events.test.js `
+  tests/unit/store-prompt-session.test.js `
+  tests/unit/timeline.test.js
+```
+
+这些测试位于 `tests/unit`，因此也由 `npm test` 和统一的 `npm run test:gate` 自动执行。专项回归通过标准：
+
+- 只从运行时登记的可信项目目录读取对应 session/run 的 workflow record / journal，拒绝非法 ID 和调用方伪造的 cwd。
+- prompt 请求进入 idle 后，活动 workflow 仍轮询真实阶段和子代理状态，并在终态开启有最大时限的后台接收窗口。
+- 后台接收锁定首个 server requestId；其他、过期或带不匹配 promptRunId 的事件不得写入当前时间线。
+- 同一 server requestId 的 `session_end` 关闭最终 assistant 流，保留完整正文，并设置 `streaming=false` 和有效 `completedAt`。
+
+### staged 与提交前检查
+
+如果这次变更包含主进程、preload、store 或 workflow 相关文件，提交前还要显式核对：
+
+```bash
+git diff --check
+git diff --cached --check
+git diff --cached
+```
+
+目标不是“看起来像过了”，而是确认 staged diff 只包含本次工作流修复及对应文档 / 测试门禁，不混入其他脏改动。
+
+Electron/传输层改动还应使用全新隔离输出目录生成 unpacked 应用，再执行真实 packaged 会话验收，避免覆盖用户正在运行的 `dist`：
+
+```powershell
+npm run build:dir -- --config.directories.output=.omo/build-workflow-gate
+$env:WORKFLOW_PACKAGED_EXE=(Resolve-Path '.omo/build-workflow-gate/win-unpacked/CodeBuddy Desktop.exe')
+$env:WORKFLOW_AGENT_TIMEOUT_MS='240000'
+node scripts/test/manual-workflow-drain-real-gui.cjs
+```
+
+实机验收必须观察到：真实工作流/子代理出现在弹窗；prompt 线程 idle 时 workflow 仍活动；最终汇总在聊天区完整可见；同一 requestId 发出 `session_end` 后消息结束流式状态；测试创建的进程全部清理。脚本将截图、workflow record、启动日志和 `summary.json` 写入 `.omo/evidence/workflow-drain-real/workflow-drain-*`，任一条件不满足均返回非零。
 
 #### 实机验收（可选，推荐 Electron / 传输层改动后执行）
 

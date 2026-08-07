@@ -109,10 +109,14 @@ Electron 产品状态保存以下核心数据：
 - 成员消息写入对应的 `memberHistoriesByName`，不复制到 leader timeline；同一事件附带的 team、workflow、progress 或 Goal metadata 仍必须正常处理。
 - 运行中的 `workflowState`/`goalState` 与终态的 `lastWorkflowState`/`lastGoalState` 分离保存，使工作流完成、失败或取消后仍能从右侧面板查看最终快照。
 - 自动打开面板只针对当前活动线程本轮首次工作流活动；用户手动关闭后，同一 `runId` 不应再次自动打开。
+- 工作流阶段与成员状态以 CLI workflow record / journal 为准。主进程只能使用 runtime manager 登记的真实 cwd 解析记录，并校验 sessionId/runId；不得信任渲染层传入的路径。
+- prompt RPC 进入 idle 不代表后台 workflow 已结束。活动 workflow 继续轮询；workflow 终态后只在有最大时限的 drain 窗口接收 server-initiated 汇总，并锁定首个 requestId，拒绝其他请求、过期事件和显式不匹配的 promptRunId。
+- 最终汇总由同一 requestId 的 `session_end` 收口。关闭 assistant 流时必须同时写入 `streaming:false` 与有效 `completedAt`，不能用固定静默时间提前截断正文。
+- 提交前务必把这条链路的专项测试写进门禁文档并实际执行；不能只依赖 `npm test` 的历史通过记录来推断这次工作树也通过。
 
 ## 提交前测试门禁
 
-仓库当前没有启用 GitHub Actions，也没有自动 pre-commit/pre-push hook；提交者必须显式执行门禁并在提交或合并说明中报告结果。
+仓库当前没有启用 GitHub Actions；无论本机是否配置 pre-commit/pre-push hook，提交者都必须显式执行门禁并在提交或合并说明中报告结果。
 
 常规提交以及本次聊天、Markdown、右侧面板、工作流和 Goal 变更执行：
 
@@ -135,6 +139,8 @@ npm run test:mobile-remote
 ```bash
 npm run build:dir
 ```
+
+涉及 prompt idle 后仍运行的 workflow、后台汇总或 ACP requestId 归属时，还要执行 `TESTING.md` 的“后台 Workflow 汇总门禁”；其中专项 Vitest 已包含在 `test:gate`，真实 packaged 会话脚本用于验证跨进程时序和最终可见正文。
 
 发布或跨 Electron 运行时的变更执行完整桌面门禁：
 

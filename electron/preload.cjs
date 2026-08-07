@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveProductStateSync: (state) => ipcRenderer.sendSync('productState:saveSync', state),
   ensureProjectRuntime: (request) => ipcRenderer.invoke('runtime:ensure', request),
   listProjectRuntimes: () => ipcRenderer.invoke('runtime:list'),
+  readWorkflowProgress: (request) => ipcRenderer.invoke('workflow:readProgress', request),
   stopProjectRuntime: (projectId) => ipcRenderer.invoke('runtime:stop', projectId),
   restartProjectRuntime: (request) => ipcRenderer.invoke('runtime:restart', request),
   onProjectRuntimeStatus: (handler) => {

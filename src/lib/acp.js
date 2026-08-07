@@ -18,6 +18,7 @@ const PROMPT_CONTENT_SESSION_UPDATES = new Set([
   'tool_call',
   'tool_call_update',
 ]);
+const PROMPT_TERMINAL_SESSION_UPDATES = new Set(['session_end']);
 // Progress events that should reset long-running session/prompt idle timers (POST or GET-SSE).
 const PROMPT_IDLE_TOUCH_UPDATES = new Set([
   ...PROMPT_CONTENT_SESSION_UPDATES,
@@ -537,7 +538,10 @@ export class AcpClient {
     }
     const promptContentEvent =
       message?.method === 'session/update' && PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
-    const requestId = promptContentEvent ? promptEventRequestId(message) : null;
+    const promptTerminalEvent =
+      message?.method === 'session/update' && PROMPT_TERMINAL_SESSION_UPDATES.has(sessionUpdate);
+    const promptRequestEvent = promptContentEvent || promptTerminalEvent;
+    const requestId = promptRequestEvent ? promptEventRequestId(message) : null;
     const mappedPromptRunId = requestId ? this.promptRunIdByRequestId.get(requestId) : null;
     // Prefer explicit request mapping, then caller context, then last known run for this session
     // (covers late GET-SSE chunks without codebuddy.ai/requestId after POST settles).
@@ -545,7 +549,9 @@ export class AcpClient {
       ? { promptRunId: mappedPromptRunId }
       : context?.promptRunId
         ? context
-        : this.latePromptContext(sessionId);
+        : requestId
+          ? null
+          : this.latePromptContext(sessionId);
     if (source === 'notification' && promptContentEvent) {
       if (this.hasActivePrompt(sessionId)) {
         // Always queue while a prompt is live. POST cancels the same fingerprint when it
@@ -584,12 +590,21 @@ export class AcpClient {
       const update = params.update || {};
       const sessionUpdate = update.sessionUpdate;
       const clientSource = source === 'notification-fallback' ? 'notification' : source;
-      const eventParams = source && (promptContentEvent || eventContext?.promptRunId)
+      const serverInitiated = Boolean(
+        source === 'notification' &&
+        promptRequestEvent &&
+        requestId &&
+        !eventContext?.promptRunId &&
+        !this.hasActivePrompt(sessionId)
+      );
+      const eventParams = source && (promptRequestEvent || eventContext?.promptRunId)
         ? {
             ...params,
             _client: {
               source: clientSource,
+              ...(requestId ? { requestId } : {}),
               ...(eventContext?.promptRunId ? { promptRunId: eventContext.promptRunId } : {}),
+              ...(serverInitiated ? { serverInitiated: true } : {}),
             },
           }
         : params;

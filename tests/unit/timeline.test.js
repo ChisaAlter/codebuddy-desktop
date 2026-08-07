@@ -222,11 +222,14 @@ describe('reduceAcpEvent - timeline 归并', () => {
 
 describe('closeAssistantStream', () => {
   it('把所有 assistant 消息的 streaming 置 false', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5000);
     const tl = pushUserMessage([], 'hi');
     let next = reduceAcpEvent(tl, 'agent_message_chunk', { messageId: 'm1', content: 'x' });
     const closed = closeAssistantStream(next);
     const assistant = closed.find((e) => e.role === 'assistant');
     expect(assistant.streaming).toBe(false);
+    expect(assistant.completedAt).toBe(5000);
+    now.mockRestore();
   });
 
   it('结束响应时同时结束仍在计时的思考流', () => {

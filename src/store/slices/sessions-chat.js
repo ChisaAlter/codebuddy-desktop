@@ -8,8 +8,10 @@ import {
   appendRawExtensionEvent,
   completedTeamSnapshot,
   memberEventName,
+  mergeWorkflowProgressEvent,
   subagentMetadata,
   teamUpdateFromPayload,
+  workflowProgressEventFromPayload,
   workflowStateFromPayload,
   goalEventFromPayload,
 } from '../../lib/acp-workflow-events';
@@ -45,8 +47,16 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
-import { deriveWorkflowView, presentWorkflowAutoOpen } from '../../lib/workflow-status';
+import { deriveWorkflowView, DISMISS_WINDOW_MS, presentWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
+
+const BACKGROUND_DRAIN_WINDOW_MS = 60_000;
+const BACKGROUND_DRAIN_MAX_MS = 120_000;
+const BACKGROUND_DRAIN_EXTENSION_MS = 15_000;
+const WORKFLOW_PROGRESS_POLL_MS = 500;
+const WORKFLOW_PROGRESS_IDLE_GRACE_MS = 5_000;
+const WORKFLOW_PROGRESS_MAX_MS = 12 * 60 * 60 * 1_000;
+const workflowProgressMonitors = new Map();
 
 /**
  * Session lifecycle, conversation events, permissions, and prompt pipeline.
@@ -87,6 +97,109 @@ export function createSessionsChatSlice(set, get, ctx) {
   } = ctx;
 
   return {
+  startWorkflowProgressMonitor({ threadId, projectId, sessionId, startedAfter }) {
+    const readWorkflowProgress = window.electronAPI?.readWorkflowProgress;
+    if (!threadId || !projectId || !sessionId || typeof readWorkflowProgress !== 'function') return false;
+    const token = {};
+    workflowProgressMonitors.set(threadId, token);
+    const cutoff = Number(startedAfter) || Date.now();
+
+    void (async () => {
+      let foundWorkflow = false;
+      let idleSince = 0;
+      let observedRunId = null;
+      try {
+        while (workflowProgressMonitors.get(threadId) === token) {
+          const currentThread = get().threadsById[threadId];
+          const currentRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+          const currentSessionId = currentThread?.sessionId || currentRuntime.sessionId;
+          if (currentThread?.projectId !== projectId || currentSessionId !== sessionId) break;
+
+          let snapshot = null;
+          try {
+            snapshot = await readWorkflowProgress({
+              projectId,
+              sessionId,
+              startedAfter: cutoff,
+              ...(observedRunId ? { runId: observedRunId } : {}),
+            });
+          } catch {
+            snapshot = null;
+          }
+          if (workflowProgressMonitors.get(threadId) !== token) break;
+
+          if (snapshot?.runId) {
+            foundWorkflow = true;
+            observedRunId = snapshot.runId;
+            idleSince = 0;
+            const status = String(snapshot.status || '').toLowerCase();
+            const terminal = snapshot.active === false || ['completed', 'failed', 'cancelled'].includes(status);
+            const normalized = {
+              ...snapshot,
+              status: status || (terminal ? 'completed' : 'running'),
+              active: !terminal,
+              updatedAt: Number(snapshot.updatedAt) || Date.now(),
+            };
+            const now = Date.now();
+            get().patchThreadRuntime(threadId, {
+              workflowState: normalized,
+              ...(terminal
+                ? {
+                    lastWorkflowState: normalized,
+                    backgroundDrainRunId: normalized.runId,
+                    backgroundDrainUntil: now + BACKGROUND_DRAIN_WINDOW_MS,
+                    backgroundDrainMaxUntil: now + BACKGROUND_DRAIN_MAX_MS,
+                  }
+                : {}),
+            });
+
+            if (get().activeThreadId === threadId) {
+              const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+              const latestThread = get().threadsById[threadId];
+              const view = deriveWorkflowView({
+                runtime: latestRuntime,
+                threadStatus: latestThread?.status || 'idle',
+                timeline: latestRuntime.timeline,
+              });
+              const currentPanel = get().workflowFloatingPanel;
+              if (
+                currentPanel?.payload?.runId !== normalized.runId &&
+                presentWorkflowAutoOpen(view, {
+                  dismissed: get().workflowPanelDismissed,
+                  runId: normalized.runId,
+                })
+              ) {
+                get().openWorkflowPanel({ projectId, threadId, runId: normalized.runId });
+              }
+            }
+            if (terminal) break;
+          } else if (!foundWorkflow) {
+            const latestThread = get().threadsById[threadId];
+            const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+            const promptActive = Boolean(
+              latestRuntime.activePromptRunId ||
+              latestRuntime.isAwaitingResponse ||
+              ['connecting', 'running', 'waiting'].includes(latestThread?.status)
+            );
+            if (promptActive) {
+              idleSince = 0;
+            } else if (!idleSince) {
+              idleSince = Date.now();
+            } else if (Date.now() - idleSince >= WORKFLOW_PROGRESS_IDLE_GRACE_MS) {
+              break;
+            }
+          }
+
+          if (Date.now() - cutoff >= WORKFLOW_PROGRESS_MAX_MS) break;
+          await new Promise((resolve) => setTimeout(resolve, WORKFLOW_PROGRESS_POLL_MS));
+        }
+      } finally {
+        if (workflowProgressMonitors.get(threadId) === token) workflowProgressMonitors.delete(threadId);
+      }
+    })();
+    return true;
+  },
+
   applySessionConfigUpdate(configOptions = [], { preserveModel = false, preserveMode = false, preserveThoughtLevel = false } = {}) {
     const next = {};
     for (const option of configOptions) {
@@ -184,8 +297,26 @@ export function createSessionsChatSlice(set, get, ctx) {
     const subagent = subagentMetadata(update);
     if (contentEvent && get().threadsById[threadId]?.status === 'cancelled') return;
     const runtimePatch = {};
+    const workflowProgressEvent = workflowProgressEventFromPayload(update);
     const workflowState = workflowStateFromPayload(update);
-    if (workflowState) {
+    if (workflowProgressEvent) {
+      const previousWorkflow = runtime.workflowState || (
+        runtime.lastWorkflowState?.runId === workflowProgressEvent.runId
+          ? runtime.lastWorkflowState
+          : null
+      );
+      runtimePatch.workflowState = mergeWorkflowProgressEvent(previousWorkflow, workflowProgressEvent);
+      if (workflowProgressEvent.kind === 'workflow_run_started') {
+        runtimePatch.backgroundDrainRunId = null;
+        runtimePatch.backgroundDrainUntil = 0;
+        runtimePatch.backgroundDrainMaxUntil = 0;
+      } else if (workflowProgressEvent.kind === 'workflow_run_finished') {
+        const drainStartedAt = Date.now();
+        runtimePatch.backgroundDrainRunId = workflowProgressEvent.runId || runtimePatch.workflowState?.runId || null;
+        runtimePatch.backgroundDrainUntil = drainStartedAt + BACKGROUND_DRAIN_WINDOW_MS;
+        runtimePatch.backgroundDrainMaxUntil = drainStartedAt + BACKGROUND_DRAIN_MAX_MS;
+      }
+    } else if (workflowState) {
       runtimePatch.workflowState = {
         ...workflowState,
         active: workflowState.active !== false,
@@ -203,7 +334,9 @@ export function createSessionsChatSlice(set, get, ctx) {
         : runtime.progress;
     }
     const memberEvent = Boolean(memberName && contentEvent);
-    const workflowActivity = Boolean(teamUpdateFromPayload(update) || workflowState || goalPayload || subagent || memberName);
+    const workflowActivity = Boolean(
+      teamUpdateFromPayload(update) || workflowProgressEvent || workflowState || goalPayload || subagent || memberName
+    );
     if (memberEvent) {
       runtimePatch.memberHistoriesByName = mergeMemberTimeline(
         runtime.memberHistoriesByName,
@@ -269,6 +402,20 @@ export function createSessionsChatSlice(set, get, ctx) {
       'codebuddy.ai/goalMode',
       'codebuddy.ai/workflowState',
       'codebuddy.ai/workflowUpdate',
+      'codebuddy.ai/workflowEventKind',
+      'codebuddy.ai/workflowRunId',
+      'codebuddy.ai/workflowName',
+      'codebuddy.ai/workflowStatus',
+      'codebuddy.ai/workflowAgentCount',
+      'codebuddy.ai/workflowCachedCount',
+      'codebuddy.ai/workflowPhaseCount',
+      'codebuddy.ai/workflowError',
+      'codebuddy.ai/workflowPhase',
+      'codebuddy.ai/workflowAgentKey',
+      'codebuddy.ai/workflowAgentLabel',
+      'codebuddy.ai/workflowAgentPhase',
+      'codebuddy.ai/workflowAgentError',
+      'codebuddy.ai/workflowAgentTokens',
       'codebuddy.ai/permissionResolved',
       'codebuddy.ai/toolCallId',
       'codebuddy.ai/compact-cancelled',
@@ -315,15 +462,25 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
     if (workflowActivity || subagent || memberName) {
-      const latest = get().threadRuntimeById[threadId] || runtime;
-      runtimePatch.subagentReports = collectSubagentReports({
-        timeline: latest.timeline,
-        teamState: latest.teamState,
-        lastTeamState: latest.lastTeamState,
-        memberHistoriesByName: latest.memberHistoriesByName,
-        subagentToolCalls: latest.subagentToolCalls,
-      });
-      get().patchThreadRuntime(threadId, { subagentReports: runtimePatch.subagentReports });
+      // M-perf: pure content chunks (agent_message/thought/user_message with a
+      // member) only grow memberHistoriesByName — rebuilding the full subagent
+      // report on every chunk is O(timeline + members + history) per token.
+      // Defer to structural events (tool_call/update, teamState, goal, workflow);
+      // the turn's terminal event recomputes the report anyway.
+      const pureContentMemberChunk =
+        memberEvent &&
+        (su === 'agent_message_chunk' || su === 'agent_thought_chunk' || su === 'user_message_chunk');
+      if (!pureContentMemberChunk) {
+        const latest = get().threadRuntimeById[threadId] || runtime;
+        runtimePatch.subagentReports = collectSubagentReports({
+          timeline: latest.timeline,
+          teamState: latest.teamState,
+          lastTeamState: latest.lastTeamState,
+          memberHistoriesByName: latest.memberHistoriesByName,
+          subagentToolCalls: latest.subagentToolCalls,
+        });
+        get().patchThreadRuntime(threadId, { subagentReports: runtimePatch.subagentReports });
+      }
     }
     if (get().activeThreadId === threadId) {
       // Auto-open only for real orchestration (team/goal/workflow/explicit subagent), not TaskCreate spam.
@@ -337,10 +494,14 @@ export function createSessionsChatSlice(set, get, ctx) {
       const currentPanel = get().workflowFloatingPanel;
       if (
         !view.empty &&
-        presentWorkflowAutoOpen(view, { dismissedRunId: get().workflowPanelDismissedRunId, runId }) &&
+        presentWorkflowAutoOpen(view, { dismissed: get().workflowPanelDismissed, runId }) &&
         currentPanel == null
       ) {
-        get().openWorkflowPanel({ threadId, runId });
+        get().openWorkflowPanel({
+          projectId: get().activeProjectId || null,
+          threadId,
+          runId,
+        });
       }
     }
     if (compactTimelinePayload) {
@@ -713,8 +874,18 @@ export function createSessionsChatSlice(set, get, ctx) {
       const update = (detail || {}).update || {};
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const promptRunId = detail?._client?.promptRunId || null;
+      const serverRequestId = String(detail?._client?.requestId || '').trim();
+      const serverInitiated = detail?._client?.serverInitiated === true;
       const sessionUpdate = update.sessionUpdate || update.session_update || update.type;
       const promptContentEvent = PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
+      const promptTerminalEvent = sessionUpdate === 'session_end';
+      const now = Date.now();
+      let backgroundDrainRunId = runtime.backgroundDrainRunId || null;
+      let backgroundDrainActive = Boolean(
+        runtime.backgroundDrainRunId &&
+        Number(runtime.backgroundDrainUntil) >= now &&
+        Number(runtime.backgroundDrainMaxUntil) >= now
+      );
       const memberContentEvent = promptContentEvent && Boolean(memberEventName(update));
       if (memberContentEvent && runtime.teamState) {
         get().handleThreadSessionUpdate(threadId, update);
@@ -732,6 +903,60 @@ export function createSessionsChatSlice(set, get, ctx) {
           Date.now() - runtime.lastPromptRunAt < LATE_PROMPT_CORRELATION_MS;
         if (!recent) return;
       }
+      if (promptContentEvent && serverInitiated) {
+        if (!serverRequestId || promptRunId || runtime.activePromptRunId || runtime.isAwaitingResponse) return;
+        const nextDrainRunId = `server:${serverRequestId}`;
+        const serverDrainActive = backgroundDrainActive && String(backgroundDrainRunId || '').startsWith('server:');
+        if (serverDrainActive && backgroundDrainRunId !== nextDrainRunId) return;
+        if (!serverDrainActive) {
+          const preserveExistingDrainDeadline = backgroundDrainActive;
+          const workflowEvidence = Boolean(
+            (runtime.workflowState?.runId && runtime.workflowState.active !== false) ||
+            (backgroundDrainActive && !String(backgroundDrainRunId || '').startsWith('server:'))
+          );
+          if (!workflowEvidence) return;
+          backgroundDrainRunId = nextDrainRunId;
+          backgroundDrainActive = true;
+          get().patchThreadRuntime(threadId, {
+            backgroundDrainRunId: nextDrainRunId,
+            ...(!preserveExistingDrainDeadline
+              ? {
+                  backgroundDrainUntil: now + BACKGROUND_DRAIN_WINDOW_MS,
+                  backgroundDrainMaxUntil: now + BACKGROUND_DRAIN_MAX_MS,
+                }
+              : {}),
+          });
+        }
+      }
+      if (promptTerminalEvent && serverInitiated) {
+        const expectedDrainRunId = serverRequestId ? `server:${serverRequestId}` : null;
+        if (
+          !expectedDrainRunId ||
+          promptRunId ||
+          runtime.activePromptRunId ||
+          runtime.isAwaitingResponse ||
+          !backgroundDrainActive ||
+          backgroundDrainRunId !== expectedDrainRunId
+        ) {
+          return;
+        }
+        get().flushThreadTimelineCoalesce?.(threadId);
+        const latestRuntime = get().threadRuntimeById[threadId] || runtime;
+        get().patchThreadRuntime(threadId, {
+          timeline: closeAssistantStream(latestRuntime.timeline),
+          backgroundDrainUntil: 0,
+          backgroundDrainMaxUntil: 0,
+        });
+        return;
+      }
+      if (
+        promptContentEvent &&
+        backgroundDrainActive &&
+        String(backgroundDrainRunId || '').startsWith('server:') &&
+        backgroundDrainRunId !== `server:${serverRequestId}`
+      ) {
+        return;
+      }
       if (promptContentEvent && !promptRunId && runtime.activePromptRunId && !runtime.historyReplayActive) {
         // H1: same idea — a chunk without a run id that matches the just-finished run
         // is still useful (transport correlates by recency), so accept it while the
@@ -739,7 +964,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         const recentUnmarked =
           runtime.lastPromptRunId &&
           Date.now() - runtime.lastPromptRunAt < LATE_PROMPT_CORRELATION_MS;
-        if (!recentUnmarked) return;
+        if (!recentUnmarked && !backgroundDrainActive) return;
       }
       if (
         promptContentEvent &&
@@ -747,11 +972,22 @@ export function createSessionsChatSlice(set, get, ctx) {
         !runtime.activePromptRunId &&
         !runtime.isAwaitingResponse &&
         !runtime.historyReplayActive &&
+        !backgroundDrainActive &&
         !['connecting', 'running', 'waiting'].includes(thread?.status)
       ) {
         return;
       }
       get().handleThreadSessionUpdate(threadId, update);
+      if (promptContentEvent && backgroundDrainActive) {
+        const latestRuntime = get().threadRuntimeById[threadId] || runtime;
+        const extendedUntil = Math.min(
+          Number(latestRuntime.backgroundDrainMaxUntil) || now,
+          now + BACKGROUND_DRAIN_EXTENSION_MS,
+        );
+        if (extendedUntil > Number(latestRuntime.backgroundDrainUntil || 0)) {
+          get().patchThreadRuntime(threadId, { backgroundDrainUntil: extendedUntil });
+        }
+      }
       return;
     }
     if (type === 'initialized') {
@@ -1345,6 +1581,8 @@ export function createSessionsChatSlice(set, get, ctx) {
         ...(projectChanged ? resetProjectRuntimeViews() : {}),
         ...(projectChanged ? resetFileWorkspace(project.workspacePath) : {}),
       });
+      // M2：切换确定后关闭面板（面板绑定数据已失效；放在确认对话框之后，取消切换不误关）
+      get().closeWorkflowPanelIfBound?.();
       if (projectChanged) get().loadProjectTerminalState(project.id);
       get().activateThreadRuntime(thread.id);
       // M-perf: fire-and-forget — a failed disk write must not roll back an
@@ -1555,6 +1793,8 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (!thread) return false;
       const project = previousState.projectsById[projectId];
       if (!project) return false;
+      // M2：面板绑定被删线程时关闭（幂等）
+      if (get().workflowFloatingPanel?.payload?.threadId === threadId) get().closeWorkflowPanel?.();
       const wasActive = previousState.activeThreadId === threadId;
       const order = (previousState.threadOrderByProject[projectId] || []).filter((id) => id !== threadId);
       const replacementId = order.find((id) => !previousState.threadsById[id]?.archivedAt) || null;
@@ -1826,7 +2066,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         },
         activeThreadId: thread.id,
         workflowFloatingPanel: null,
-        workflowPanelDismissedRunId: null,
+        workflowPanelDismissed: null,
       }));
 
       const persisted = await get().persistProductState();
@@ -2334,7 +2574,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         return { queued: true, id: queuedPrompt.id };
       });
     }
-    get().patchThreadRuntime(threadId, { pendingAttachments: [], promptSuggestion: null });
+    get().patchThreadRuntime(threadId, { pendingAttachments: [], promptSuggestion: null, subagentReports: [] });
     return get().runThreadPrompt(threadId, content, attachments, draftText);
   },
 
@@ -2362,6 +2602,7 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     const project = get().projectsById[thread.projectId];
     const promptStartedAt = Date.now();
+    workflowProgressMonitors.delete(threadId);
     // L1: prompt run id is identity-bearing for cancel/correlation; use a crypto
     // suffix (UUID or getRandomValues) instead of Math.random. The Date.now()
     // prefix is kept for human-readable ordering.
@@ -2396,6 +2637,9 @@ export function createSessionsChatSlice(set, get, ctx) {
       isAwaitingResponse: true,
       promptStartedAt,
       activePromptRunId,
+      backgroundDrainRunId: null,
+      backgroundDrainUntil: 0,
+      backgroundDrainMaxUntil: 0,
       promptDispatched: false,
       promptDispatchInFlight: false,
       teamState: null,
@@ -2411,9 +2655,14 @@ export function createSessionsChatSlice(set, get, ctx) {
     // `/goal` should surface the right panel immediately (optimistic seed), not only
     // after the first CLI goal-progress event — otherwise the turn looks dead.
     if (goalPrompt && get().activeThreadId === threadId) {
-      const dismissed = get().workflowPanelDismissedRunId;
-      if (!dismissed || dismissed !== activePromptRunId) {
-        get().openWorkflowPanel({ threadId, runId: activePromptRunId });
+      const dismissed = get().workflowPanelDismissed;
+      const suppressed =
+        dismissed &&
+        (Number.isFinite(dismissed.at)
+          ? Date.now() - dismissed.at < DISMISS_WINDOW_MS || dismissed.runId === activePromptRunId
+          : dismissed.runId === activePromptRunId);
+      if (!suppressed) {
+        get().openWorkflowPanel({ projectId: get().activeProjectId || null, threadId, runId: activePromptRunId });
       }
     }
     await get().updateThreadRecord(threadId, {
@@ -2528,6 +2777,12 @@ export function createSessionsChatSlice(set, get, ctx) {
         }
       }
       get().patchThreadRuntime(threadId, { promptDispatched: true });
+      get().startWorkflowProgressMonitor?.({
+        threadId,
+        projectId: thread.projectId,
+        sessionId: requestSessionId,
+        startedAfter: promptStartedAt,
+      });
       let result;
       try {
         result = await client.request(

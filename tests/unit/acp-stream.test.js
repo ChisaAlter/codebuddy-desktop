@@ -604,6 +604,93 @@ describe('AcpClient GET SSE notification stream', () => {
     expect(updates[0]._client).toMatchObject({ source: 'notification', promptRunId: 'run-finished' });
   });
 
+  it('marks an unknown idle notification request as a server-initiated turn', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-background',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'background-first',
+            content: { type: 'text', text: 'BACKGROUND_FINAL' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-background' },
+          },
+        },
+      },
+      'notification',
+    );
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]._client).toEqual({
+      source: 'notification',
+      requestId: 'backend-background',
+      serverInitiated: true,
+    });
+  });
+
+  it('marks the matching idle session_end as a server-initiated terminal event', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-background-end',
+          update: {
+            sessionUpdate: 'session_end',
+            _meta: { 'codebuddy.ai/requestId': 'backend-background-end' },
+          },
+        },
+      },
+      'notification',
+    );
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]._client).toEqual({
+      source: 'notification',
+      requestId: 'backend-background-end',
+      serverInitiated: true,
+    });
+  });
+
+  it('does not attach a fresh notification request to the previous prompt late window', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+    const unregister = client.trackActivePrompt('s-background-race', () => {}, { promptRunId: 'run-previous' });
+    unregister();
+
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-background-race',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'background-race-first',
+            content: { type: 'text', text: 'BACKGROUND_NEW_TURN' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-new-turn' },
+          },
+        },
+      },
+      'notification',
+    );
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]._client).toEqual({
+      source: 'notification',
+      requestId: 'backend-new-turn',
+      serverInitiated: true,
+    });
+  });
+
   it('deduplicates interleaved POST and notification copies without dropping repeated live text', () => {
     const client = new AcpClient();
     const updates = [];

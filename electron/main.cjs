@@ -30,6 +30,7 @@ const {
   assertCliCompatibleForRuntime,
 } = require('./cli-compat.cjs');
 const { resolveCodeBuddySpawnSpec, resolveNpmSpawnSpec } = require('./codebuddy-cli-path.cjs');
+const { readProjectWorkflowProgress } = require('./workflow-progress.cjs');
 
 const CODEBUDDY_CLI_NPM_PACKAGE = '@tencent-ai/codebuddy-code';
 const { MobileRemoteHost, defaultConfig: defaultMobileRemoteConfig } = require('./mobile-remote/host.cjs');
@@ -1470,6 +1471,13 @@ ipcMain.handle('runtime:ensure', async (_event, request = {}) => {
   });
 });
 ipcMain.handle('runtime:list', () => runtimeManager.list());
+ipcMain.handle('workflow:readProgress', (_event, request = {}) =>
+  readProjectWorkflowProgress({
+    runtimeManager,
+    configRoot: String(process.env.CODEBUDDY_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.codebuddy'),
+    request,
+  }),
+);
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
 ipcMain.handle('runtime:restart', async (_event, request = {}) => {
   await ensureCodeBuddyCliCompatibleForRuntime();
