@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchJson } from '../lib/acp';
 import { useStore } from '../store';
+import { useViewActive } from '../lib/use-view-active';
 
 function StatCard({ title, value, subtitle }) {
   return (
@@ -47,11 +48,13 @@ export function formatDiskUsage(metrics) {
   return `${usedGiB.toFixed(1)} / ${totalGiB.toFixed(1)} GiB`;
 }
 
+const MONITOR_POLL_MS = 30000;
+
 export default function ReplicaMonitorView() {
   const activeProjectId = useStore((state) => state.activeProjectId);
+  const viewActive = useViewActive('monitor');
   const loadRequestRef = useRef(0);
-  const loadInFlightRef = useRef(null);
-  const [auth, setAuth] = useState(null);
+  const loadInFlightRef = useRef(null);  const [auth, setAuth] = useState(null);
   const [info, setInfo] = useState(null);
   const [daemon, setDaemon] = useState(null);
   const [metrics, setMetrics] = useState(null);
@@ -123,6 +126,19 @@ export default function ReplicaMonitorView() {
     loadInFlightRef.current = null;
     load();
   }, [load]);
+
+  // M-perf (keep-alive): views stay mounted after first visit (hidden via
+  // display:none), so polling must only run while the monitor route is actually
+  // visible — otherwise the interval keeps firing requests in the background
+  // forever. Re-entering the route refreshes immediately, then polls.
+  useEffect(() => {
+    if (!viewActive) return undefined;
+    load();
+    const timer = setInterval(() => {
+      load();
+    }, MONITOR_POLL_MS);
+    return () => clearInterval(timer);
+  }, [load, viewActive]);
 
   const diskGiB = formatDiskUsage(metrics);
 

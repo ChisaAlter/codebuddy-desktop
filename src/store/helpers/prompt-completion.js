@@ -53,12 +53,23 @@ export function hasPromptRunActivity(timeline, promptEntryId, promptStartedAt) {
 /**
  * `/goal` turns may finish with only private goal metadata (no assistant text).
  * Treat non-empty goal projection or goal timeline events as a usable completion.
+ *
+ * The optimistic seed (seedGoalStateFromPrompt's `local-seed`, `seeded: true`) is
+ * a UI projection, NOT evidence of CLI progress: it is written the moment the
+ * prompt is dispatched, so counting it here would report a `/goal` turn as
+ * successful even when the CLI silently produced nothing. Only entries without
+ * the `seeded` flag (real CLI events) or an eventCount beyond the seed's own
+ * count (seed event occupies exactly 1) count as usable.
  */
 export function hasUsableGoalTurn(timeline, promptEntryId, promptStartedAt, goalState = null) {
   if (goalState && typeof goalState === 'object') {
     const goals = goalState.goalsById && typeof goalState.goalsById === 'object' ? goalState.goalsById : {};
-    if (Object.keys(goals).length > 0) return true;
-    if (Number(goalState.eventCount || 0) > 0) return true;
+    const hasRealGoalEntry = Object.values(goals).some((goal) => goal && !goal.seeded);
+    if (hasRealGoalEntry) return true;
+    // Seed accounts for exactly one eventCount unit; >1 means real CLI events
+    // arrived (covers the edge case where a real event reuses the `local-seed`
+    // goalId, which keeps the `seeded` flag through mergeGoalEvent's spread).
+    if (Number(goalState.eventCount || 0) > 1) return true;
   }
   const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
   if (!turnEntries) return false;

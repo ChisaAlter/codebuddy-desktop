@@ -21,7 +21,7 @@ function safeBrowserUrl(value) {
   }
 }
 
-export function PanelHeader({ title, onClose, onBack = null }) {
+export function PanelHeader({ title, onClose, onBack = null, closeAriaLabel = null, closeTitle = null, closeRef = null }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
       {onBack ? (
@@ -38,11 +38,12 @@ export function PanelHeader({ title, onClose, onBack = null }) {
       ) : null}
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">{title}</span>
       <button
+        ref={closeRef}
         type="button"
         className="rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
         onClick={onClose}
-        aria-label="关闭右侧面板"
-        title="关闭"
+        aria-label={closeAriaLabel || '关闭右侧面板'}
+        title={closeTitle || '关闭'}
       >
         ✕
       </button>

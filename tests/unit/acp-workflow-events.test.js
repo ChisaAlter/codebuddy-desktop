@@ -5,8 +5,10 @@ import {
   completedTeamSnapshot,
   goalEventFromPayload,
   mergeCodeBuddyTeamState,
+  mergeWorkflowProgressEvent,
   normalizeTeamUpdate,
   subagentMetadata,
+  workflowProgressEventFromPayload,
 } from '../../src/lib/acp-workflow-events';
 import { mergeMemberTimeline, reduceAcpEvent } from '../../src/lib/timeline';
 import { normalizeWorkflowStatus } from '../../src/lib/workflow-status';
@@ -145,5 +147,89 @@ describe('CodeBuddy ACP workflow extensions', () => {
     expect(status.shouldAutoOpen).toBe(false);
     expect(status.members).toHaveLength(0);
     expect(status.items[0].name).toBe('Read');
+  });
+
+  it('merges CodeBuddy 2.132 workflow progress metadata into an agent snapshot', () => {
+    const update = (kind, metadata = {}) => workflowProgressEventFromPayload({
+      sessionUpdate: 'session_info_update',
+      _meta: {
+        'codebuddy.ai/workflowEventKind': kind,
+        'codebuddy.ai/workflowRunId': 'workflow-1',
+        ...metadata,
+      },
+    });
+
+    let state = mergeWorkflowProgressEvent(null, update('workflow_run_started', {
+      'codebuddy.ai/workflowName': 'design-review',
+      'codebuddy.ai/workflowStatus': 'running',
+      'codebuddy.ai/workflowAgentCount': 1,
+      'codebuddy.ai/workflowPhaseCount': 2,
+    }), 100);
+    state = mergeWorkflowProgressEvent(state, update('workflow_phase_started', {
+      'codebuddy.ai/workflowPhase': { index: 1, title: 'Inspect' },
+    }), 200);
+    state = mergeWorkflowProgressEvent(state, update('workflow_agent_started', {
+      'codebuddy.ai/workflowAgentKey': 'agent-inspect',
+      'codebuddy.ai/workflowAgentLabel': 'Inspect runtime',
+      'codebuddy.ai/workflowAgentPhase': 'Inspect',
+    }), 300);
+    state = mergeWorkflowProgressEvent(state, update('workflow_agent_finished', {
+      'codebuddy.ai/workflowAgentKey': 'agent-inspect',
+      'codebuddy.ai/workflowAgentLabel': 'Inspect runtime',
+      'codebuddy.ai/workflowAgentPhase': 'Inspect',
+      'codebuddy.ai/workflowAgentTokens': 1234,
+    }), 400);
+    state = mergeWorkflowProgressEvent(state, update('workflow_run_finished', {
+      'codebuddy.ai/workflowName': 'design-review',
+      'codebuddy.ai/workflowStatus': 'completed',
+      'codebuddy.ai/workflowAgentCount': 1,
+      'codebuddy.ai/workflowCachedCount': 0,
+      'codebuddy.ai/workflowPhaseCount': 2,
+    }), 500);
+
+    expect(state).toMatchObject({
+      runId: 'workflow-1',
+      name: 'design-review',
+      status: 'completed',
+      active: false,
+      agentCount: 1,
+      phaseCount: 2,
+      completedAt: 500,
+      agents: [{
+        id: 'agent-inspect',
+        name: 'Inspect runtime',
+        phase: 'Inspect',
+        status: 'completed',
+        tokens: 1234,
+      }],
+    });
+    expect(classifyAcpUpdate({
+      sessionUpdate: 'session_info_update',
+      _meta: { 'codebuddy.ai/workflowEventKind': 'workflow_run_started' },
+    })).toMatchObject({ kind: 'workflow', source: 'codebuddy-private' });
+  });
+
+  it('keeps a background workflow active and visible while the chat thread is idle', () => {
+    const status = normalizeWorkflowStatus({
+      threadStatus: 'idle',
+      runtime: {
+        workflowState: {
+          runId: 'workflow-background',
+          name: 'Background review',
+          active: true,
+          status: 'running',
+          agents: [{ id: 'agent-1', name: 'Inspect', status: 'running' }],
+        },
+      },
+    });
+
+    expect(status).toMatchObject({
+      visible: true,
+      active: true,
+      terminal: false,
+      shouldAutoOpen: true,
+      source: 'workflow',
+    });
+    expect(status.members).toHaveLength(1);
   });
 });

@@ -13,6 +13,7 @@ import {
   setAuthToken,
 } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
+import { createGitWorkspaceRegistrar } from './lib/git-workspace-registry';
 import {
   fsList,
   fsSearchContent,
@@ -133,6 +134,10 @@ const threadTimelinePersistTimers = new Map();
 const threadTimelineCoalesce = new Map();
 const threadDraftPersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
+// M-perf: fixed-cadence anchor for terminal state persistence. scheduleTerminalStatePersist
+// pins the timer to lastPersistAt + WINDOW instead of restarting a full window per chunk,
+// so a steady output stream (npm install, log spam) cannot starve persistence forever.
+const lastTerminalStatePersistAt = new Map();
 const workspaceStatePersistTimers = new Map();
 // M-perf: pending terminal output chunks are merged on a 50ms window so
 // high-frequency output (npm install, log spam) rebuilds terminalPanes once per
@@ -688,7 +693,8 @@ export const useStore = create((set, get) => {
   sidebarCollapsed: false,
   rightPanel: null,
   workflowFloatingPanel: null,
-  workflowPanelDismissedRunId: null,
+  // M2 dismissed 竞态：{ runId: string|null, at: number } | null（时间窗 + 同 run 抑制自动重开）
+  workflowPanelDismissed: null,
   changesCount: 0,
   leftTab: 'chat',
   terminalSessions: [],
@@ -1087,13 +1093,7 @@ export const useStore = create((set, get) => {
   },
 
   closeRightPanel() {
-    const current = get().rightPanel;
-    set({
-      rightPanel: null,
-      ...(current?.type === 'workflow'
-        ? { workflowPanelDismissedRunId: get().activePromptRunId || get().lastPromptRunId || null }
-        : {}),
-    });
+    set({ rightPanel: null });
     return true;
   },
 
@@ -1105,23 +1105,43 @@ export const useStore = create((set, get) => {
   },
 
   openWorkflowPanel(payload = null) {
+    const clean = payload && typeof payload === 'object' ? payload : null;
     set({
       workflowFloatingPanel: {
-        payload: payload && typeof payload === 'object' ? payload : null,
+        payload: clean
+          ? {
+              projectId: typeof clean.projectId === 'string' ? clean.projectId : null,
+              threadId: typeof clean.threadId === 'string' ? clean.threadId : null,
+              runId: typeof clean.runId === 'string' ? clean.runId : null,
+            }
+          : null,
       },
-      workflowPanelDismissedRunId: null,
+      // 手动打开 = 清 dismiss 窗（M2：用户主动打开后允许后续自动打开）
+      workflowPanelDismissed: null,
     });
     return true;
   },
 
   closeWorkflowPanel() {
     const current = get().workflowFloatingPanel;
-    const runId = current?.payload?.runId || get().activePromptRunId || get().lastPromptRunId || null;
+    // M2：禁用 lastPromptRunId fallback——runId 无法确定时记录 null（仅时间窗抑制）
+    const runId = current?.payload?.runId || get().activePromptRunId || null;
     set({
       workflowFloatingPanel: null,
-      ...(runId ? { workflowPanelDismissedRunId: runId } : {}),
+      workflowPanelDismissed: { runId, at: Date.now() },
     });
     return true;
+  },
+
+  /**
+   * M2 幂等关闭：仅当面板存在且（未绑定线程 或 绑定该线程）时关闭。
+   * 用于 activateThread / activateProject / deleteThread 等生命周期切换。
+   */
+  closeWorkflowPanelIfBound(threadId = null) {
+    const panel = get().workflowFloatingPanel;
+    if (!panel) return false;
+    if (threadId != null && panel.payload?.threadId && panel.payload.threadId !== threadId) return false;
+    return get().closeWorkflowPanel();
   },
 
   toggleWorkflowPanel(payload = null) {
@@ -1443,17 +1463,35 @@ export const useStore = create((set, get) => {
   scheduleTerminalStatePersist() {
     const projectId = get().activeProjectId;
     if (!projectId) return;
+    const now = Date.now();
     const previous = terminalStatePersistTimers.get(projectId);
     if (previous) clearTimeout(previous.timer || previous);
+    // Fixed cadence: schedule at the anchor + WINDOW, not now + WINDOW. With a
+    // naive reset-per-call, chunks arriving faster than WINDOW (steady terminal
+    // output) would never let the timer fire; the only save would be the quit
+    // backstop, losing all output on a crash/kill. The anchor is set on the
+    // FIRST schedule of a burst and only moves forward when a persist fires (or
+    // the boundary passes, or the clock moved backwards) — so a burst re-pins to
+    // the same deadline instead of pushing it out forever.
+    const lastAt = lastTerminalStatePersistAt.get(projectId);
+    const elapsed = lastAt == null ? null : now - lastAt;
+    let remaining;
+    if (lastAt == null || elapsed >= TERMINAL_STATE_PERSIST_MS || elapsed < 0) {
+      lastTerminalStatePersistAt.set(projectId, now);
+      remaining = TERMINAL_STATE_PERSIST_MS;
+    } else {
+      remaining = TERMINAL_STATE_PERSIST_MS - elapsed;
+    }
     const entry = { projectId, timer: null };
     entry.timer = setTimeout(() => {
       if (terminalStatePersistTimers.get(projectId) !== entry) return;
       terminalStatePersistTimers.delete(projectId);
+      lastTerminalStatePersistAt.set(projectId, Date.now());
       if (get().activeProjectId !== projectId) return;
       get().flushPendingPaneOutputs();
       const snapshot = terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
       get().persistProjectTerminalState(projectId, snapshot);
-    }, TERMINAL_STATE_PERSIST_MS);
+    }, remaining);
     terminalStatePersistTimers.set(projectId, entry);
   },
 
@@ -1465,11 +1503,14 @@ export const useStore = create((set, get) => {
       clearTimeout(pending.timer || pending);
       terminalStatePersistTimers.delete(projectId);
     }
+    // A manual flush is a cadence point: anchor the next scheduled persist to now
+    // so an immediate follow-up chunk does not trigger a second persist within
+    // the same 5s window.
+    lastTerminalStatePersistAt.set(projectId, Date.now());
+    // Capture EARLY so a project switch during the cwd lookups cannot leak the
+    // new project's panes into this project's snapshot.
     get().flushPendingPaneOutputs();
     const captured = terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
-    // Land the project-owned snapshot in memory before any cwd request yields.
-    // Navigation may replace the root terminal state while these requests run.
-    await get().persistProjectTerminalState(projectId, captured);
 
     const cwdByPaneId = new Map();
     await Promise.all(
@@ -1479,13 +1520,24 @@ export const useStore = create((set, get) => {
         if (cwd) cwdByPaneId.set(pane.id, cwd);
       }),
     );
-    if (!cwdByPaneId.size) return true;
-    const withCwd = {
-      ...captured,
-      panes: captured.panes.map((pane) =>
-        cwdByPaneId.has(pane.id) ? { ...pane, cwd: cwdByPaneId.get(pane.id) } : pane,
-      ),
-    };
+    // M-fix: if we are still on the same project, re-flush and re-snapshot so
+    // terminal output that arrived during the cwd lookups is NOT overwritten by
+    // the stale `captured` (the old flow re-persisted a withCwd derived from the
+    // stale snapshot, losing those lines). If a project switch happened, keep
+    // the early capture (the switch owns the new panes).
+    let latest = captured;
+    if (get().activeProjectId === projectId) {
+      get().flushPendingPaneOutputs();
+      latest = terminalStateSnapshot(projectId, get().terminalPanes, get().activePaneId);
+    }
+    const withCwd = cwdByPaneId.size
+      ? {
+          ...latest,
+          panes: latest.panes.map((pane) =>
+            cwdByPaneId.has(pane.id) ? { ...pane, cwd: cwdByPaneId.get(pane.id) } : pane,
+          ),
+        }
+      : latest;
     await get().persistProjectTerminalState(projectId, withCwd);
     return true;
   },
@@ -1636,12 +1688,20 @@ export const useStore = create((set, get) => {
       if (!thread || !project) return false;
       const existingRuntime = initialState.threadRuntimeById[threadId] || emptyThreadRuntime();
       if (thread.sessionId === normalizedSessionId && existingRuntime.connectionState === 'connected') return true;
+      // Keep prompts queued before the reset: wiping them silently drops user
+      // input that was pending when the backend rebuilt the session. The queue
+      // is re-dispatched on the fresh session once it is connected (below).
+      const preservedPromptQueue =
+        existingRuntime.promptQueue && existingRuntime.promptQueue.length
+          ? existingRuntime.promptQueue
+          : thread.metadata?.promptQueue || [];
 
       const previousSessionId = thread.sessionId || null;
       const resetAt = new Date().toISOString();
       const resetRuntime = {
         ...emptyThreadRuntime(),
         sessionId: normalizedSessionId,
+        promptQueue: preservedPromptQueue,
         connectionState: 'connecting',
         availableCommands: existingRuntime.availableCommands,
         models: existingRuntime.models,
@@ -1668,7 +1728,7 @@ export const useStore = create((set, get) => {
               unread: false,
               metadata: {
                 ...(current.metadata || {}),
-                promptQueue: [],
+                promptQueue: preservedPromptQueue,
                 previousSessionId,
                 sessionResetAt: resetAt,
                 sessionResetLoadError: null,
@@ -1807,6 +1867,11 @@ export const useStore = create((set, get) => {
           };
         });
         await get().persistProductState();
+        if (preservedPromptQueue.length) {
+          // Re-dispatch prompts that were queued when the session reset hit;
+          // drainThreadPromptQueue guards busy/connecting states itself.
+          setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+        }
         if (get().activeProjectId === project.id)
           await get()
             .refreshSessions()
@@ -2569,18 +2634,25 @@ export const useStore = create((set, get) => {
       const visibleSessions = sessions.filter((session) => !deletedSessionIds.has(session.id || session.sessionId));
       const threadsById = { ...state.threadsById };
       const order = [...(state.threadOrderByProject[projectId] || [])];
+      // M-perf: index this project's threads by sessionId once — the previous
+      // per-session Object.values(...).find(...) was O(sessions × threads).
+      const threadBySessionId = new Map();
+      for (const thread of Object.values(threadsById)) {
+        if (thread.projectId === projectId && thread.sessionId) {
+          threadBySessionId.set(thread.sessionId, thread);
+        }
+      }
       for (const session of visibleSessions) {
         const sessionId = session.id || session.sessionId;
         if (!sessionId) continue;
-        let thread = Object.values(threadsById).find(
-          (item) => item.projectId === projectId && item.sessionId === sessionId,
-        );
+        let thread = threadBySessionId.get(sessionId);
         if (!thread) {
           thread = createThreadRecord(projectId, {
             sessionId,
             title: session.name || session.title || sessionId,
           });
           threadsById[thread.id] = thread;
+          threadBySessionId.set(sessionId, thread);
           order.push(thread.id);
         } else if ((session.name || session.title) && thread.title !== (session.name || session.title)) {
           threadsById[thread.id] = {
@@ -3492,5 +3564,17 @@ export const useStore = create((set, get) => {
 if (typeof window !== 'undefined' && import.meta.env.DEV) {
   window.__sendPrompt = (text) => useStore.getState().sendPrompt(text);
   window.__ZUSTAND_STORE = useStore;
+}
+
+// M1 安全面：向主进程注册允许的 Git 工作目录（集合变化时才上报，避免流式期间高频 IPC）。
+if (typeof window !== 'undefined' && window.electronAPI?.registerGitWorkspaces) {
+  const notifyGitWorkspaces = createGitWorkspaceRegistrar({
+    getState: () => useStore.getState(),
+    register: (payload) => {
+      window.electronAPI.registerGitWorkspaces(payload).catch(() => {});
+    },
+  });
+  useStore.subscribe(notifyGitWorkspaces);
+  notifyGitWorkspaces();
 }
 export { conversations };

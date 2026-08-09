@@ -237,29 +237,29 @@ describe('persistProductState tail-save race (M-perf review fix)', () => {
     vi.stubGlobal('window', { electronAPI: { saveProductState } });
 
     const first = api.persistProductState();
-    const second = api.persistProductState();
-    // Let the chain start the first save.
     await Promise.resolve();
     await Promise.resolve();
     expect(saveProductState).toHaveBeenCalledTimes(1);
 
-    resolvers.shift()({ ok: true }); // finish the first save
+    // State changes AFTER the first save landed: updateThreadRecord starts a
+    // second save (state B) whose promise we must resolve before awaiting it.
+    resolvers.shift()({ ok: true }); // finish the first save (state A)
+    const utr = api.updateThreadRecord('t1', { status: 'idle' }); // new threadsById reference
     await Promise.resolve();
     await Promise.resolve();
+    expect(saveProductState).toHaveBeenCalledTimes(2); // state-B save in flight
+    resolvers.shift()({ ok: true }); // finish the state-B save
+    await utr;
+
+    // A request arriving while a save is in flight with no new state is folded:
+    // the snapshot-reference dedupe skips the redundant write (data already on
+    // disk) instead of dropping the request.
+    const inFlight = api.persistProductState();
     await Promise.resolve();
-    // The tail save (for `second`) is now in flight.
+    await Promise.resolve();
     expect(saveProductState).toHaveBeenCalledTimes(2);
 
-    const third = api.persistProductState(); // arrives during the tail save
-    resolvers.shift()({ ok: true }); // finish the tail save
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    // The finally block sees the dirty flag and schedules one more save.
-    expect(saveProductState).toHaveBeenCalledTimes(3);
-    resolvers.shift()({ ok: true });
-
-    await Promise.all([first, second, third]);
-    expect(saveProductState).toHaveBeenCalledTimes(3);
+    await Promise.all([first, inFlight]);
+    expect(saveProductState).toHaveBeenCalledTimes(2); // inFlight was deduped
   });
 });

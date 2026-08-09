@@ -76,7 +76,6 @@ function createFakeStore() {
   // appendThreadTimelineEvent：走真实 reduceAcpEvent 写入 runtime.timeline。
   state.appendThreadTimelineEvent = (threadId, eventType, payload) => {
     const prev = state.threadRuntimeById[threadId] || { timeline: [] };
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { reduceAcpEvent } = require('../../src/lib/timeline');
     const next = reduceAcpEvent(prev.timeline, eventType, payload, threadId);
     state.patchThreadRuntime(threadId, { timeline: next });

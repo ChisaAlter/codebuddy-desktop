@@ -12,6 +12,16 @@ function getWorkspaceCwd() {
 }
 
 export async function runGit(commandArgs = [], cwd = getWorkspaceCwd()) {
+  // 实机 QA 钩子：contextBridge 冻结 electronAPI，无法在 CDP 中改写 runGit。
+  // 仅当 window.__QA_GIT_MOCK__ 被显式设置时生效（生产路径永不设置）。
+  if (typeof window !== 'undefined' && window.__QA_GIT_MOCK__) {
+    const mock = window.__QA_GIT_MOCK__;
+    if (typeof mock === 'function') return mock(commandArgs, cwd);
+    if (mock?.ok === false || mock?.error) {
+      throw new Error(mock.error || 'git command failed');
+    }
+    return mock?.output ?? '';
+  }
   const proc = await window.electronAPI?.runGit?.({ args: commandArgs, cwd });
   if (!proc || !proc.ok) {
     throw new Error(proc?.error || 'git command failed');

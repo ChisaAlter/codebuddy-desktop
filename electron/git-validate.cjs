@@ -25,11 +25,16 @@ function exact(args, expected) {
   return args.length === expected.length && expected.every((value, index) => args[index] === value);
 }
 
+// commit message 双端上限（M1 安全面：主进程侧硬上限，与前端 maxLength=4096 对齐）
+const MAX_COMMIT_MESSAGE_LENGTH = 4096;
+
 function validateGitArgs(args) {
   if (!Array.isArray(args) || args.length === 0) return 'empty git command';
   const command = args[0];
 
-  if (command === 'status' && exact(args, ['status', '--short', '-z'])) return null;
+  if (command === 'status' && (
+    exact(args, ['status', '--short', '-z']) || exact(args, ['status', '-sb'])
+  )) return null;
   if (command === 'branch' && (
     exact(args, ['branch', '--show-current']) || exact(args, ['branch', '--format=%(refname:short)'])
   )) return null;
@@ -57,10 +62,17 @@ function validateGitArgs(args) {
   if (command === 'diff' && (
     exact(args, ['diff']) ||
     exact(args, ['diff', '--cached']) ||
+    exact(args, ['diff', '--numstat']) ||
+    exact(args, ['diff', '--cached', '--numstat']) ||
     (args.length === 3 && args[1] === '--' && isPath(args[2])) ||
     (args.length === 4 && args[1] === '--cached' && args[2] === '--' && isPath(args[3]))
   )) return null;
-  if (command === 'commit' && args.length === 3 && args[1] === '-m' && isPath(args[2])) return null;
+  if (command === 'commit' && args.length === 3 && args[1] === '-m' && isPath(args[2])) {
+    if (args[2].length > MAX_COMMIT_MESSAGE_LENGTH) {
+      return 'commit message exceeds 4096 characters';
+    }
+    return null;
+  }
   if (command === 'log' && isLogCount(args[1]) && (
     exact(args.slice(2), ['--oneline', '--decorate']) ||
     exact(args.slice(2), ['--format=%H|%h|%an|%ai|%s'])

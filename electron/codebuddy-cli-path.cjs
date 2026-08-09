@@ -50,6 +50,15 @@ function windowsNpmGlobalDirs(env = process.env) {
   ].filter(Boolean);
 }
 
+// 注册表 Path 的 TTL 缓存：CLI 安装/卸载是低频事件，60s 内复用结果即可。
+// 否则每次 CLI spawn 解析（listBackgroundSessions 轮询、运行时 ensure、
+// cliMaintenance 等高频路径）都同步执行 2 次 reg query（各最多 3s），
+// 阻塞主进程事件循环并产生瞬时子进程。仅在未注入 deps.execReg（真实路径）
+// 时生效，测试注入不受影响。
+let registryPathCache = null;
+let registryPathCacheAt = 0;
+const REGISTRY_PATH_TTL_MS = 60 * 1000;
+
 /**
  * 读取 Windows 注册表中的用户/系统 Path。
  * GUI 从快捷方式启动时 process.env.PATH 常是登录时快照；用户随后安装 CLI 后，
@@ -59,6 +68,10 @@ function windowsNpmGlobalDirs(env = process.env) {
  */
 function readWindowsRegistryPathEntries(deps = {}) {
   if (process.platform !== 'win32') return [];
+  const now = Date.now();
+  if (!deps.execReg && registryPathCache !== null && now - registryPathCacheAt < REGISTRY_PATH_TTL_MS) {
+    return registryPathCache;
+  }
   const execReg =
     deps.execReg ||
     ((args) =>
@@ -89,6 +102,10 @@ function readWindowsRegistryPathEntries(deps = {}) {
     } catch (_) {
       // 注册表不可读时静默回退，不影响现有 PATH 逻辑
     }
+  }
+  if (!deps.execReg) {
+    registryPathCache = entries;
+    registryPathCacheAt = now;
   }
   return entries;
 }

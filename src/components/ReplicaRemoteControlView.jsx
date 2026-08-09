@@ -216,7 +216,9 @@ function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh
 
 export default function ReplicaRemoteControlView() {
   // M-perf (keep-alive): pause the 5s channel refresh while this view is hidden.
-  // The QR login poll (a stateful flow) deliberately keeps running.
+  // The QR login poll (a stateful flow) deliberately keeps running — pausing it
+  // on view switches silently aborts an in-progress scan and the flow never
+  // resumes (the instance state was reset). Only component unmount stops it.
   const active = useViewActive('remote-control');
   const setRoute = useStore((state) => state.setRoute);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -280,6 +282,8 @@ export default function ReplicaRemoteControlView() {
     }
   }, [activeProjectId, isScopeCurrent]);
 
+  // 挂载/卸载生命周期：代际与 QR 轮询只在此处推进。view 隐藏/显示（active 翻转）
+  // 不终止登录轮询——扫码中途切视图必须继续，否则登录流程静默丢失。
   useEffect(() => {
     mountedRef.current = true;
     const generation = ++viewGenerationRef.current;
@@ -290,16 +294,29 @@ export default function ReplicaRemoteControlView() {
       clearTimeout(qrPollRef.current);
       qrPollRef.current = null;
     }
+    return () => {
+      mountedRef.current = false;
+      if (viewGenerationRef.current === generation) viewGenerationRef.current += 1;
+      qrPollGenerationRef.current += 1;
+      wechatActionVersionRef.current += 1;
+      wecomActionVersionRef.current += 1;
+      if (qrPollRef.current) {
+        clearTimeout(qrPollRef.current);
+        qrPollRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const generation = ++viewGenerationRef.current;
+    wechatActionVersionRef.current += 1;
+    wecomActionVersionRef.current += 1;
     setChannels([]);
     setChannelsProjectId(null);
     setLoading(true);
     setError('');
     setInfo('');
     setWechatBusy(false);
-    setWechatQr(null);
-    setWechatQrInstanceId('');
-    setWechatQrLoading(false);
-    setWechatQrError(null);
     setWecomBusy(false);
     setWecomBotId('');
     setWecomSecret('');
@@ -308,16 +325,10 @@ export default function ReplicaRemoteControlView() {
     load();
     const refreshTimer = setInterval(() => load({ silent: true }), 5000);
     return () => {
-      mountedRef.current = false;
       if (viewGenerationRef.current === generation) viewGenerationRef.current += 1;
-      qrPollGenerationRef.current += 1;
       wechatActionVersionRef.current += 1;
       wecomActionVersionRef.current += 1;
       clearInterval(refreshTimer);
-      if (qrPollRef.current) {
-        clearTimeout(qrPollRef.current);
-        qrPollRef.current = null;
-      }
     };
   }, [active, load]);
 
@@ -326,13 +337,17 @@ export default function ReplicaRemoteControlView() {
     qrPollGenerationRef.current += 1;
     if (qrPollRef.current) { clearTimeout(qrPollRef.current); qrPollRef.current = null; }
   };
-  const pollQr = (instanceId, projectId, generation) => {
+  const pollQr = (instanceId, projectId) => {
     const startedAt = Date.now();
     stopQrPoll();
     const pollGeneration = qrPollGenerationRef.current;
+    // View visibility (active) intentionally does NOT invalidate the poll — a
+    // scan in progress survives view switches. Only unmount, project switch,
+    // stopQrPoll, or the 180s deadline ends it.
     const isCurrentPoll = () => (
       pollGeneration === qrPollGenerationRef.current &&
-      isScopeCurrent(projectId, generation)
+      mountedRef.current &&
+      useStore.getState().activeProjectId === projectId
     );
     const poll = async () => {
       if (!isCurrentPoll()) return;
@@ -380,7 +395,7 @@ export default function ReplicaRemoteControlView() {
     setWechatQrLoading(true);
     stopQrPoll();
     if (message) setInfo(message);
-    pollQr(instanceId, projectId, generation);
+    pollQr(instanceId, projectId);
     return true;
   };
 

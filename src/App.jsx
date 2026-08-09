@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useEffect, useMemo } from 'react';
 import { LayoutPanelLeft, ListTree } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
@@ -500,17 +501,38 @@ function StatusBar() {
   const rightPanel = useStore((s) => s.rightPanel);
   const toggleWorkflowPanel = useStore((s) => s.toggleWorkflowPanel);
   const activeThreadId = useStore((s) => s.activeThreadId);
-  const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[activeThreadId] || null);
   const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
   const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
-  // M-perf: subscribe to the scalar status only — a whole-thread selector would
-  // re-render the topbar on any thread mutation (e.g. draft persistence) even
-  // though the bar only shows the workflow highlight.
+  // M-perf: subscribe to the workflow-relevant runtime fields only (shallow),
+  // never the whole thread runtime object — patchThreadRuntime creates a new
+  // runtime reference on every streaming chunk / usage_update, which used to
+  // re-render the topbar and re-run deriveWorkflowView on each one.
+  const workflowRuntime = useStore(
+    useShallow((s) => {
+      const runtime = s.threadRuntimeById?.[s.activeThreadId];
+      if (!runtime) return null;
+      return {
+        timeline: runtime.timeline,
+        workflowState: runtime.workflowState,
+        lastWorkflowState: runtime.lastWorkflowState,
+        goalState: runtime.goalState,
+        lastGoalState: runtime.lastGoalState,
+        teamState: runtime.teamState,
+        lastTeamState: runtime.lastTeamState,
+        promptStartedAt: runtime.promptStartedAt,
+        activePromptRunId: runtime.activePromptRunId,
+        isAwaitingResponse: runtime.isAwaitingResponse,
+        memberHistoriesByName: runtime.memberHistoriesByName,
+        subagentReports: runtime.subagentReports,
+        lastSubagentReports: runtime.lastSubagentReports,
+      };
+    }),
+  );
   const activeThreadStatus = useStore((s) => s.threadsById?.[s.activeThreadId]?.status || 'idle');
   const workflowVisible = useMemo(() => {
-    const runtime = activeThreadRuntime || {};
+    const runtime = workflowRuntime || {};
     return presentWorkflowTopbarHighlight(runtime, activeThreadStatus, runtime.timeline);
-  }, [activeThreadRuntime, activeThreadStatus]);
+  }, [workflowRuntime, activeThreadStatus]);
   const surfaceActive = Boolean(rightPanel);
 
   return (

@@ -2735,9 +2735,36 @@ export default function ReplicaChatView() {
     isAwaitingResponse ||
     activePromptRunId ||
     Boolean(activeThreadRuntime?.promptDispatchInFlight);
+  // M-perf: stream chunks merge into the same message entry (mergeAssistantChunk
+  // keeps the id), so a length+last-entry+tail-signature fingerprint captures
+  // everything the workflow/activity presenters read from the timeline: pure
+  // token appends stop re-deriving the O(timeline) projections on every chunk.
+  // The tail signature covers tool/task/goal status flips in the last 20 entries
+  // (the common completion shape); a change deeper in a 300-entry history is
+  // almost always accompanied by a new appended entry (length change) anyway.
+  const timelineFingerprint = useMemo(() => {
+    const last = timeline[timeline.length - 1];
+    let tailSig = 0;
+    const from = Math.max(0, timeline.length - 20);
+    for (let i = timeline.length - 1; i >= from; i -= 1) {
+      const item = timeline[i];
+      if (
+        item?.type === 'tool_call' ||
+        item?.type === 'taskCreated' ||
+        item?.type === 'taskStatus' ||
+        item?.type === 'goal-progress' ||
+        item?.type === 'goal-status'
+      ) {
+        tailSig = (tailSig * 31 + String(item.status || '').length) | 0;
+        tailSig = (tailSig * 31 + (item.id ? item.id.length : 0)) | 0;
+      }
+    }
+    return `${timeline.length}:${last?.id || ''}:${last?.type || ''}:${last?.status || ''}:${tailSig}`;
+  }, [timeline]);
+
   const workflowStatus = useMemo(
     () => deriveWorkflowView({ runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline }),
-    [activeThreadRuntime, activeThreadStatus, timeline],
+    [activeThreadRuntime, activeThreadStatus, timelineFingerprint],
   );
   const responseActivityLabel = useMemo(
     () => {
@@ -2768,7 +2795,7 @@ export default function ReplicaChatView() {
       isAwaitingResponse,
       activePromptRunId,
       promptStartedAt,
-      timeline,
+      timelineFingerprint,
       t,
       workflowStatus,
       sessionResponseBusy,

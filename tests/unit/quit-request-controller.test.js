@@ -91,6 +91,51 @@ describe('tray quit request controller', () => {
     expect(held.onTimeout).toHaveBeenCalledWith(request.requestId);
   });
 
+  it('bounds a hold with a fallback deadline so a hung dialog cannot deadlock quit', () => {
+    const held = createHarness();
+    const request = held.controller.begin();
+    expect(held.controller.acknowledge(request.requestId)).toBe(true);
+    expect(held.controller.hold(request.requestId)).toBe(true);
+
+    // Soft/hard timers are disarmed; only the hold fallback (120s default) remains.
+    held.runDelay(2500);
+    held.runDelay(6000);
+    expect(held.onTimeout).not.toHaveBeenCalled();
+    expect(held.controller.hasPending()).toBe(true);
+
+    held.runDelay(120000);
+    expect(held.onTimeout).toHaveBeenCalledTimes(1);
+    expect(held.onTimeout).toHaveBeenCalledWith(request.requestId);
+    expect(held.controller.hasPending()).toBe(false);
+  });
+
+  it('disarms the hold fallback when the dialog resolves via resume or confirm', () => {
+    const resumed = createHarness();
+    const resumeRequest = resumed.controller.begin();
+    expect(resumed.controller.acknowledge(resumeRequest.requestId)).toBe(true);
+    expect(resumed.controller.hold(resumeRequest.requestId)).toBe(true);
+    expect(resumed.controller.resume(resumeRequest.requestId, 2500)).toBe(true);
+
+    // The hold fallback must not fire after resume; only the resumed hard deadline does.
+    resumed.runDelay(120000);
+    resumed.runDelay(6000);
+    expect(resumed.onTimeout).not.toHaveBeenCalled();
+    expect(resumed.controller.hasPending()).toBe(true);
+    resumed.runDelay(2500);
+    expect(resumed.onTimeout).toHaveBeenCalledTimes(1);
+    expect(resumed.controller.hasPending()).toBe(false);
+
+    const confirmed = createHarness();
+    const confirmRequest = confirmed.controller.begin();
+    expect(confirmed.controller.acknowledge(confirmRequest.requestId)).toBe(true);
+    expect(confirmed.controller.hold(confirmRequest.requestId)).toBe(true);
+    expect(confirmed.controller.confirm(confirmRequest.requestId)).toBe(true);
+
+    confirmed.runDelay(120000);
+    expect(confirmed.onTimeout).not.toHaveBeenCalled();
+    expect(confirmed.controller.hasPending()).toBe(false);
+  });
+
   it('fires the soft fallback once when the renderer never responds', () => {
     const { controller, onTimeout, runDelay } = createHarness();
     const request = controller.begin();
@@ -112,9 +157,13 @@ describe('tray quit request controller', () => {
 
     expect(mainSource).toMatch(/timeoutMs:\s*2500/);
     expect(mainSource).toMatch(/hardDeadlineMs:\s*6000/);
+    expect(mainSource).toMatch(/holdDeadlineMs:\s*120000/);
     expect(mainSource).toMatch(/forceDelayMs:\s*1200/);
     expect(controllerSource).toMatch(/timeoutMs\s*=\s*Number\.isFinite\(options\.timeoutMs\)\s*\?\s*options\.timeoutMs\s*:\s*2500/);
     expect(controllerSource).toMatch(/hardDeadlineMs\s*=\s*Number\.isFinite\(options\.hardDeadlineMs\)\s*\?\s*options\.hardDeadlineMs\s*:\s*6000/);
+    expect(controllerSource).toMatch(
+      /holdDeadlineMs\s*=\s*Number\.isFinite\(options\.holdDeadlineMs\)\s*\?\s*options\.holdDeadlineMs\s*:\s*120000/,
+    );
     expect(finalSource).toMatch(/trayDelayMs\s*=\s*Number\.isFinite\(options\.trayDelayMs\)\s*\?\s*options\.trayDelayMs\s*:\s*50/);
     expect(finalSource).toMatch(/forceDelayMs\s*=\s*Number\.isFinite\(options\.forceDelayMs\)\s*\?\s*options\.forceDelayMs\s*:\s*1200/);
   });
@@ -130,6 +179,10 @@ describe('tray quit request controller', () => {
     expect(mainSource).toContain("ipcMain.on('window:show'");
     expect(mainSource).toContain("commandLine.includes('--request-quit')");
     expect(mainSource).toContain('beginFinalApplicationExit(`renderer-confirmed:${requestId}`)');
+    // Crashed renderers must cancel any pending quit request before reload, so a
+    // lost requestId cannot deadlock every later tray/--request-quit attempt.
+    expect(mainSource).toMatch(/A crashed renderer can never finish the quit handshake/);
+    expect(mainSource).toMatch(/quitRequestController\.cancel\(pendingQuitRequestId\)/);
     expect(preloadSource).toContain(
       "acknowledgeQuit: (requestId) => ipcRenderer.send('app:acknowledgeQuit', requestId)",
     );

@@ -127,7 +127,7 @@ export async function deleteChannelInstance(type, instanceId) {
     throw new Error(msg);
   }
   const text = await response.text().catch(() => '');
-  try { return JSON.parse(text)?.data || JSON.parse(text) || null; } catch (_) { return null; }
+  try { const parsed = JSON.parse(text); return parsed?.data || parsed || null; } catch (_) { return null; }
 }
 
 // ===== Channels: 微信/企微专属（对照源 POST /api/v1/channels/wechat|wecom）=====
@@ -644,7 +644,7 @@ export async function removeMarketplace(marketplaceId) {
     throw new Error(msg);
   }
   const text = await response.text().catch(() => '');
-  try { return JSON.parse(text)?.data || JSON.parse(text) || null; } catch (_) { return null; }
+  try { const parsed = JSON.parse(text); return parsed?.data || parsed || null; } catch (_) { return null; }
 }
 
 export { getApiBase };

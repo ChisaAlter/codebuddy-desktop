@@ -212,7 +212,10 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
         statusText: proxied?.statusText || 'CodeBuddy request failed',
         headers,
         text: async () => readText(),
-        json: async () => (readText() ? JSON.parse(readText()) : null),
+        json: async () => {
+          const text = readText();
+          return text ? JSON.parse(text) : null;
+        },
         blob: async () => new Blob([bodyBytes || proxied?.body || ''], { type: headers.get('content-type') || '' }),
         arrayBuffer: async () => readArrayBuffer(),
         truncated: Boolean(proxied?.truncated),
@@ -582,6 +585,11 @@ export class AcpClient {
         this.handleQuestionRequest(message.id, message.params || {});
         return;
       }
+      // JSON-RPC 规范：带 id 的消息是"请求"，必须应答。未知 method 回
+      // -32601 Method not found——静默丢弃会让 daemon 若同步等待应答时，
+      // 后续请求可能被阻塞到超时。
+      void this.sendJsonRpcError(message.id, -32601, `Method not found: ${message.method}`).catch(() => {});
+      this.emit('raw_extension', message);
       return;
     }
 
@@ -735,7 +743,7 @@ export class AcpClient {
     }
     return true;
   }
-  async sendJsonRpcResult(requestId, result) {
+  async #sendJsonRpc(requestId, payload) {
     const response = await this.requestHttp('/api/v1/acp', {
       method: 'POST',
       headers: makeHeaders({
@@ -743,17 +751,25 @@ export class AcpClient {
         'Content-Type': 'application/json',
         'acp-connection-id': this.connectionId,
       }),
-      body: JSON.stringify({ jsonrpc: '2.0', id: requestId, result }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: requestId, ...payload }),
       timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
     });
     if (!response.ok) {
       let message = '';
       try {
-        const payload = await response.json();
-        message = payload?.error?.message || '';
+        const payload2 = await response.json();
+        message = payload2?.error?.message || '';
       } catch (_) {}
       throw new Error(message || 'ACP response failed: ' + response.status + ' ' + response.statusText);
     }
+  }
+
+  async sendJsonRpcResult(requestId, result) {
+    return this.#sendJsonRpc(requestId, { result });
+  }
+
+  async sendJsonRpcError(requestId, code, message) {
+    return this.#sendJsonRpc(requestId, { error: { code, message } });
   }
 
   mapPermissionDecisionToOptionId(decision) {
@@ -1216,24 +1232,40 @@ export class AcpClient {
     this.stopHeartbeat();
     this._heartbeatInterval = intervalMs;
     this._heartbeatFailures = 0;
-    this._heartbeatTimer = setInterval(async () => {
+    // Recursive setTimeout instead of setInterval: the next beat is scheduled
+    // only after the previous /api/v1/health settles, so a slow network cannot
+    // stack concurrent in-flight heartbeats.
+    const beat = async () => {
+      if (this._heartbeatTimer === null) return; // stopped while in flight
       try {
         await this.fetchJson('/api/v1/health');
         this._heartbeatFailures = 0;
       } catch (_) {
-        this._heartbeatFailures++;
+        this._heartbeatFailures += 1;
         if (this._heartbeatFailures >= this._maxHeartbeatFailures) {
           this.stopHeartbeat();
           this.connected = false;
-          this._triggerReconnect();
+          if (this.autoReconnectEnabled) {
+            this._triggerReconnect();
+          } else {
+            // kill switch：只标断连，不调度自动重连（与 markConnectionBroken
+            // 的语义一致），由 UI/用户显式恢复。
+            this.reconnecting = false;
+            console.warn('[acp-restore] heartbeat broken (auto-reconnect disabled)');
+          }
+          return;
         }
       }
-    }, this._heartbeatInterval);
+      if (this._heartbeatTimer !== null) {
+        this._heartbeatTimer = setTimeout(beat, this._heartbeatInterval);
+      }
+    };
+    this._heartbeatTimer = setTimeout(beat, this._heartbeatInterval);
   }
 
   stopHeartbeat() {
     if (this._heartbeatTimer) {
-      clearInterval(this._heartbeatTimer);
+      clearTimeout(this._heartbeatTimer);
       this._heartbeatTimer = null;
     }
     this._heartbeatFailures = 0;
@@ -1693,12 +1725,25 @@ export class AcpClient {
 
       const trimmed = text.trim();
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        const parsed = JSON.parse(trimmed);
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (err) {
+          // Corrupt/truncated body — the connection itself is fine; do NOT let
+          // classifyTransportFailure treat this as 'transport' (status null),
+          // which would tear the connection down and trigger a reconnect storm.
+          err.failureClass = 'client';
+          throw err;
+        }
         if (parsed?.error) throw createAcpRpcError(method, parsed.error);
         return parsed?.result ?? parsed;
       }
 
-      throw new Error(`ACP response stream ended before RPC result: ${method}`);
+      // Stream ended without an RPC result (e.g. a non-JSON error page). Same
+      // as the IPC path: the connection is healthy, mark it client-side only.
+      const ended = new Error(`ACP response stream ended before RPC result: ${method}`);
+      ended.failureClass = 'client';
+      throw ended;
     } catch (err) {
       if (err.name === 'AbortError') {
         if (cancelledByUser) throw new Error('ACP request cancelled by user');
@@ -1716,7 +1761,8 @@ export class AcpClient {
       }
       // AcpRpcError 是服务端业务错误（鉴权/拒绝等），不视为传输断开。
       // 其余错误按 HTTP status 分类：4xx/5xx 不拆连接，仅真网络断开（status null）触发重连。
-      if (!(err instanceof AcpRpcError) && !err.transportFailure) {
+      // 预先标记 failureClass 的错误（如上面的解析失败/流提前结束）跳过分类，保持 client 语义。
+      if (!(err instanceof AcpRpcError) && !err.transportFailure && !err.failureClass) {
         const info = normalizeStreamError(err);
         const cls = classifyTransportFailure({ ...info, isLongRunningIdleTimeout: false });
         if (cls === 'auth') {

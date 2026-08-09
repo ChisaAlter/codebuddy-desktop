@@ -65,6 +65,9 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
       ['rev-parse', '--verify', 'HEAD'],
       ['diff', '--', 'x.txt'],
       ['diff', '--cached'],
+      ['diff', '--numstat'],
+      ['diff', '--cached', '--numstat'],
+      ['status', '-sb'],
       ['commit', '-m', 'msg'],
       ['log', '-20', '--oneline', '--decorate'],
       ['log', '-20', '--format=%H|%h|%an|%ai|%s'],
@@ -99,5 +102,23 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
 
   it('commit -m 后的文本按提交信息处理，不误判为选项', () => {
     expect(validateGitArgs(['commit', '-m', '--config'])).toBeNull();
+  });
+
+  // M1：commit message 双端上限（主进程硬上限 4096，前端 maxLength 对齐）
+  it('commit message 超过 4096 字符拒绝', () => {
+    expect(validateGitArgs(['commit', '-m', 'x'.repeat(4097)])).toMatch(/exceeds 4096/);
+  });
+
+  it('commit message 恰好 4096 字符放行', () => {
+    expect(validateGitArgs(['commit', '-m', 'x'.repeat(4096)])).toBeNull();
+  });
+
+  it('commit message 为空串拒绝（isPath 非空校验）', () => {
+    expect(validateGitArgs(['commit', '-m', ''])).toMatch(/commit.*not allowed/);
+  });
+
+  it('M1 新增形态的变体仍拒绝（防止宽匹配）', () => {
+    expect(validateGitArgs(['diff', '--numstat', '--stat'])).toMatch(/diff.*not allowed/);
+    expect(validateGitArgs(['status', '-sb', '--porcelain'])).toMatch(/status.*not allowed/);
   });
 });

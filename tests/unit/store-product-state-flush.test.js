@@ -232,4 +232,40 @@ describe('store product state flush', () => {
     expect(threads['thread-3'].status).toBe('idle');
     expect(threads['thread-4'].status).toBe('idle'); // already idle, unchanged
   });
+
+  it('skips the IPC save when the snapshot references are unchanged (dedupe)', async () => {
+    // First save lands; a second persist with identical references must not
+    // re-serialize / re-send (the per-update full-snapshot cost).
+    await useStore.getState().persistProductState();
+    expect(saveProductState).toHaveBeenCalledTimes(1);
+
+    await useStore.getState().persistProductState();
+    await useStore.getState().persistProductState();
+    expect(saveProductState).toHaveBeenCalledTimes(1);
+
+    // A real change (new timeline reference) must trigger a fresh save.
+    useStore.setState((s) => ({
+      ...s,
+      threadRuntimeById: {
+        ...s.threadRuntimeById,
+        'thread-1': runtime({
+          timeline: [{ id: 'msg-2', type: 'message', role: 'assistant', content: 'hi', createdAt: 2 }],
+        }),
+      },
+    }));
+    await useStore.getState().updateThreadRecord('thread-1', { status: 'idle' });
+    expect(saveProductState.mock.calls.length).toBeGreaterThan(1);
+
+    // A failed save of NEW state must not be deduped away — the next persist
+    // retries (identical-reference dedupe only skips saves whose data is
+    // already on disk from a previous success).
+    useStore.setState((s) => ({ ...s, threadsById: { ...s.threadsById } })); // fresh reference
+    saveProductState.mockResolvedValueOnce({ ok: false, error: 'disk full' });
+    const failed = await useStore.getState().persistProductState();
+    expect(failed).toBe(false);
+    const callsAfterFailure = saveProductState.mock.calls.length;
+    saveProductState.mockResolvedValue({ ok: true });
+    await useStore.getState().persistProductState();
+    expect(saveProductState.mock.calls.length).toBe(callsAfterFailure + 1); // retried, not skipped
+  });
 });

@@ -18,6 +18,29 @@ function normalizeStatus(value, fallback = 'running') {
   return raw;
 }
 
+// M4 单源状态文案：normalizeStatus 输出键 → i18n 键（组件 t() 渲染）。
+// 与 STATUS_LABELS 同源，避免组件内另维护一份中文映射。
+export const STATUS_LABELS = {
+  pending: 'workflow.status.pending',
+  running: 'workflow.status.running',
+  working: 'workflow.status.working',
+  in_progress: 'workflow.status.working',
+  'in-progress': 'workflow.status.working',
+  waiting: 'workflow.status.waiting',
+  blocked: 'workflow.status.blocked',
+  queued: 'workflow.status.pending',
+  completed: 'workflow.status.completed',
+  done: 'workflow.status.completed',
+  success: 'workflow.status.completed',
+  succeeded: 'workflow.status.completed',
+  failed: 'workflow.status.failed',
+  error: 'workflow.status.failed',
+  cancelled: 'workflow.status.cancelled',
+  canceled: 'workflow.status.cancelled',
+  idle: 'workflow.status.idle',
+};
+
+
 function isActive(status) {
   return ACTIVE_STATUSES.has(normalizeStatus(status));
 }
@@ -191,13 +214,16 @@ function phaseValue(agentPhase, progress) {
 export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', timeline, now = Date.now() } = {}) {
   const promptStartedAt = Number(runtime.promptStartedAt) || null;
   const entries = currentTurnEntries(timeline ?? runtime.timeline, promptStartedAt);
-  const teamSnapshot = runtime.teamState || runtime.lastTeamState || null;
+  const workflowSnapshot = runtime.workflowState || runtime.lastWorkflowState || null;
+  const hasTeamSnapshot = Boolean(runtime.teamState || runtime.lastTeamState);
+  const teamSnapshot = runtime.teamState || runtime.lastTeamState || workflowSnapshot || null;
   const activeTeam = Boolean(runtime.teamState?.active !== false && runtime.teamState);
+  const activeWorkflow = runtime.workflowState?.active === true;
   const members = memberList(teamSnapshot).map((member, index) => {
     const normalized = normalizeMember(
       member,
       index,
-      runtime.activePromptRunId || runtime.isAwaitingResponse || activeTeam ? 'running' : 'idle',
+      runtime.activePromptRunId || runtime.isAwaitingResponse || activeTeam || activeWorkflow ? 'running' : 'idle',
     );
     return {
       ...normalized,
@@ -229,7 +255,7 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   const items = members.length ? members : steps;
   const explicitSubagent = hasExplicitSubagentActivity(entries);
   const source = members.length
-    ? 'team'
+    ? hasTeamSnapshot ? 'team' : 'workflow'
     : projectedGoal || Number(projectedGoals.eventCount || 0) > 0
       ? 'goal'
       : steps.length
@@ -256,7 +282,7 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   const activeThread = ['running', 'waiting', 'cancelling'].includes(threadStatus);
   // 终态回合：无活动 run、无等待权限。此时工具/条目一律不计为“运行中”，
   // 否则取消或中断后停在非终态的工具会残留「正在执行工具」活动标签。
-  const terminal = !activeThread && !runtime.activePromptRunId && !runtime.isAwaitingResponse && !pendingPermission;
+  const terminal = !activeThread && !runtime.activePromptRunId && !runtime.isAwaitingResponse && !pendingPermission && !activeWorkflow;
   const toolsRunningCount = terminal ? 0 : toolItems.filter((item) => isActive(item.status)).length;
   const toolsFailedCount = toolItems.filter((item) => item.status === 'failed').length;
   const toolsCompletedCount = toolItems.filter((item) => item.status === 'completed').length;
@@ -293,7 +319,7 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
       runtime.historyReplayActive ||
       (source === 'team' && runtime.lastTeamState && members.length > 0) ||
       (source === 'goal' && projectedGoal),
-  ) && (!terminal || source === 'team' || source === 'goal' || Boolean(runtime.lastTeamState && members.length));
+  ) && (!terminal || source === 'team' || source === 'goal' || (source === 'workflow' && members.length > 0));
   const memberStatuses = members.map((item) => item.status);
   const membersActive = memberStatuses.some((status) => isActive(status));
   const hasOrchestration = Boolean(
@@ -323,7 +349,7 @@ export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', t
   );
   // Auto-open only for real orchestration — not ordinary TaskCreate tool spam.
   const shouldAutoOpen = Boolean(
-    activeThread &&
+    (activeThread || activeWorkflow) &&
       (runtime.activePromptRunId || runtime.isAwaitingResponse || active) &&
       (
         (source === 'team' && members.length > 0) ||
@@ -507,11 +533,22 @@ export function presentWorkflowActivity(status, t) {
   return null;
 }
 
-/** Presenter: whether the workflow panel should auto-open for this run. */
-export function presentWorkflowAutoOpen(status, { dismissedRunId = null, runId = null } = {}) {
+/**
+ * Presenter: whether the workflow panel should auto-open for this run.
+ * M2 dismissed 竞态修复：dismissed 为 { runId, at } 结构
+ * - 时间窗（DISMISS_WINDOW_MS 内）：任何自动打开都被抑制（防 closing 220ms 期闪回）
+ * - 同 runId：永久不自动重开（用户手动关闭的意图）
+ * - 超窗 + 不同 runId：允许自动打开
+ */
+export const DISMISS_WINDOW_MS = 3000;
+
+export function presentWorkflowAutoOpen(status, { dismissed = null, runId = null } = {}) {
   if (!status || status.empty || !status.shouldAutoOpen) return false;
+  if (dismissed && Number.isFinite(dismissed.at)) {
+    if (Date.now() - dismissed.at < DISMISS_WINDOW_MS) return false;
+  }
   const id = runId || status.runId;
-  if (id && dismissedRunId && String(dismissedRunId) === String(id)) return false;
+  if (id && dismissed?.runId && String(dismissed.runId) === String(id)) return false;
   return true;
 }
 

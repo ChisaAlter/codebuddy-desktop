@@ -455,7 +455,10 @@ async function main() {
       /* ignore */
     }
     try {
-      if (launched) await cleanupOwned(launched);
+      if (launched) await cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        });
     } catch (error) {
       console.warn('cleanupOwned failed', error?.message || error);
     }

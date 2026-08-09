@@ -393,43 +393,48 @@ export default function ReplicaTerminalView() {
     }
   };
 
+  // M-perf: keep the window keydown listener bound ONCE. panes/activePaneId
+  // change on every 50ms output flush; re-binding the listener on each change
+  // was pure churn with a (tiny) gap where a keystroke could be missed.
+  const keydownHandlerRef = useRef(null);
+  keydownHandlerRef.current = (event) => {
+    // M-rc9: do not react to terminal pane shortcuts while a modal dialog is
+    // open (e.g. ActionConfirmDialog), so Ctrl+Shift+W in a confirm does not
+    // close a terminal pane underneath the overlay.
+    if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+    // M-perf (keep-alive): the terminal view stays mounted while hidden — only
+    // react to pane shortcuts while the terminal route is actually visible.
+    if (!viewActive) return;
+    if (event.ctrlKey && event.shiftKey && event.key === 'N') {
+      event.preventDefault();
+      if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
+    }
+    if (event.ctrlKey && event.shiftKey && event.key === 'W') {
+      event.preventDefault();
+      const active = panes.find((pane) => pane.id === activePaneId);
+      if (active && panes.length > 1 && !terminalOperationRef.current) closeTerminalPane(active.id);
+    }
+    if (event.ctrlKey && event.shiftKey && event.key === 'ArrowRight') {
+      event.preventDefault();
+      if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
+    }
+    if (event.ctrlKey && event.shiftKey && event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!terminalOperationRef.current) splitPane(activePaneId, 'down');
+    }
+    if (event.altKey && /^[1-2]$/.test(event.key)) {
+      const pane = panes[Number(event.key) - 1];
+      if (pane) {
+        event.preventDefault();
+        setActivePane(pane.id);
+      }
+    }
+  };
   useEffect(() => {
-    const onKeyDown = (event) => {
-      // M-rc9: do not react to terminal pane shortcuts while a modal dialog is
-      // open (e.g. ActionConfirmDialog), so Ctrl+Shift+W in a confirm does not
-      // close a terminal pane underneath the overlay.
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      // M-perf (keep-alive): the terminal view stays mounted while hidden — only
-      // react to pane shortcuts while the terminal route is actually visible.
-      if (!viewActive) return;
-      if (event.ctrlKey && event.shiftKey && event.key === 'N') {
-        event.preventDefault();
-        if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
-      }
-      if (event.ctrlKey && event.shiftKey && event.key === 'W') {
-        event.preventDefault();
-        const active = panes.find((pane) => pane.id === activePaneId);
-        if (active && panes.length > 1 && !terminalOperationRef.current) closeTerminalPane(active.id);
-      }
-      if (event.ctrlKey && event.shiftKey && event.key === 'ArrowRight') {
-        event.preventDefault();
-        if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
-      }
-      if (event.ctrlKey && event.shiftKey && event.key === 'ArrowDown') {
-        event.preventDefault();
-        if (!terminalOperationRef.current) splitPane(activePaneId, 'down');
-      }
-      if (event.altKey && /^[1-2]$/.test(event.key)) {
-        const pane = panes[Number(event.key) - 1];
-        if (pane) {
-          event.preventDefault();
-          setActivePane(pane.id);
-        }
-      }
-    };
+    const onKeyDown = (event) => keydownHandlerRef.current?.(event);
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [panes, activePaneId, splitPane, closeTerminalPane, setActivePane, viewActive]);
+  }, []);
 
   const gridClass = useMemo(() => {
     if (panes.length <= 1) return 'grid-cols-1';

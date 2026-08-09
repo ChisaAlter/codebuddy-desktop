@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   consumeTaskNotificationTarget: () => ipcRenderer.invoke('notification:consumeOpenThread'),
   openUserData: () => ipcRenderer.invoke('app:openUserData'),
   runGit: (request) => ipcRenderer.invoke('git:run', request),
+  registerGitWorkspaces: (payload) => ipcRenderer.invoke('git:registerWorkspaces', payload),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   chooseAttachments: (options) => ipcRenderer.invoke('attachment:choose', options),
   readDroppedAttachments: (files = []) => {

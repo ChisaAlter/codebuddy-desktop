@@ -1,5 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ActionConfirmDialog from './ActionConfirmDialog';
+
+/**
+ * Display helper for the device list / revoke confirm text: prefer the label,
+ * fall back to the id prefix, and never crash when `deviceId` is missing
+ * (older devices / malformed relay responses may omit it).
+ */
+export function deviceDisplayName(device) {
+  if (device?.label) return device.label;
+  const id = String(device?.deviceId || '');
+  return id ? id.slice(0, 12) : '';
+}
 
 /**
  * Desktop-only: 手机远程（meet-me relay + E2EE pairing）.
@@ -15,6 +26,9 @@ export default function MobileRemoteSettingsCard({ t }) {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [devices, setDevices] = useState([]);
   const [busy, setBusy] = useState(false);
+  // Synchronous in-flight guard for the TLS toggle: React batches state updates,
+  // so two clicks inside the same batch both observe the old `busy` value.
+  const tlsToggleBusyRef = useRef(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   // M-rc1: pending device revoke drives the shared ActionConfirmDialog instead
@@ -213,6 +227,13 @@ export default function MobileRemoteSettingsCard({ t }) {
           disabled={busy || !config}
           aria-pressed={Boolean(config?.relayUseTls)}
           onClick={() => {
+            // Guard against double-clicks: concurrent mobileRemoteSetConfig
+            // calls could resolve out of order and the stale response would
+            // overwrite the newer toggle state. The ref is synchronous, unlike
+            // the busy state (React batches updates within an event batch).
+            if (busy || tlsToggleBusyRef.current || !config) return;
+            tlsToggleBusyRef.current = true;
+            setBusy(true);
             const next = { ...config, relayUseTls: !config?.relayUseTls };
             setConfig(next);
             api
@@ -223,7 +244,11 @@ export default function MobileRemoteSettingsCard({ t }) {
                 if (result.startError) setError(result.startError);
                 else if (result.config.enabled) loadOffer();
               })
-              .catch((e) => setError(e?.message || String(e)));
+              .catch((e) => setError(e?.message || String(e)))
+              .finally(() => {
+                tlsToggleBusyRef.current = false;
+                setBusy(false);
+              });
           }}
         />
       </div>
@@ -326,16 +351,16 @@ export default function MobileRemoteSettingsCard({ t }) {
             {t('mobileRemote.devices')}
           </div>
           <ul className="space-y-1">
-            {devices.map((d) => (
+            {devices.map((d, index) => (
               <li
-                key={d.deviceId}
+                key={d.deviceId || `device-${index}`}
                 className="flex items-center justify-between gap-2 text-[11px]"
               >
                 <span className="min-w-0 truncate text-[var(--color-text-secondary)]">
-                  {d.label || d.deviceId.slice(0, 12)}
-                  <span className="ml-1 text-[var(--color-text-tertiary)]">
-                    {d.deviceId.slice(0, 8)}
-                  </span>
+                  {deviceDisplayName(d)}
+                  {d.deviceId ? (
+                    <span className="ml-1 text-[var(--color-text-tertiary)]">{d.deviceId.slice(0, 8)}</span>
+                  ) : null}
                 </span>
                 <button
                   className="btn-ghost shrink-0 px-2 py-1 text-[11px] text-[var(--color-accent-red)]"
@@ -363,7 +388,7 @@ export default function MobileRemoteSettingsCard({ t }) {
       <ActionConfirmDialog
         open={Boolean(pendingRevoke)}
         title={t('mobileRemote.revokeTitle')}
-        description={`${t('mobileRemote.revokeDescription')}${pendingRevoke ? `（${pendingRevoke.label || pendingRevoke.deviceId.slice(0, 12)}）` : ''}`}
+        description={`${t('mobileRemote.revokeDescription')}${pendingRevoke ? `（${deviceDisplayName(pendingRevoke)}）` : ''}`}
         confirmLabel={t('mobileRemote.confirmRevoke')}
         busy={busy}
         error=""

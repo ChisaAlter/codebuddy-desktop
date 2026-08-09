@@ -14,6 +14,8 @@ import { terminalStateFromProject, terminalStateSnapshot } from '../helpers/term
 
 /** High-frequency ACP stream chunks — coalesce before React store commits. */
 const COALESCED_TIMELINE_EVENTS = new Set(['agent_message_chunk', 'agent_thought_chunk']);
+// M3：runtime.timeline 跨回合裁剪上限（回合终态另有 slice(-300)）
+const MAX_RUNTIME_TIMELINE = 2000;
 /** Hidden only: batch stream reduces so focus-return is one paint, not a multi-second backlog. */
 const TIMELINE_COALESCE_MS_HIDDEN = 200;
 const TIMELINE_PERSIST_MS_VISIBLE = 1500;
@@ -56,6 +58,34 @@ export function createProductPersistSlice(set, get, ctx) {
   let persistCoalesceDirty = false;
   let persistCoalesceTail = Promise.resolve(true);
   let persistReportErrors = false;
+  // M-perf: reference-level dedupe for the snapshot itself. productStateSnapshot
+  // only reads the seven top-level references below; with immutable zustand
+  // updates, unchanged references mean unchanged data, so a save whose signature
+  // matches the last successful one can be skipped entirely (no deep clone, no
+  // structured-clone IPC, no main-process JSON.stringify). This removes the
+  // "every updateThreadRecord triggers a full serialization of every thread's
+  // timeline" cost for the common case where the burst touched other state.
+  let lastSnapshotSignature = null;
+  let lastSnapshotSaved = false;
+
+  const snapshotSignature = (state) => ({
+    activeProjectId: state.activeProjectId,
+    activeThreadId: state.activeThreadId,
+    guiSettings: state.guiSettings,
+    projectOrder: state.projectOrder,
+    threadOrderByProject: state.threadOrderByProject,
+    projectsById: state.projectsById,
+    threadsById: state.threadsById,
+  });
+
+  const sameSnapshotSignature = (left, right) =>
+    left.activeProjectId === right.activeProjectId &&
+    left.activeThreadId === right.activeThreadId &&
+    left.guiSettings === right.guiSettings &&
+    left.projectOrder === right.projectOrder &&
+    left.threadOrderByProject === right.threadOrderByProject &&
+    left.projectsById === right.projectsById &&
+    left.threadsById === right.threadsById;
 
   const takeTimelineCoalesce = (threadId) => {
     if (!threadId || !threadTimelineCoalesce) return null;
@@ -79,7 +109,7 @@ export function createProductPersistSlice(set, get, ctx) {
 
   const applyTimelineEventNow = (threadId, eventType, payload, baseTimeline, baseAwaiting) => {
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(baseTimeline, eventType, payload, threadId),
+      timeline: reduceAcpEvent(baseTimeline, eventType, payload, threadId).slice(-MAX_RUNTIME_TIMELINE),
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false
@@ -197,11 +227,14 @@ export function createProductPersistSlice(set, get, ctx) {
     const pending = takeTimelineCoalesce(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const baseTimeline = pending?.timeline ?? runtime.timeline;
+    // M3：跨回合裁剪上限——reduceAcpEvent 每次全量拷贝，无上限时超长会话 O(n) 退化；
+    // 回合终态另有 slice(-300)（updateThreadRecord），此处封顶防止回合内无限增长。
+    const nextTimeline = reduceAcpEvent(baseTimeline, eventType, payload, threadId).slice(-MAX_RUNTIME_TIMELINE);
     const baseAwaiting = pending ? pending.isAwaitingResponse : runtime.isAwaitingResponse;
     // Thinking duration anchors at first thought chunk (WebUI LIVE); promptStartedAt
     // remains for response-activity chrome only — do not pass it as thinkingStartedAt.
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(baseTimeline, eventType, payload, threadId),
+      timeline: nextTimeline,
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false
@@ -275,6 +308,11 @@ export function createProductPersistSlice(set, get, ctx) {
         const state = get();
         // 未 hydrate 或空项目时不要落盘，避免退出/热杀时把真实项目列表写成空。
         if (!state.productStateLoaded) return false;
+        const signature = snapshotSignature(state);
+        if (lastSnapshotSaved && lastSnapshotSignature && sameSnapshotSignature(lastSnapshotSignature, signature)) {
+          // 引用级未变：磁盘已是最新数据，跳过全量序列化与 IPC。
+          return true;
+        }
         const snapshot = productStateSnapshot(state);
         const projectCount = Object.keys(snapshot.projectsById || {}).length;
         if (projectCount === 0 && Object.keys(state.projectsById || {}).length === 0) {
@@ -282,9 +320,12 @@ export function createProductPersistSlice(set, get, ctx) {
         }
         const result = await saveProductState(snapshot);
         if (!result?.ok) throw new Error(result?.error || '项目状态保存未完成');
+        lastSnapshotSignature = signature;
+        lastSnapshotSaved = true;
         return true;
       } catch (error) {
         if (persistReportErrors) set({ error: `保存项目状态失败: ${error.message}` });
+        lastSnapshotSaved = false;
         return false;
       }
     };

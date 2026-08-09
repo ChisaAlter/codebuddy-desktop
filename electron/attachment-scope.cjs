@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 
 /**
  * Attachment read scoping (H7).
@@ -13,6 +14,15 @@ const path = require('path');
  */
 
 const DEFAULT_CHOSEN_TTL_MS = 10 * 60 * 1000;
+
+/** realpath when the entry exists, else the resolved string (read will error). */
+function realOrResolve(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch (_) {
+    return p;
+  }
+}
 
 function createAttachmentScope({ loadProductState }) {
   const chosen = new Map(); // absPath -> expireAt
@@ -67,8 +77,13 @@ function createAttachmentScope({ loadProductState }) {
     let abs;
     try { abs = path.resolve(filePath); } catch (_) { return 'no'; }
     if (chosen.has(abs)) return 'chosen';
+    // H15: resolve symlinks/junctions before the containment check. The string
+    // level check treats a workspace symlink pointing outside the workspace
+    // (e.g. a junction to ~/.ssh) as inside, and fs.readFile follows links —
+    // which would silently read the external target.
+    const real = realOrResolve(abs);
     for (const cwd of projectCwds()) {
-      if (isWithinWorkspace(abs, cwd)) return 'workspace';
+      if (isWithinWorkspace(real, realOrResolve(cwd))) return 'workspace';
     }
     return 'no';
   }

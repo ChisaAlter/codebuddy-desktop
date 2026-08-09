@@ -14,6 +14,9 @@ export function emptyThreadRuntime() {
     // appended to the last assistant message instead of being dropped.
     lastPromptRunId: null,
     lastPromptRunAt: 0,
+    backgroundDrainRunId: null,
+    backgroundDrainUntil: 0,
+    backgroundDrainMaxUntil: 0,
     promptDispatched: false,
     promptQueue: [],
     // P0-4: set while a queued prompt has been popped from promptQueue but its
@@ -150,6 +153,9 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'activePromptRunId',
   'lastPromptRunId',
   'lastPromptRunAt',
+  'backgroundDrainRunId',
+  'backgroundDrainUntil',
+  'backgroundDrainMaxUntil',
   'promptDispatched',
   'promptDispatchInFlight',
   'promptQueue',

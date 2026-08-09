@@ -379,7 +379,15 @@ async function main() {
       client?.close?.();
     } catch (_) {}
     try {
-      if (launched) await cleanupOwned(launched);
+      if (launched) {
+        // Pass the tracked root identity so ownership is verifiable; calling
+        // cleanupOwned(launched) directly left trackedProcesses empty and the
+        // app running in the background after every run.
+        await cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        });
+      }
     } catch (e) {
       console.warn('cleanupOwned', e?.message || e);
     }

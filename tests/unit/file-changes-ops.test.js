@@ -5,10 +5,10 @@ const mocks = vi.hoisted(() => ({
   requestCodeBuddy: vi.fn(),
 }));
 
-vi.mock('../../src/lib/acp', () => ({
-  fetchJson: mocks.fetchJson,
-  requestCodeBuddy: mocks.requestCodeBuddy,
-}));
+vi.mock('../../src/lib/acp', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, fetchJson: mocks.fetchJson, requestCodeBuddy: mocks.requestCodeBuddy };
+});
 
 import {
   REVERT_SCOPES,
@@ -18,6 +18,7 @@ import {
   normalizeCheckpointRecord,
   revertFileChanges,
 } from '../../src/lib/file-changes';
+import { truncateDiffLines } from '../../src/components/ReplicaChangesView.jsx';
 
 describe('file-changes API client', () => {
   beforeEach(() => {
@@ -98,5 +99,28 @@ describe('file-changes API client', () => {
 
   it('rejects invalid checkpoint scope', async () => {
     await expect(revertFileChanges({ checkpointId: 'x', scope: 'Nope' })).rejects.toThrow(/无效的回退范围/);
+  });
+});
+
+describe('truncateDiffLines (M-perf diff bound)', () => {
+  it('keeps small diffs untouched', () => {
+    const lines = ['a', 'b', 'c'];
+    expect(truncateDiffLines(lines)).toBe(lines);
+  });
+
+  it('projects head + tail with a truncation notice for huge diffs', () => {
+    const lines = Array.from({ length: 6000 }, (_, i) => `line-${i}`);
+    const visible = truncateDiffLines(lines, 10);
+    expect(visible.length).toBe(21); // 10 head + 1 notice + 10 tail
+    expect(visible[0]).toBe('line-0');
+    expect(visible[9]).toBe('line-9');
+    expect(visible[10]).toContain('中间 5980 行已省略');
+    expect(visible[11]).toBe('line-5990');
+    expect(visible[20]).toBe('line-5999');
+  });
+
+  it('handles non-array input defensively', () => {
+    expect(truncateDiffLines(null)).toEqual([]);
+    expect(truncateDiffLines(undefined)).toEqual([]);
   });
 });

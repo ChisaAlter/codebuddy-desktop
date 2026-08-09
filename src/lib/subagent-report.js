@@ -63,11 +63,27 @@ function displayNameFor(source, fallback) {
   return '';
 }
 
-function flattenTools(items, output = []) {
-  for (const item of Array.isArray(items) ? items : []) {
+// M3：迭代式展平 + 深度/访问上限（防深链栈溢出与超深嵌套 DoS；结构事件驱动，非热路径）
+const FLATTEN_MAX_DEPTH = 64;
+const FLATTEN_MAX_VISIT = 100000;
+
+function flattenTools(items) {
+  const output = [];
+  const stack = (Array.isArray(items) ? items : []).map((item) => ({ item, depth: 0 }));
+  let guard = 0;
+  while (stack.length > 0 && guard < FLATTEN_MAX_VISIT) {
+    const { item, depth } = stack.pop();
+    guard += 1;
     if (!item || typeof item !== 'object') continue;
     if (item.type === 'tool_call') output.push(item);
-    flattenTools(item.children, output);
+    if (depth < FLATTEN_MAX_DEPTH) {
+      const children = item.children;
+      if (Array.isArray(children)) {
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push({ item: children[index], depth: depth + 1 });
+        }
+      }
+    }
   }
   return output;
 }

@@ -547,7 +547,10 @@ async function main() {
       client?.close?.();
     } catch (_) {}
     try {
-      if (launched) await cleanupOwned(launched);
+      if (launched) await cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        });
     } catch (e) {
       console.warn('cleanupOwned', e?.message || e);
     }

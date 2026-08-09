@@ -17,6 +17,7 @@ const { createQuitRequestController } = require('./quit-request-controller.cjs')
 const { createFinalExitController } = require('./final-exit-controller.cjs');
 const { deleteModelConfig, ensureModelConfigFile, listModelConfig, saveModelConfig } = require('./model-config.cjs');
 const { normalizeGitRequest, validateGitArgs } = require('./git-validate.cjs');
+const { normalizeDirList, isAllowedGitCwd, isTrustedGitSender } = require('./git-security.cjs');
 const { buildAttachmentChooseDialogOptions } = require('./attachment-choose.cjs');
 const { createAttachmentScope } = require('./attachment-scope.cjs');
 const {
@@ -101,6 +102,9 @@ let trustedRendererOrigin = null;
 let tray = null;
 let windowCreationPromise = null;
 let closeToTrayHintShown = false;
+// 二次启动发生在静态服务器/窗口就绪前时先记下，就绪后补一次显示；
+// 否则用户在首实例初始化完成前双击第二次启动会被静默吞掉（不弹窗无提示）。
+let pendingShowRequested = false;
 const activeTaskNotifications = new Set();
 const senderAbortRegistrations = new WeakMap();
 
@@ -203,6 +207,10 @@ const quitRequestController = createQuitRequestController({
   timeoutMs: 2500,
   // Renderer acked but never confirm/cancel (hung save / dialog path) → hard stop.
   hardDeadlineMs: 6000,
+  // Dirty-file dialog budget. hold() disarms the timers above; this fallback
+  // still fires so a renderer that crashes/hangs after the dialog cannot pin
+  // the quit request forever (normal dialogs resolve far sooner).
+  holdDeadlineMs: 120000,
   onTimeout(requestId) {
     if (reallyQuitting) return;
     logStartup(`Quit request timed out request=${requestId}; forcing application exit`);
@@ -1954,6 +1962,27 @@ async function createWindow() {
   };
   mainWindow.webContents.on('will-navigate', guardRendererNavigation);
   mainWindow.webContents.on('will-redirect', guardRendererNavigation);
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    // 生产构建钳制 Chromium 默认右键菜单（Inspect/Reload 等调试入口，devTools
+    // 已被 devTools:false 禁用，这里再堵掉右键入口）。编辑区内保留剪贴板
+    // 操作；非编辑区选中文本时保留“复制”（与原生右键行为一致，避免功能
+    // 丢失）；业务右键菜单由渲染层组件自行渲染。
+    if (isDev) return;
+    const template = [];
+    if (params.isEditable) {
+      template.push(
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { type: 'separator' },
+        { role: 'selectAll', label: '全选' },
+      );
+    } else if (params.selectionText) {
+      template.push({ role: 'copy', label: '复制' });
+    }
+    if (!template.length) return;
+    Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const externalUrl = normalizeExternalHttpUrl(url);
     if (externalUrl) {
@@ -1995,6 +2024,11 @@ async function createWindow() {
         const openError = await shell.openPath(userDataPath);
         if (openError) logStartup('Unable to open diagnostics after renderer exit: ' + openError);
       }
+      // A crashed renderer can never finish the quit handshake (its requestId is
+      // lost), so a pending request would deadlock every later quit attempt via
+      // hasPending(). Cancel it before reloading; the user can retry tray exit.
+      const pendingQuitRequestId = quitRequestController.currentRequestId();
+      if (pendingQuitRequestId) quitRequestController.cancel(pendingQuitRequestId);
       if (targetWindow && !targetWindow.isDestroyed()) targetWindow.reload();
     } catch (error) {
       logStartup('Renderer exit recovery failed: ' + (error?.message || error));
@@ -2060,10 +2094,16 @@ async function createWindow() {
   });
 
   // 捕获渲染进程控制台全级别输出（dev 模式详记，生产只记 WARN+）
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+  // Electron 32+ passes a single event object; the legacy positional signature
+  // (level, message, line, sourceId) is removed in Electron 36.
+  mainWindow.webContents.on('console-message', (event) => {
+    const level = event.level;
+    const message = event.message;
+    const line = event.lineNumber;
+    const sourceId = event.sourceId;
     if (isDev || level >= 2) {
       const tag = level === 3 ? 'ERROR' : level === 2 ? 'WARN' : level === 1 ? 'INFO' : 'LOG';
-      const src = sourceId ? ` @${sourceId.split('/').slice(-2).join('/')}:${line}` : '';
+      const src = sourceId ? ` @${String(sourceId).split('/').slice(-2).join('/')}:${line}` : '';
       // L3: redact secrets from renderer console logs (a renderer that warns
       // with a token/URL would otherwise persist it to startup.log).
       logStartup(`renderer [${tag}]${src}: ${redactSecrets(String(message))}`);
@@ -2311,11 +2351,30 @@ function createTimeoutSignal(timeoutMs) {
   };
 }
 
-ipcMain.handle('git:run', async (_event, payload = {}) => {
+// 已注册的允许 Git 工作目录（M1 安全面：渲染进程经 git:registerWorkspaces 上报，
+// 仅注册项目 workspacePath + workspaceExtraDirs 的解析后集合；空集合 = 拒绝任意目录）
+let gitAllowedWorkspaces = new Set();
+
+ipcMain.handle('git:registerWorkspaces', (event, payload = {}) => {
+  if (!isTrustedGitSender(event.sender, mainWindow)) {
+    return { ok: false, error: 'forbidden: untrusted sender' };
+  }
+  const dirs = Array.isArray(payload?.dirs) ? payload.dirs : [];
+  gitAllowedWorkspaces = normalizeDirList(dirs);
+  return { ok: true, count: gitAllowedWorkspaces.size };
+});
+
+ipcMain.handle('git:run', async (event, payload = {}) => {
+  if (!isTrustedGitSender(event.sender, mainWindow)) {
+    return { ok: false, error: 'forbidden: untrusted sender' };
+  }
   const { args, cwd } = normalizeGitRequest(payload);
   const validationError = validateGitArgs(args);
   if (validationError) return { ok: false, error: validationError };
   if (!cwd || !path.isAbsolute(cwd)) return { ok: false, error: 'git cwd must be an absolute project path' };
+  if (!isAllowedGitCwd(cwd, gitAllowedWorkspaces)) {
+    return { ok: false, error: 'git cwd is not an allowed project directory' };
+  }
   const resolvedCwd = path.resolve(cwd);
   try {
     if (!fs.statSync(resolvedCwd).isDirectory()) throw new Error('not a directory');
@@ -2351,10 +2410,14 @@ function parseSseMessagesFromBuffer(buffer) {
       .find((line) => line.startsWith('event:'))
       ?.slice(6)
       .trim();
+    // SSE spec: multi-line `data:` fields join with \n; only strip the single
+    // optional leading space and a trailing \r. Trimming every line corrupts
+    // multi-line JSON payloads (a string split across data: lines would lose
+    // its interior whitespace/line breaks).
     const data = lines
       .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trim())
-      .join('');
+      .map((line) => line.slice(5).replace(/^ /, '').replace(/\r$/, ''))
+      .join('\n');
     if (!data) continue;
     try {
       const message = JSON.parse(data);
@@ -2477,6 +2540,10 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    // Bound the partial-event buffer: a drip-feed stream that never emits an
+    // event boundary (`\n\n`) would otherwise grow main-process memory without
+    // limit until the stream ends (armTimeout resets on every chunk by design).
+    const MAX_SSE_BUFFER_BYTES = 8 * 1024 * 1024;
     const sender = event.sender;
     // A single sender-level listener fans out to all in-flight streams. This
     // avoids adding one EventEmitter listener per concurrent stream/request.
@@ -2533,6 +2600,11 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           }
           armTimeout();
           buffer += decoder.decode(value, { stream: true });
+          if (Buffer.byteLength(buffer, 'utf8') > MAX_SSE_BUFFER_BYTES) {
+            streamError = 'ACP stream exceeded the 8MB partial-event buffer';
+            controller.abort();
+            break;
+          }
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
           parseErrorCount += parsed.parseErrorCount;
@@ -2607,6 +2679,53 @@ ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
   }
 });
 
+/**
+ * Read a response body up to `maxBytes` bytes, cancelling the stream and
+ * marking `truncated` when the cap is hit. Keeps non-SSE responses on the same
+ * memory bound as the SSE read loop (a mislabelled content-type could otherwise
+ * stream an unbounded body into the main process).
+ */
+async function readBoundedBody(response, maxBytes, decode) {
+  const reader = response.body?.getReader?.();
+  if (!reader) return { data: decode(await response.arrayBuffer()), truncated: false };
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decode === 'bytes' ? Buffer.from(value) : decoder.decode(value, { stream: true });
+      // Count bytes (not UTF-16 chars) so the text bound matches the SSE loop.
+      total += decode === 'bytes' ? chunk.length : Buffer.byteLength(chunk, 'utf8');
+      if (total > maxBytes) {
+        truncated = true;
+        try {
+          reader.cancel();
+        } catch (_) {}
+        break;
+      }
+      chunks.push(chunk);
+    }
+    if (decode !== 'bytes') chunks.push(decoder.decode());
+  } finally {
+    try {
+      reader.releaseLock?.();
+    } catch (_) {}
+  }
+  const data = decode === 'bytes' ? Buffer.concat(chunks) : chunks.join('');
+  return { data, truncated };
+}
+
+async function readBoundedBodyBytes(response, maxBytes) {
+  return readBoundedBody(response, maxBytes, 'bytes');
+}
+
+async function readBoundedBodyText(response, maxBytes) {
+  return readBoundedBody(response, maxBytes, 'text');
+}
+
 ipcMain.handle('codebuddy:request', async (event, request = {}) => {
   // timeoutMs 由前端透传：session/prompt 等长请求使用 idle 窗口（默认 10min，有 chunk 会重置），普通 REST 使用 30000ms。
   const timeoutMs = Number.isFinite(Number(request.timeoutMs))
@@ -2678,10 +2797,15 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
       }
       body += decoder.decode();
     } else if (contentType.startsWith('image/')) {
-      const buffer = Buffer.from(await response.arrayBuffer());
-      bodyBase64 = buffer.toString('base64');
+      // Bound image responses too (16MB raw): a mislabelled content-type could
+      // otherwise stream an unbounded body into main-process memory.
+      const bytes = await readBoundedBodyBytes(response, 16 * 1024 * 1024);
+      if (bytes.truncated) truncated = true;
+      bodyBase64 = bytes.data.toString('base64');
     } else {
-      body = await response.text();
+      const text = await readBoundedBodyText(response, MAX_SSE_BODY_BYTES);
+      if (text.truncated) truncated = true;
+      body = text.data;
     }
     if (/\/api\/v1\/auth\/status(?:\?|$)/.test(url)) {
       logStartup(`CodeBuddy auth status response status=${response.status} body=${redactSecrets(body)}`);
@@ -3031,7 +3155,13 @@ if (!gotLock) {
       requestApplicationQuit().catch((error) => logStartup(`Command-line quit request failed: ${error.message}`));
       return;
     }
-    // 二次启动可能发生在首个实例仍初始化静态服务器时，统一延迟到就绪后显示。
+    // 二次启动可能发生在首个实例仍初始化静态服务器时（双击两次是常见行为）。
+    // showOrCreateMainWindow 此时返回 null 会吞掉请求——记下并在就绪后补显示。
+    if (!app.isReady() || (!isDev && !prodServerPort)) {
+      pendingShowRequested = true;
+      logStartup('Second instance arrived before window readiness; deferring show');
+      return;
+    }
     showOrCreateMainWindow();
   });
 }
@@ -3091,6 +3221,11 @@ app.whenReady().then(async () => {
 
   // 静态服务器就绪后再创建窗口；CodeBuddy 运行时由渲染进程按当前项目惰性启动。
   showOrCreateMainWindow();
+  // 二次启动在就绪前到达时补显示（see second-instance handler）。
+  if (pendingShowRequested) {
+    pendingShowRequested = false;
+    showOrCreateMainWindow();
+  }
 
   // Tray 图标：关窗口不退出，最小化到系统托盘，用户从托盘菜单退出才真 quit
   try {

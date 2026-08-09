@@ -3023,6 +3023,8 @@ describe('desktop E2E harness public contract', () => {
     expect(combined).not.toContain('clipboard-secret');
     expect(combined).not.toContain('private-payload');
     expect(combined).not.toContain(secret);
+    // 故意断言序列化输出不含控制字符（日志/证据落盘必须可安全渲染）。
+    // eslint-disable-next-line no-control-regex
     expect(combined).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/);
     expect(evidence.scanEvidenceSecrets({ roots: [rootDir] })).toMatchObject({ count: 0, paths: [] });
   });
@@ -3474,6 +3476,29 @@ describe('desktop E2E harness public contract', () => {
       expect(script, relativePath).not.toContain('routeResults.length === 21');
       expect(script, relativePath).not.toContain('routeResults.length === 19');
       expect(script, relativePath).not.toContain('contactSheet.screenshots === 19');
+    }
+  });
+
+  it('never image-name-kills a desktop instance and always passes the tracked root identity to cleanupOwned', () => {
+    // `taskkill /F /IM "CodeBuddy Desktop.exe"` hits a user's real installation
+    // and was explicitly called out as a security blocker in the baseline list;
+    // every cleanup must stay within the owned process tree instead.
+    const scripts = [
+      'scripts/test/verify-user-messages.cjs',
+      'scripts/test/verify-unpacked-clean.cjs',
+      'scripts/test/manual-goal-gui.cjs',
+      'scripts/test/manual-output-prod-gui.cjs',
+      'scripts/test/manual-plugins-gui.cjs',
+      'scripts/test/manual-transport-reconnect-gui.cjs',
+    ];
+    for (const relativePath of scripts) {
+      const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
+      // The execution form must be gone (documentation may mention the hazard).
+      expect(script, relativePath).not.toMatch(/spawnSync\(['"]taskkill/);
+      expect(script, relativePath).not.toMatch(/['"]\/IM['"]/);
+      // cleanupOwned(launched) left trackedProcesses empty (nothing was ever
+      // killed); the owned-tree form must carry the root identity.
+      expect(script, relativePath).toContain('trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : []');
     }
   });
 });

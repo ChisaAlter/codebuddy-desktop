@@ -26,15 +26,32 @@ import {
   revertFileChanges,
 } from '../lib/file-changes';
 
-function DiffBlock({ diff }) {
+// M-perf: bound the diff render — a multi-hundred-thousand-line diff would
+// freeze the main thread with one <div> per line. Show head+tail with a
+// truncation notice; the full diff remains available via git in the terminal.
+const DIFF_RENDER_LIMIT = 2500;
+
+/** Head + tail projection for very large diffs (pure, unit-testable). */
+export function truncateDiffLines(lines, limit = DIFF_RENDER_LIMIT) {
+  const source = Array.isArray(lines) ? lines : [];
+  if (source.length <= limit * 2) return source;
+  return [
+    ...source.slice(0, limit),
+    `… 中间 ${source.length - limit * 2} 行已省略 …`,
+    ...source.slice(-limit),
+  ];
+}
+
+const DiffBlock = React.memo(function DiffBlock({ diff }) {
   if (!diff) {
     return <div className="p-4 text-sm text-[var(--color-text-muted)]">选择左侧文件以查看 diff</div>;
   }
 
   const lines = diff.split(/\r?\n/);
+  const visible = truncateDiffLines(lines);
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-[var(--color-bg-code)] p-4 font-mono text-[12px] leading-6 text-[var(--color-text-primary)]">
-      {lines.map((line, index) => {
+      {visible.map((line, index) => {
         let style = {};
         if (line.startsWith('+') && !line.startsWith('+++')) style = { background: 'rgba(34,197,94,0.1)', color: 'var(--color-accent-green)' };
         else if (line.startsWith('-') && !line.startsWith('---')) style = { background: 'rgba(239,68,68,0.1)', color: 'var(--color-accent-red)' };
@@ -48,7 +65,7 @@ function DiffBlock({ diff }) {
       })}
     </div>
   );
-}
+});
 
 const UNTRACKED_PREVIEW_LIMIT = 500000;
 

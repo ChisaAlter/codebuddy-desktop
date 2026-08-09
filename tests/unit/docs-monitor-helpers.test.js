@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import React from 'react';
 
 import {
   docsLangFromLocale,
   extractHeadings,
   firstDocsLink,
+  flattenChildren,
+  headingIdFromText,
   normalizeDocsPath,
 } from '../../src/components/ReplicaDocsView.jsx';
 import {
@@ -46,6 +49,26 @@ describe('ReplicaDocsView helpers', () => {
     expect(headings[0].level).toBe(2);
     expect(headings[1].level).toBe(3);
     expect(headings[2].id).toContain('中文');
+  });
+
+  it('produces identical heading ids from raw markdown and React children', () => {
+    // Regression: heading renderers used String(children), which yields
+    // "[object Object]" for inline <code> nodes — TOC anchors broke and every
+    // code-bearing heading got the same bogus id.
+    const md = '## 安装 `codebuddy` CLI\n### 配置 ~/.codebuddy 目录\n';
+    const headings = extractHeadings(md);
+    expect(headings[0].id).toBe('安装-codebuddy-cli');
+    expect(headings[1].id).toBe('配置-codebuddy-目录');
+
+    const h2Children = ['安装 ', React.createElement('code', null, 'codebuddy'), ' CLI'];
+    const h3Children = ['配置 ', React.createElement('code', null, '~/.codebuddy'), ' 目录'];
+    expect(flattenChildren(h2Children)).toBe('安装 codebuddy CLI');
+    expect(flattenChildren(h3Children)).toBe('配置 ~/.codebuddy 目录');
+    // The renderer id must match the TOC id computed from the raw markdown.
+    expect(headingIdFromText(flattenChildren(h2Children))).toBe(headings[0].id);
+    expect(headingIdFromText(flattenChildren(h3Children))).toBe(headings[1].id);
+    // No [object Object] anywhere.
+    expect(headingIdFromText(flattenChildren(h2Children))).not.toContain('object');
   });
 });
 

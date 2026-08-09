@@ -13,6 +13,22 @@ const WORKFLOW_META_KEYS = {
   state: 'codebuddy.ai/workflowState',
   update: 'codebuddy.ai/workflowUpdate',
 };
+const WORKFLOW_PROGRESS_META_KEYS = {
+  kind: 'codebuddy.ai/workflowEventKind',
+  runId: 'codebuddy.ai/workflowRunId',
+  name: 'codebuddy.ai/workflowName',
+  status: 'codebuddy.ai/workflowStatus',
+  agentCount: 'codebuddy.ai/workflowAgentCount',
+  cachedCount: 'codebuddy.ai/workflowCachedCount',
+  phaseCount: 'codebuddy.ai/workflowPhaseCount',
+  error: 'codebuddy.ai/workflowError',
+  phase: 'codebuddy.ai/workflowPhase',
+  agentKey: 'codebuddy.ai/workflowAgentKey',
+  agentLabel: 'codebuddy.ai/workflowAgentLabel',
+  agentPhase: 'codebuddy.ai/workflowAgentPhase',
+  agentError: 'codebuddy.ai/workflowAgentError',
+  agentTokens: 'codebuddy.ai/workflowAgentTokens',
+};
 
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
@@ -170,6 +186,107 @@ export function workflowStateFromPayload(update) {
   return payload && typeof payload === 'object' ? payload : null;
 }
 
+export function workflowProgressEventFromPayload(update) {
+  const metadata = update?._meta && typeof update._meta === 'object' ? update._meta : {};
+  const kind = metadata[WORKFLOW_PROGRESS_META_KEYS.kind];
+  if (!kind) return null;
+  const numberValue = (key) => {
+    const value = Number(metadata[WORKFLOW_PROGRESS_META_KEYS[key]]);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  return {
+    kind: String(kind),
+    runId: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.runId], null),
+    name: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.name], null),
+    status: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.status], null),
+    agentCount: numberValue('agentCount'),
+    cachedCount: numberValue('cachedCount'),
+    phaseCount: numberValue('phaseCount'),
+    error: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.error], null),
+    phase: metadata[WORKFLOW_PROGRESS_META_KEYS.phase],
+    agentKey: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.agentKey], null),
+    agentLabel: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.agentLabel], null),
+    agentPhase: metadata[WORKFLOW_PROGRESS_META_KEYS.agentPhase],
+    agentError: firstValue(metadata[WORKFLOW_PROGRESS_META_KEYS.agentError], null),
+    agentTokens: numberValue('agentTokens'),
+  };
+}
+
+function workflowAgentStatus(event) {
+  if (event.agentError) return 'failed';
+  if (event.kind === 'workflow_agent_started') return 'running';
+  return 'completed';
+}
+
+export function mergeWorkflowProgressEvent(current, event, now = Date.now()) {
+  if (!event || typeof event !== 'object' || !event.kind) return current || null;
+  const sameRun = current && (!event.runId || !current.runId || String(current.runId) === String(event.runId));
+  const previous = sameRun ? current : {};
+  const next = {
+    ...previous,
+    ...(event.runId ? { runId: event.runId } : {}),
+    ...(event.name ? { name: event.name } : {}),
+    ...(event.status ? { status: event.status } : {}),
+    ...(event.agentCount !== undefined ? { agentCount: event.agentCount } : {}),
+    ...(event.cachedCount !== undefined ? { cachedAgentCount: event.cachedCount } : {}),
+    ...(event.phaseCount !== undefined ? { phaseCount: event.phaseCount } : {}),
+    ...(event.error ? { error: event.error } : {}),
+    updatedAt: now,
+  };
+
+  if (event.kind === 'workflow_run_started') {
+    next.active = true;
+    next.status = event.status || 'running';
+    next.startedAt = Number(previous.startedAt) || now;
+    next.completedAt = null;
+    next.agents = Array.isArray(previous.agents) ? previous.agents : [];
+  } else if (event.kind === 'workflow_run_finished') {
+    next.active = false;
+    next.status = event.status || (event.error ? 'failed' : 'completed');
+    next.completedAt = now;
+    next.agents = (Array.isArray(previous.agents) ? previous.agents : []).map((agent) => {
+      if (!['running', 'pending', 'waiting'].includes(String(agent.status || '').toLowerCase())) return agent;
+      return { ...agent, status: next.status === 'completed' ? 'completed' : next.status, completedAt: now };
+    });
+  } else if (event.kind === 'workflow_phase_started' || event.kind === 'workflow_phase_finished') {
+    next.active = true;
+    next.status = previous.status || 'running';
+    next.phase = event.phase ?? previous.phase ?? null;
+    next.phaseStatus = event.kind === 'workflow_phase_started' ? 'running' : 'completed';
+  } else if (
+    event.kind === 'workflow_agent_started' ||
+    event.kind === 'workflow_agent_finished' ||
+    event.kind === 'workflow_agent_cached'
+  ) {
+    const existingAgents = Array.isArray(previous.agents) ? previous.agents : [];
+    const key = String(firstValue(event.agentKey, event.agentLabel, `agent-${existingAgents.length + 1}`));
+    const agents = [...existingAgents];
+    const index = agents.findIndex((agent) => String(agent.id || agent.key) === key);
+    const existing = index >= 0 ? agents[index] : {};
+    const phase = event.agentPhase ?? existing.phase ?? null;
+    const agent = {
+      ...existing,
+      id: key,
+      key,
+      name: String(firstValue(event.agentLabel, existing.name, key)),
+      ...(phase != null ? { phase, description: typeof phase === 'string' ? phase : firstValue(phase.title, phase.name, '') } : {}),
+      status: workflowAgentStatus(event),
+      ...(event.agentError ? { error: event.agentError, conclusion: event.agentError } : {}),
+      ...(event.agentTokens !== undefined ? { tokens: event.agentTokens } : {}),
+      cached: event.kind === 'workflow_agent_cached' || existing.cached === true,
+      startedAt: Number(existing.startedAt) || now,
+      updatedAt: now,
+      ...((event.kind === 'workflow_agent_finished' || event.kind === 'workflow_agent_cached') ? { completedAt: now } : {}),
+    };
+    if (index >= 0) agents[index] = agent;
+    else agents.push(agent);
+    next.agents = agents;
+    next.active = true;
+    next.status = previous.status || 'running';
+  }
+  return next;
+}
+
 export function goalEventFromPayload(update) {
   const source = update && typeof update === 'object' ? update : {};
   const metadata = source._meta && typeof source._meta === 'object' ? source._meta : {};
@@ -243,12 +360,16 @@ export function classifyAcpUpdate(update = {}) {
   if (meta[TEAM_META_KEY]) {
     return { kind: 'team', source: 'codebuddy-private', payload: meta[TEAM_META_KEY] };
   }
-  const hasWorkflowMetadata = Boolean(meta[WORKFLOW_META_KEYS.state] || meta[WORKFLOW_META_KEYS.update]);
+  const hasWorkflowMetadata = Boolean(
+    meta[WORKFLOW_META_KEYS.state] ||
+    meta[WORKFLOW_META_KEYS.update] ||
+    meta[WORKFLOW_PROGRESS_META_KEYS.kind]
+  );
   if (hasWorkflowMetadata || ['workflow_update', 'workflow_state', 'state_update'].includes(sessionUpdate)) {
     return {
       kind: 'workflow',
       source: hasWorkflowMetadata ? 'codebuddy-private' : 'acp-standard',
-      payload: workflowStateFromPayload(update),
+      payload: workflowProgressEventFromPayload(update) || workflowStateFromPayload(update),
     };
   }
   if (meta['codebuddy.ai/goalProgress'] || meta['codebuddy.ai/goalStatus'] || sessionUpdate === 'goal-progress' || sessionUpdate === 'goal-status') {
@@ -289,6 +410,7 @@ export {
   MEMBER_EVENT_META_KEY,
   SUBAGENT_META_KEYS,
   WORKFLOW_META_KEYS,
+  WORKFLOW_PROGRESS_META_KEYS,
   MAX_RAW_EXTENSION_EVENTS,
   normalizeMember,
   mergeMembers,

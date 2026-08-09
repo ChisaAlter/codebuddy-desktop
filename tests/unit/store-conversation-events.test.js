@@ -591,6 +591,86 @@ describe('store conversation event routing', () => {
     }
   });
 
+  it('accepts unmarked background drain content after a confirmed workflow finish', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          update: {
+            sessionUpdate: 'session_info_update',
+            _meta: {
+              'codebuddy.ai/workflowEventKind': 'workflow_run_finished',
+              'codebuddy.ai/workflowRunId': 'workflow-background',
+              'codebuddy.ai/workflowName': 'Background review',
+              'codebuddy.ai/workflowStatus': 'completed',
+              'codebuddy.ai/workflowAgentCount': 1,
+              'codebuddy.ai/workflowCachedCount': 0,
+              'codebuddy.ai/workflowPhaseCount': 1,
+            },
+          },
+        },
+      });
+
+      const afterFinish = useStore.getState().threadRuntimeById['thread-1'];
+      expect(afterFinish.backgroundDrainUntil).toBeGreaterThan(Date.now());
+
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          _client: { source: 'notification', promptRunId: 'different-prompt-run' },
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'wrong-prompt-final',
+            content: { type: 'text', text: '其他回合内容' },
+          },
+        },
+      });
+      expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
+
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          _client: { source: 'notification' },
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'workflow-final',
+            content: { type: 'text', text: '后台工作流最终汇总' },
+          },
+        },
+      });
+
+      expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([
+        expect.objectContaining({ type: 'message', role: 'assistant', content: '后台工作流最终汇总' }),
+      ]);
+
+      vi.advanceTimersByTime(120_001);
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          _client: { source: 'notification' },
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'workflow-too-late',
+            content: { type: 'text', text: '过期后台通知' },
+          },
+        },
+      });
+      expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects correlated prompt content after its run has already ended', () => {
     useStore.getState().handleConversationEvent({
       threadId: 'thread-1',
@@ -706,5 +786,84 @@ describe('store conversation event routing', () => {
     const state = useStore.getState().threadRuntimeById['thread-1'];
     expect(state.permissionRequests).toHaveLength(1);
     expect(state.timeline.filter((item) => item.type === 'interruption')).toHaveLength(1);
+  });
+});
+
+describe('subagent report rebuild frequency (M-perf)', () => {
+  let calls;
+
+  beforeEach(() => {
+    calls = 0;
+    const module = { collectSubagentReports: vi.fn((args) => ({ rebuilt: ++calls, at: Date.now() })) };
+    // Re-import with a spy on collectSubagentReports through the slice's import.
+    vi.doMock('../../src/lib/subagent-report', () => module);
+    // The slice module is already loaded with the real import; use the store's
+    // own handleConversationEvent and count via a wrapped spy is not possible
+    // without module reload — instead assert behavior: content chunks must not
+    // change subagentReports (no rebuild), structural events must.
+  });
+
+  it('does not rebuild subagent reports on pure content chunks', async () => {
+    useStore.setState({
+      activeProjectId: 'project-1',
+      activeThreadId: 'thread-1',
+      threadsById: {
+        'thread-1': { id: 'thread-1', projectId: 'project-1', sessionId: 'session-1', metadata: {}, status: 'running' },
+      },
+      threadRuntimeById: {
+        'thread-1': runtime({
+          teamState: { teamName: 'T', members: [{ id: 'm1', name: '搜索', task: 'x', status: 'running', taskId: 't1' }] },
+          memberHistoriesByName: {},
+          subagentToolCalls: {},
+        }),
+      },
+    });
+
+    const emitMemberChunk = (text) =>
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            _meta: {
+              'codebuddy.ai/memberEvent': {
+                name: '搜索',
+                content: { type: 'text', text },
+              },
+            },
+          },
+        },
+      });
+
+    emitMemberChunk('第一段');
+    const first = useStore.getState().threadRuntimeById['thread-1'].subagentReports;
+    emitMemberChunk('第二段');
+    const second = useStore.getState().threadRuntimeById['thread-1'].subagentReports;
+    // Pure content chunks must NOT rebuild the report (same reference).
+    expect(second).toBe(first);
+    // Member history still grew.
+    expect(Object.keys(useStore.getState().threadRuntimeById['thread-1'].memberHistoriesByName || {})).toHaveLength(1);
+
+    // A structural event (tool_call for the member) must rebuild.
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'tool_call',
+          _meta: {
+            'codebuddy.ai/memberEvent': { name: '搜索' },
+            'codebuddy.ai/subagent': { parentToolCallId: 'p1' },
+          },
+          toolCallId: 'tc-1',
+          status: 'completed',
+        },
+      },
+    });
+    const third = useStore.getState().threadRuntimeById['thread-1'].subagentReports;
+    expect(third).not.toBe(first);
   });
 });

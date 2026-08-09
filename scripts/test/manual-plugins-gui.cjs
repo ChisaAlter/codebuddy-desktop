@@ -41,7 +41,10 @@ async function main() {
   const finalize = createSingleFinalizer(async () => {
     try { if (client?.close) await client.close(); } catch (_) {}
     if (launched) {
-      try { await cleanupOwned(launched); } catch (error) {
+      try { await cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        }); } catch (error) {
         console.warn('cleanupOwned warning:', error?.message || error);
       }
     }

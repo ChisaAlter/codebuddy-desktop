@@ -97,6 +97,18 @@ describe('bundle budget growth comparison (plan §3.3)', () => {
     expect(verdicts[0].ok).toBe(false);
     expect(verdicts[0].rule).toBe('baseline entry missing');
   });
+
+  it('runs the bundle gate only after the release chain has produced a build', () => {
+    // test:bundle-budget needs out/dist/assets from `vite build`; placing it
+    // before the first build step made `npm run test:release` fail on a clean
+    // checkout (or measure stale artifacts). Keep the ordering pinned.
+    const pkg = require('../../package.json');
+    const chain = pkg.scripts['test:release'];
+    expect(chain.startsWith('npm run test:gate &&')).toBe(true);
+    expect(chain).toContain('npm run test:e2e && npm run test:bundle-budget');
+    expect(chain.indexOf('test:bundle-budget')).toBeGreaterThan(chain.indexOf('test:e2e'));
+    expect(chain).toContain('npm run test:perf:memory');
+  });
 });
 
 function loadBaselineFrom(value) {

@@ -39,7 +39,6 @@ const { runtimeRoot, runtimeDir, userDataDir } = runtimeOwnership;
 const evidenceDir = path.join(projectRoot, '.omo', 'evidence', 'workflow-drain-real', runId);
 const startupLogPath = path.join(userDataDir, 'electron-startup.log');
 const workflowAgentTimeoutMs = Number(process.env.WORKFLOW_AGENT_TIMEOUT_MS) || 180000;
-const promptProjectPath = projectRoot.replace(/\\/g, '/');
 const promptText = [
   '请使用 Workflow 工具，把下面代码原样作为唯一的 script 参数（不要同时传 name），启动 1 代理、1 阶段的后台工作流：',
   '```js',
@@ -52,7 +51,7 @@ const promptText = [
   "phase('Inspect')",
   'const results = await parallel([',
   '  () => agent(',
-  `    \`In ${promptProjectPath} perform a strictly read-only verification. Read package.json and report its exact name and version. Also cross-check package-lock.json's root package metadata and run a read-only git diff check for package.json. Do not modify any file. Return a concise structured result.\`,`,
+  "    `In C:/Users/48818/Documents/CodeBuddyGUI perform a strictly read-only verification. Read package.json and report its exact name and version. Also cross-check package-lock.json's root package metadata and run a read-only git diff check for package.json. Do not modify any file. Return a concise structured result.`,",
   "    { label: 'package-reader', phase: 'Inspect', schema: {",
   "      type: 'object',",
   "      properties: {",

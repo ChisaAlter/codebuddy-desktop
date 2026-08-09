@@ -116,7 +116,10 @@ describe('QA contract: workflow autoOpen / tools-only', () => {
     expect(status.source).toBe('team');
     expect(status.shouldAutoOpen).toBe(true);
     expect(presentWorkflowAutoOpen(status, { runId: 'run-team' })).toBe(true);
-    expect(presentWorkflowAutoOpen(status, { runId: 'run-team', dismissedRunId: 'run-team' })).toBe(false);
+    // M2：dismissed 结构 { runId, at }——超窗 + 同 run 永久抑制
+    expect(
+      presentWorkflowAutoOpen(status, { runId: 'run-team', dismissed: { runId: 'run-team', at: Date.now() - 5000 } }),
+    ).toBe(false);
   });
 
   it('activity presenter uses tools label not fake steps for tools-only', () => {

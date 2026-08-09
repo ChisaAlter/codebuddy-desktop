@@ -8,7 +8,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const driver = require('./e2e-driver.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -63,7 +62,10 @@ async function main() {
     ),
   );
 
-  spawnSync('taskkill', ['/F', '/IM', 'CodeBuddy Desktop.exe'], { stdio: 'ignore' });
+  // NOTE: no image-name global kill here. `taskkill /F /IM "CodeBuddy Desktop.exe"`
+  // would terminate a user's real installation. Each run uses a fresh
+  // runStamp-based userDataDir, so the Electron single-instance lock never
+  // collides with a leftover instance; cleanupOwned below handles our own tree.
   await new Promise((r) => setTimeout(r, 1500));
 
   let launched = null;
@@ -229,10 +231,23 @@ async function main() {
       client?.close?.();
     } catch (_) {}
     try {
-      if (launched) await driver.cleanupOwned(launched);
+      if (launched) {
+        // Pass the tracked root identity so ownership is verifiable; calling
+        // cleanupOwned(launched) directly left trackedProcesses empty and the
+        // app running in the background after every run.
+        await driver.cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        });
+      }
     } catch (error) {
-      console.error('cleanupOwned failed', error.message);
-      spawnSync('taskkill', ['/F', '/IM', 'CodeBuddy Desktop.exe'], { stdio: 'ignore' });
+      // Never fall back to an image-name kill (would hit a user's real install);
+      // report the leaked PID so the developer can inspect it.
+      console.error(
+        'cleanupOwned failed; leftover process may still be running:',
+        error.message,
+        launched ? `(pid=${launched.rootPid})` : '',
+      );
     }
   }
 }

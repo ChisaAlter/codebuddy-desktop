@@ -13,6 +13,22 @@ import {
   resetProjectRuntimeViews,
 } from '../helpers/terminal-workspace-state';
 
+// Renderer-side cap for the start IPC. The main process already time-boxes the
+// daemon startup at 30s; this bounds the IPC round-trip itself so a wedged main
+// process cannot leave the UI stuck in "starting" forever. Deliberately above
+// the main-process window so slow cold starts are not cut short.
+const PROJECT_RUNTIME_START_TIMEOUT_MS = 60000;
+function withProjectRuntimeStartTimeout(promise) {
+  let timer = null;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`项目运行时启动超时（${PROJECT_RUNTIME_START_TIMEOUT_MS / 1000}s 内未就绪）`)),
+      PROJECT_RUNTIME_START_TIMEOUT_MS,
+    );
+  });
+  return Promise.race([Promise.resolve(promise), guard]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Project CRUD, workspace switch, and CodeBuddy runtime lifecycle.
  */
@@ -55,6 +71,12 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
     if (isProjectMutationNavigation(get())) return false;
     const normalizedPath = String(path);
     const navigation = beginProjectNavigation(set, `workspace:${normalizedPath}`);
+    // Rollback anchors: a failed runtime/init AFTER the switch below must
+    // restore these instead of leaving the app half-switched. Declared outside
+    // the try so the catch block can reach them.
+    let previousProjectId = null;
+    let previousThreadId = null;
+    let previousWorkspacePath = null;
     try {
       const currentProject = activeProject(get());
       if (currentProject?.workspacePath?.toLowerCase() === normalizedPath.toLowerCase()) return true;
@@ -73,6 +95,9 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (!project) project = createProjectRecord(normalizedPath);
       if (!thread) thread = createThreadRecord(project.id);
       const projectChanged = currentProject?.id !== project.id;
+      previousProjectId = currentProject?.id || null;
+      previousThreadId = get().activeThreadId;
+      previousWorkspacePath = get().workspacePath;
 
       set((state) => ({
         projectsById: {
@@ -119,6 +144,20 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (isProjectNavigationCurrent(navigation)) {
         const message = error?.message || '切换工作区失败';
         set({ error: message });
+        // Roll back a half-switch: the active pointers moved to the new project
+        // before the runtime started; on failure restore the previous project so
+        // the UI (and the persisted active pointer) do not stick to a broken one.
+        if (previousProjectId && get().activeProjectId !== previousProjectId) {
+          set((state) => ({
+            activeProjectId: previousProjectId,
+            activeThreadId: state.threadsById[previousThreadId] ? previousThreadId : null,
+            workspacePath: previousWorkspacePath,
+            ...resetProjectRuntimeViews(),
+            ...resetFileWorkspace(previousWorkspacePath),
+          }));
+          get().loadProjectTerminalState(previousProjectId);
+          void get().persistProductState().catch(() => {});
+        }
         finishProjectNavigation(set, navigation, message);
       }
       return false;
@@ -131,7 +170,15 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
     if (isProjectMutationNavigation(get())) return false;
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
+    // M2：切换项目 = 面板绑定数据失效，统一关闭（幂等）
+    get().closeWorkflowPanelIfBound?.();
     const navigation = beginProjectNavigation(set, `project:${projectId}`);
+    // Rollback anchors: a failed runtime/init AFTER the switch below must
+    // restore these instead of leaving the app half-switched. Declared outside
+    // the try so the catch block can reach them.
+    let previousProjectId = null;
+    let previousThreadId = null;
+    let previousWorkspacePath = null;
     try {
       const confirmed = await requestDirtyFileConfirmation(set, get, '切换项目');
       if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
@@ -168,6 +215,10 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
           }));
         }
       }
+      // Captured BEFORE the set() that moves the active pointers.
+      previousProjectId = get().activeProjectId;
+      previousThreadId = get().activeThreadId;
+      previousWorkspacePath = get().workspacePath;
       set({
         activeProjectId: projectId,
         activeThreadId: threadId,
@@ -175,6 +226,8 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
         ...resetProjectRuntimeViews(),
         ...resetFileWorkspace(project.workspacePath),
       });
+      // M2：切换确定后关闭面板（放在确认对话框之后，取消切换不误关）
+      get().closeWorkflowPanelIfBound?.();
       get().loadProjectTerminalState(projectId);
       const persisted = await get().persistProductState();
       if (!isProjectNavigationCurrent(navigation)) return false;
@@ -195,6 +248,20 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (isProjectNavigationCurrent(navigation)) {
         const message = error?.message || '切换项目失败';
         set({ error: message });
+        // Roll back a half-switch: the active pointers moved to the new project
+        // before the runtime started; on failure restore the previous project so
+        // the UI (and the persisted active pointer) do not stick to a broken one.
+        if (previousProjectId && get().activeProjectId !== previousProjectId) {
+          set((state) => ({
+            activeProjectId: previousProjectId,
+            activeThreadId: state.threadsById[previousThreadId] ? previousThreadId : null,
+            workspacePath: previousWorkspacePath,
+            ...resetProjectRuntimeViews(),
+            ...resetFileWorkspace(previousWorkspacePath),
+          }));
+          get().loadProjectTerminalState(previousProjectId);
+          void get().persistProductState().catch(() => {});
+        }
         finishProjectNavigation(set, navigation, message);
       }
       return false;
@@ -493,11 +560,13 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
           get().guiSettings?.accountLoginSite === 'cn' || get().guiSettings?.accountLoginSite === 'global'
             ? get().guiSettings.accountLoginSite
             : null;
-        const runtime = await window.electronAPI.ensureProjectRuntime({
-          projectId,
-          cwd: project.workspacePath,
-          accountLoginSite,
-        });
+        const runtime = await withProjectRuntimeStartTimeout(
+          window.electronAPI.ensureProjectRuntime({
+            projectId,
+            cwd: project.workspacePath,
+            accountLoginSite,
+          }),
+        );
         await connectActiveProjectRuntime(set, get, projectId, runtime);
         get().applyProjectRuntimeStatus(runtime);
         return runtime;

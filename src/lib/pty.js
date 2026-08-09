@@ -5,6 +5,20 @@ function wsBase() {
 }
 
 /**
+ * Reconnect backoff ladder: base × 2^(attempt-1), capped at maxMs.
+ * Extracted as a pure function so the ladder is unit-testable without fake
+ * timers (vitest's fake timers fire nested setTimeout early, which makes
+ * timing-based assertions unreliable).
+ * @param {number} baseMs
+ * @param {number} attempt 1-based attempt number
+ * @param {number} [maxMs]
+ * @returns {number}
+ */
+export function reconnectDelayForAttempt(baseMs, attempt, maxMs = 30000) {
+  return Math.min(baseMs * 2 ** (attempt - 1), maxMs);
+}
+
+/**
  * 构造 PTY WebSocket url（对照源 bundle）
  *   `${ws|wss}://${host}/api/v1/pty/${sessionId}/ws?token=${encodeURIComponent(authToken)}`
  * - /ws 后缀：对照源真实 UI 路由形状，项目旧版无此后缀
@@ -21,29 +35,30 @@ export function buildPtyWebSocketUrl(sessionId) {
 /**
  * PTY HTTP 直送输入（对照源 bundle aD()：POST /api/v1/pty/{id}/input/send {data}）
  * - 用途：WS 不可达时的 HTTP 兜底，或一次性输入无需建长连的场景
- * - 非阻塞：对照源同此用 .catch(()=>{}) 吞错，调用方不感知
+ * - 错误上浮给调用方：_flushInputQueue 负责串行化并通过 'error' 事件上报，
+ *   这里不再吞错（吞错会让终端断连时打字 100% 静默丢失）。
  * @param {string} sessionId
  * @param {string} data
  */
 export async function ptySendInputHttp(sessionId, data) {
   if (!sessionId) return;
   const { requestCodeBuddy } = await import('./acp');
-  await requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/input/send`, {
+  return requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/input/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ data }),
     timeoutMs: 10000,
-  }).catch(() => null);
+  });
 }
 
 async function ptyResizeHttp(sessionId, cols, rows) {
   const { requestCodeBuddy } = await import('./acp');
-  await requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/resize`, {
+  return requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/resize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ cols, rows }),
     timeoutMs: 10000,
-  }).catch(() => null);
+  });
 }
 
 export class PtySocket {
@@ -54,6 +69,7 @@ export class PtySocket {
     this._reconnecting = false;
     this._maxReconnectAttempts = 5;
     this._reconnectInterval = 1000;
+    this._reconnectMaxInterval = 30000;
     this._reconnectAttempts = 0;
     this._reconnectTimer = null;
     this._closedExplicitly = false;
@@ -61,6 +77,7 @@ export class PtySocket {
     this._transport = null;
     this._inputQueue = [];
     this._inputFlushTimer = null;
+    this._inputChain = null;
   }
 
   get readyState() {
@@ -89,6 +106,13 @@ export class PtySocket {
     // wedge connect() forever — the server process may have restarted and a
     // fresh socket is needed.
     if ((this.socket && this.socket.readyState !== WebSocket.CLOSED) || this._sseStream) return;
+    // M-ls14: a scheduled reconnect must not fire after an explicit connect()
+    // — otherwise the stale timer opens a second socket that replaces (and
+    // orphans) the fresh one, losing all its messages.
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._closedExplicitly = false;
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
       this._connectSse();
@@ -125,6 +149,21 @@ export class PtySocket {
       this.emit('message', payload);
       if (payload?.type) this.emit(payload.type, payload);
     };
+
+    // M-ls14: the FIRST connection needs the same connect-timeout as retries —
+    // a dead daemon leaves the socket forever CONNECTING and, without this, the
+    // PTY would hang permanently with no retry scheduled.
+    const connectTimeout = setTimeout(() => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        try { socket.close(); } catch (_) {}
+        if (!this._closedExplicitly) this._tryReconnect();
+      }
+    }, 3000);
+    const originalOnOpen = socket.onopen;
+    socket.onopen = (event) => {
+      clearTimeout(connectTimeout);
+      if (originalOnOpen) originalOnOpen.call(socket, event);
+    };
   }
 
   sendInput(data) {
@@ -151,8 +190,14 @@ export class PtySocket {
     if (!this._inputQueue.length) return;
     const data = this._inputQueue.join('');
     this._inputQueue = [];
-    const p = ptySendInputHttp(this.sessionId, data);
-    if (p && typeof p.catch === 'function') p.catch((err) => this.emit('error', err));
+    // Serialize HTTP POSTs: concurrent in-flight flushes can arrive at the daemon
+    // out of order and reorder keystrokes (fast typing → wrong shell commands).
+    // Chain onto the previous flush and surface failures via the 'error' event
+    // so a dead daemon is visible instead of silently dropping keystrokes.
+    const next = (this._inputChain = (this._inputChain || Promise.resolve())
+      .then(() => ptySendInputHttp(this.sessionId, data))
+      .catch((err) => this.emit('error', err)));
+    void next;
   }
 
   resize(cols, rows) {
@@ -213,6 +258,10 @@ export class PtySocket {
       return;
     }
 
+    // M-ls14: exponential backoff (1s → 2s → 4s → … capped at 30s) instead of a
+    // fixed 1s hammer — mirrors the acp.js reconnect ladder and stops a dead
+    // daemon from generating a reconnect every second indefinitely.
+    const delay = reconnectDelayForAttempt(this._reconnectInterval, this._reconnectAttempts, this._reconnectMaxInterval);
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
 
@@ -262,10 +311,15 @@ export class PtySocket {
 
         // 如果连接在一定时间内没建立，继续重试
         const connectTimeout = setTimeout(() => {
-          if (this._reconnecting && socket.readyState !== WebSocket.OPEN) {
+          if (socket.readyState !== WebSocket.OPEN) {
             try { socket.close(); } catch (_) {}
-            // M-ls9: do not schedule another reconnect attempt after close().
-            if (!this._closedExplicitly) this._doReconnectAttempt();
+            // M-ls14: also retry a FIRST connection that never opens — the old
+            // guard required _reconnecting, so a dead daemon on first connect
+            // left the PTY permanently hung with no retry at all.
+            if (!this._closedExplicitly) {
+              if (this._reconnecting) this._doReconnectAttempt();
+              else this._tryReconnect();
+            }
           }
         }, 3000);
 
@@ -279,7 +333,7 @@ export class PtySocket {
       } catch (_) {
         this._doReconnectAttempt();
       }
-    }, this._reconnectInterval);
+    }, delay);
   }
 
   reconnect() {
@@ -346,8 +400,33 @@ export class PtySocket {
           this.emit('error', error);
           this.emit('close', error);
         },
+        // M-ls12: a stream the server closes normally (PTY process exit) ended
+        // the session — release the handle so the UI stops showing "running".
+        // A stream dropped abnormally (ok:false, e.g. daemon restart) retries
+        // through connect() with the same SSE-first routing and attempt budget.
+        onEnd: (payload) => {
+          if (this._closedExplicitly || this._sseStream !== stream) return;
+          try { stream?.close?.(); } catch (_) {}
+          this._sseStream = null;
+          this._transport = null;
+          this.emit('close', payload);
+          if (payload?.ok === false && !this._reconnecting) {
+            this._reconnecting = true;
+            this._reconnectAttempts += 1;
+            if (this._reconnectAttempts <= this._maxReconnectAttempts) {
+              this.connect();
+            } else {
+              this._reconnecting = false;
+              this.emit('reconnect_failed', { attempts: this._maxReconnectAttempts });
+            }
+          }
+        },
       });
       this._sseStream = stream;
+      // Reset the reconnect budget on a successful (re)connect, mirroring the
+      // WS path's onopen handling.
+      this._reconnecting = false;
+      this._reconnectAttempts = 0;
       this.emit('open', { sessionId: this.sessionId, transport: 'sse' });
     } catch (error) {
       if (this._closedExplicitly) return;

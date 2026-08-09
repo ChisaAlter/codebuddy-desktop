@@ -66,4 +66,37 @@ describe('attachment read scoping (H7)', () => {
     const scope = createAttachmentScope({ loadProductState });
     expect(scope.allow('C:/Project/a.js')).toBe('no');
   });
+
+  it('rejects a workspace symlink/junction that points outside the workspace (H15)', () => {
+    const nodeFs = require('node:fs');
+    const nodeOs = require('node:os');
+    const nodePath = require('node:path');
+    const root = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'attach-scope-'));
+    const outside = nodePath.join(root, 'outside');
+    const project = nodePath.join(root, 'project');
+    nodeFs.mkdirSync(outside);
+    nodeFs.mkdirSync(project);
+    nodeFs.writeFileSync(nodePath.join(outside, 'secret.env'), 's3cret');
+    try {
+      if (process.platform === 'win32') {
+        // Directory junction inside the workspace → outside dir.
+        const junctionDir = nodePath.join(project, 'leak');
+        nodeFs.symlinkSync(outside, junctionDir, 'junction');
+        const { scope } = makeScope([project]);
+        // String-level containment would say "inside"; realpath resolves out.
+        expect(scope.allow(nodePath.join(junctionDir, 'secret.env'))).toBe('no');
+      } else {
+        const linkPath = nodePath.join(project, 'secret.env');
+        nodeFs.symlinkSync(nodePath.join(outside, 'secret.env'), linkPath);
+        const { scope } = makeScope([project]);
+        expect(scope.allow(linkPath)).toBe('no');
+      }
+      // A real file inside the workspace stays allowed.
+      nodeFs.writeFileSync(nodePath.join(project, 'real.env'), 'ok');
+      const { scope: scope2 } = makeScope([project]);
+      expect(scope2.allow(nodePath.join(project, 'real.env'))).toBe('workspace');
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

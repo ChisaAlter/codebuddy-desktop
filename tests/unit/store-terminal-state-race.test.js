@@ -79,6 +79,27 @@ describe('terminal state project ownership', () => {
     expect(state.terminalPanes[0]).toMatchObject({ id: 'pane-b', output: 'B-live', cwd: 'C:/B' });
   });
 
+  it('does not overwrite terminal output that arrives during cwd lookup', async () => {
+    let releaseCwd;
+    const cwdPending = new Promise((resolve) => {
+      releaseCwd = resolve;
+    });
+    useStore.setState({ fetchPtyCwd: vi.fn(() => cwdPending) });
+
+    const persist = useStore.getState().persistActiveProjectTerminalState();
+    await Promise.resolve();
+    // Output lands while the cwd requests are in flight: the persisted snapshot
+    // must include it (regression — the old second write used a stale snapshot).
+    useStore.getState().appendPaneOutput('pane-a', 'new-output-during-cwd');
+    releaseCwd('C:/A');
+    await persist;
+
+    const state = useStore.getState();
+    const pane = state.projectsById['project-a'].preferences.terminalState.panes[0];
+    expect(pane.output).toContain('new-output-during-cwd');
+    expect(pane.cwd).toBe('C:/A');
+  });
+
   it('sync flush updates only the active project from root terminal state', () => {
     useStore.getState().scheduleTerminalStatePersist();
     useStore.setState({
@@ -92,5 +113,32 @@ describe('terminal state project ownership', () => {
     const snapshot = window.electronAPI.saveProductStateSync.mock.calls[0][0];
     expect(snapshot.projectsById['project-a'].preferences.terminalState.panes[0].output).toBe('project-a-saved');
     expect(snapshot.projectsById['project-b'].preferences.terminalState.panes[0].output).toBe('B-live');
+  });
+
+  it('persists at the 5s boundary during continuous output (no starvation)', async () => {
+    const { appendPaneOutput } = useStore.getState();
+    for (let i = 1; i <= 10; i += 1) {
+      appendPaneOutput('pane-a', `chunk-${i * 1000};`);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+
+    // A reset-per-call schedule restarts a full 5s window on every chunk, so
+    // chunks arriving faster than the window would never persist. The fixed
+    // cadence must have fired at T=5s and T=10s regardless.
+    const pane = useStore.getState().projectsById['project-a'].preferences.terminalState.panes[0];
+    expect(pane.output).toContain('chunk-5000;');
+    expect(pane.output).toContain('chunk-10000;');
+  });
+
+  it('pins a trailing persist to the cadence boundary after output stops', async () => {
+    const { appendPaneOutput } = useStore.getState();
+    appendPaneOutput('pane-a', 'first;');
+    await vi.advanceTimersByTimeAsync(3000);
+    appendPaneOutput('pane-a', 'second;');
+    await vi.advanceTimersByTimeAsync(2000); // T=5s: the boundary from the first chunk
+
+    const pane = useStore.getState().projectsById['project-a'].preferences.terminalState.panes[0];
+    expect(pane.output).toContain('first;');
+    expect(pane.output).toContain('second;');
   });
 });

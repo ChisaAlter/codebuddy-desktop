@@ -31,6 +31,33 @@ export function normalizeDocsPath(value) {
   return withSlash.replace(/\/+/g, '/');
 }
 
+/**
+ * Recursively collect text from React children (heading renderers receive node
+ * arrays: `['安装 ', <code>codebuddy</code>, ' CLI']`; String() on those yields
+ * `[object Object]`, which used to produce broken `usage-of-object-object` ids
+ * that never matched the TOC and created duplicate DOM ids).
+ */
+export function flattenChildren(children) {
+  const parts = [];
+  const visit = (node) => {
+    if (node == null || typeof node === 'boolean') return;
+    if (typeof node === 'string' || typeof node === 'number') parts.push(String(node));
+    else if (Array.isArray(node)) node.forEach(visit);
+    else if (React.isValidElement(node)) visit(node.props?.children);
+  };
+  visit(children);
+  return parts.join('');
+}
+
+/** Shared slug rule: extractHeadings (raw markdown text) and the heading
+ * renderers (React children) must produce identical ids or TOC anchors break. */
+export function headingIdFromText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
+    .replace(/\s+/g, '-');
+}
+
 export function extractHeadings(markdown) {
   const lines = String(markdown || '').split('\n');
   const headings = [];
@@ -44,10 +71,7 @@ export function extractHeadings(markdown) {
     const match = line.match(/^(#{2,3})\s+(.+)$/);
     if (!match) continue;
     const text = match[2].trim();
-    const id = text
-      .toLowerCase()
-      .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
-      .replace(/\s+/g, '-');
+    const id = headingIdFromText(text);
     headings.push({ id, text, level: match[1].length });
   }
   return headings;
@@ -120,14 +144,62 @@ function DocsTreeItem({ item, currentPath, onSelect, depth = 0 }) {
   );
 }
 
-function DocsMarkdown({ content, onNavigate }) {
-  const headings = useMemo(() => extractHeadings(content), [content]);
+/**
+ * M-perf: the markdown article is memoized so TOC scroll-highlight updates
+ * (activeHeading flips while scrolling) re-render only the TOC, not the whole
+ * ReactMarkdown tree. `components` must stay referentially stable (useMemo in
+ * DocsMarkdown) or the memo is defeated.
+ */
+const MarkdownArticle = React.memo(function MarkdownArticle({ content, components }) {
   const containerRef = useRef(null);
-  const [activeHeading, setActiveHeading] = useState('');
 
   useEffect(() => {
     containerRef.current?.scrollTo?.(0, 0);
   }, [content]);
+
+  return (
+    <div ref={containerRef} className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+      <article className="docs-markdown mx-auto max-w-3xl">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+          {content}
+        </ReactMarkdown>
+      </article>
+    </div>
+  );
+});
+
+function DocsToc({ headings, activeHeading }) {
+  if (!headings.length) return null;
+  return (
+    <aside className="hidden w-52 shrink-0 overflow-y-auto border-l border-[var(--color-border-muted)] px-3 py-6 xl:block">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">目录</div>
+      <div className="space-y-1">
+        {headings.map((heading) => (
+          <a
+            key={`${heading.level}-${heading.id}`}
+            href={`#${heading.id}`}
+            className={`block truncate text-xs transition-colors ${
+              activeHeading === heading.id
+                ? 'text-[var(--color-text-primary)]'
+                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+            }`}
+            style={{ paddingLeft: heading.level === 3 ? 12 : 0 }}
+            onClick={(event) => {
+              event.preventDefault();
+              document.getElementById(heading.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          >
+            {heading.text}
+          </a>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function DocsMarkdown({ content, onNavigate }) {
+  const headings = useMemo(() => extractHeadings(content), [content]);
+  const [activeHeading, setActiveHeading] = useState('');
 
   useEffect(() => {
     if (!headings.length) return undefined;
@@ -146,136 +218,101 @@ function DocsMarkdown({ content, onNavigate }) {
     return () => observer.disconnect();
   }, [headings]);
 
-  const handleInternalLink = useCallback(
-    (event) => {
-      const href = event.currentTarget.getAttribute('href');
-      if (!href?.startsWith('/cli/')) return;
-      event.preventDefault();
-      onNavigate(href);
-    },
+  // M-perf: stable components mapping — without useMemo every DocsMarkdown
+  // render (e.g. each scroll-driven activeHeading flip) would build a new
+  // components object and force the memoized MarkdownArticle to re-render.
+  const handleInternalLink = (event) => {
+    const href = event.currentTarget.getAttribute('href');
+    if (!href?.startsWith('/cli/')) return;
+    event.preventDefault();
+    onNavigate(href);
+  };
+
+  const components = useMemo(
+    () => ({
+      h1: ({ children, ...props }) => (
+        <h1 className="mb-4 text-2xl font-bold text-[var(--color-text-primary)]" {...props}>
+          {children}
+        </h1>
+      ),
+      h2: ({ children, ...props }) => {
+        const id = headingIdFromText(flattenChildren(children));
+        return (
+          <h2 id={id} className="mb-3 mt-8 scroll-mt-20 text-xl font-semibold text-[var(--color-text-primary)]" {...props}>
+            {children}
+          </h2>
+        );
+      },
+      h3: ({ children, ...props }) => {
+        const id = headingIdFromText(flattenChildren(children));
+        return (
+          <h3 id={id} className="mb-2 mt-6 scroll-mt-20 text-lg font-medium text-[var(--color-text-primary)]" {...props}>
+            {children}
+          </h3>
+        );
+      },
+      p: ({ children, ...props }) => (
+        <p className="mb-4 text-sm leading-7 text-[var(--color-text-secondary)]" {...props}>
+          {children}
+        </p>
+      ),
+      a: ({ children, href, ...props }) => (
+        <a
+          href={href}
+          onClick={href?.startsWith('/cli/') ? handleInternalLink : undefined}
+          className="text-[var(--color-accent-brand)] hover:underline"
+          target={href?.startsWith('http') ? '_blank' : undefined}
+          rel={href?.startsWith('http') ? 'noopener noreferrer' : undefined}
+          {...props}
+        >
+          {children}
+        </a>
+      ),
+      ul: ({ children, ...props }) => (
+        <ul className="mb-4 list-disc space-y-1 pl-5 text-sm text-[var(--color-text-secondary)]" {...props}>
+          {children}
+        </ul>
+      ),
+      ol: ({ children, ...props }) => (
+        <ol className="mb-4 list-decimal space-y-1 pl-5 text-sm text-[var(--color-text-secondary)]" {...props}>
+          {children}
+        </ol>
+      ),
+      code: ({ className, children, ...props }) => {
+        const language = /language-(\w+)/.exec(className || '')?.[1];
+        const text = String(children).replace(/\n$/, '');
+        if (language) {
+          return (
+            <pre className="my-3 overflow-x-auto rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3 text-[13px] leading-6 text-[var(--color-text-secondary)]">
+              <code {...props}>{text}</code>
+            </pre>
+          );
+        }
+        return (
+          <code
+            className="rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-[13px] text-[var(--color-text-primary)]"
+            {...props}
+          >
+            {children}
+          </code>
+        );
+      },
+      table: ({ children, ...props }) => (
+        <div className="markdown-table-wrap my-4 overflow-x-auto">
+          <table className="min-w-full text-left text-sm" {...props}>
+            {children}
+          </table>
+        </div>
+      ),
+    }),
+    // Stable across renders: onNavigate is a stable parent callback.
     [onNavigate],
   );
 
   return (
     <div className="flex h-full min-h-0 gap-6">
-      <div ref={containerRef} className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
-        <article className="docs-markdown mx-auto max-w-3xl">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              h1: ({ children, ...props }) => (
-                <h1 className="mb-4 text-2xl font-bold text-[var(--color-text-primary)]" {...props}>
-                  {children}
-                </h1>
-              ),
-              h2: ({ children, ...props }) => {
-                const text = String(children);
-                const id = text
-                  .toLowerCase()
-                  .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
-                  .replace(/\s+/g, '-');
-                return (
-                  <h2 id={id} className="mb-3 mt-8 scroll-mt-20 text-xl font-semibold text-[var(--color-text-primary)]" {...props}>
-                    {children}
-                  </h2>
-                );
-              },
-              h3: ({ children, ...props }) => {
-                const text = String(children);
-                const id = text
-                  .toLowerCase()
-                  .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
-                  .replace(/\s+/g, '-');
-                return (
-                  <h3 id={id} className="mb-2 mt-6 scroll-mt-20 text-lg font-medium text-[var(--color-text-primary)]" {...props}>
-                    {children}
-                  </h3>
-                );
-              },
-              p: ({ children, ...props }) => (
-                <p className="mb-4 text-sm leading-7 text-[var(--color-text-secondary)]" {...props}>
-                  {children}
-                </p>
-              ),
-              a: ({ children, href, ...props }) => (
-                <a
-                  href={href}
-                  onClick={href?.startsWith('/cli/') ? handleInternalLink : undefined}
-                  className="text-[var(--color-accent-brand)] hover:underline"
-                  target={href?.startsWith('http') ? '_blank' : undefined}
-                  rel={href?.startsWith('http') ? 'noopener noreferrer' : undefined}
-                  {...props}
-                >
-                  {children}
-                </a>
-              ),
-              ul: ({ children, ...props }) => (
-                <ul className="mb-4 list-disc space-y-1 pl-5 text-sm text-[var(--color-text-secondary)]" {...props}>
-                  {children}
-                </ul>
-              ),
-              ol: ({ children, ...props }) => (
-                <ol className="mb-4 list-decimal space-y-1 pl-5 text-sm text-[var(--color-text-secondary)]" {...props}>
-                  {children}
-                </ol>
-              ),
-              code: ({ className, children, ...props }) => {
-                const language = /language-(\w+)/.exec(className || '')?.[1];
-                const text = String(children).replace(/\n$/, '');
-                if (language) {
-                  return (
-                    <pre className="my-3 overflow-x-auto rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3 text-[13px] leading-6 text-[var(--color-text-secondary)]">
-                      <code {...props}>{text}</code>
-                    </pre>
-                  );
-                }
-                return (
-                  <code
-                    className="rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-[13px] text-[var(--color-text-primary)]"
-                    {...props}
-                  >
-                    {children}
-                  </code>
-                );
-              },
-              table: ({ children, ...props }) => (
-                <div className="markdown-table-wrap my-4 overflow-x-auto">
-                  <table className="min-w-full text-left text-sm" {...props}>
-                    {children}
-                  </table>
-                </div>
-              ),
-            }}
-          >
-            {content}
-          </ReactMarkdown>
-        </article>
-      </div>
-      {headings.length ? (
-        <aside className="hidden w-52 shrink-0 overflow-y-auto border-l border-[var(--color-border-muted)] px-3 py-6 xl:block">
-          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">目录</div>
-          <div className="space-y-1">
-            {headings.map((heading) => (
-              <a
-                key={`${heading.level}-${heading.id}`}
-                href={`#${heading.id}`}
-                className={`block truncate text-xs transition-colors ${
-                  activeHeading === heading.id
-                    ? 'text-[var(--color-text-primary)]'
-                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
-                }`}
-                style={{ paddingLeft: heading.level === 3 ? 12 : 0 }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  document.getElementById(heading.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }}
-              >
-                {heading.text}
-              </a>
-            ))}
-          </div>
-        </aside>
-      ) : null}
+      <MarkdownArticle content={content} components={components} />
+      <DocsToc headings={headings} activeHeading={activeHeading} />
     </div>
   );
 }

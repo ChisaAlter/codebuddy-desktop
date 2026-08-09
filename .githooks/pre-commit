@@ -1,0 +1,13 @@
+#!/bin/sh
+# 提交前门禁：快速静态检查（全量单测放 pre-push，避免拖慢每次提交）。
+# 安装：git config core.hooksPath .githooks
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-commit] eslint..."
+npx eslint electron src tests --ext .js,.jsx,.cjs --quiet
+
+echo "[pre-commit] git diff --check..."
+git diff --check
+
+echo "[pre-commit] OK"

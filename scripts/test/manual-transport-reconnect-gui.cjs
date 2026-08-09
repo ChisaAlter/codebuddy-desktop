@@ -585,7 +585,14 @@ async function main() {
       if (launched?.process && !launched.process.killed) launched.process.kill();
     } catch (_) {}
     try {
-      cleanupOwned(runtimeOwnership);
+      if (launched) {
+        // runtimeOwnership has no root identity; verify against the launched
+        // tree instead (cleanupOwned(runtimeOwnership) could never kill anything).
+        await cleanupOwned({
+          rootPid: launched.rootPid,
+          trackedProcesses: launched.rootIdentity ? [launched.rootIdentity] : [],
+        });
+      }
     } catch (_) {}
     try {
       cleanupRuntimeDir(runtimeDir);

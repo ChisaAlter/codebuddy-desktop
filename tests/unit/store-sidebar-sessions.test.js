@@ -53,6 +53,7 @@ describe('store sidebar session mutations', () => {
       threadOrderByProject: { p1: ['t1', 't2'] },
       activeProjectId: 'p1',
       activeThreadId: 't1',
+      workspacePath: 'C:/Project',
       activateThread,
       newSession,
       error: null,
@@ -205,6 +206,63 @@ describe('store sidebar session mutations', () => {
     await expect(useStore.getState().setWorkspace('C:/Second', { deferInitializationUntilAuth: true })).resolves.toBe(true);
 
     expect(useStore.getState().activeThreadId).toBe('visible');
+  });
+
+  it('rolls back the active pointers when workspace startup fails', async () => {
+    useStore.setState({
+      projectsById: {
+        p1: project,
+        p2: { ...project, id: 'p2', name: 'Second', workspacePath: 'C:/Second' },
+      },
+      projectOrder: ['p1', 'p2'],
+      threadsById: {
+        t1: thread('t1'),
+        visible: { ...thread('visible'), projectId: 'p2' },
+      },
+      threadOrderByProject: { p1: ['t1'], p2: ['visible'] },
+      persistActiveProjectWorkspaceState: vi.fn().mockResolvedValue(true),
+      persistActiveProjectTerminalState: vi.fn().mockResolvedValue(true),
+      persistProductState: vi.fn().mockResolvedValue(true),
+      ensureProjectRuntime: vi.fn().mockRejectedValue(new Error('runtime failed')),
+      loadProjectTerminalState: vi.fn(),
+    });
+
+    await expect(useStore.getState().setWorkspace('C:/Second')).resolves.toBe(false);
+
+    const state = useStore.getState();
+    // Half-switch must be undone: active pointers stay with the previous project.
+    expect(state.activeProjectId).toBe('p1');
+    expect(state.activeThreadId).toBe('t1');
+    expect(state.workspacePath).toBe('C:/Project');
+    expect(state.error).toContain('runtime failed');
+  });
+
+  it('rolls back the active pointers when project activation fails', async () => {
+    useStore.setState({
+      projectsById: {
+        p1: project,
+        p2: { ...project, id: 'p2', name: 'Second', workspacePath: 'C:/Second' },
+      },
+      projectOrder: ['p1', 'p2'],
+      threadsById: {
+        t1: thread('t1'),
+        visible: { ...thread('visible'), projectId: 'p2' },
+      },
+      threadOrderByProject: { p1: ['t1'], p2: ['visible'] },
+      persistActiveProjectWorkspaceState: vi.fn().mockResolvedValue(true),
+      persistActiveProjectTerminalState: vi.fn().mockResolvedValue(true),
+      persistProductState: vi.fn().mockResolvedValue(true),
+      ensureProjectRuntime: vi.fn().mockRejectedValue(new Error('runtime failed')),
+      loadProjectTerminalState: vi.fn(),
+    });
+
+    await expect(useStore.getState().activateProject('p2')).resolves.toBe(false);
+
+    const state = useStore.getState();
+    expect(state.activeProjectId).toBe('p1');
+    expect(state.activeThreadId).toBe('t1');
+    expect(state.workspacePath).toBe('C:/Project');
+    expect(state.error).toContain('runtime failed');
   });
 
   it('removes the active project and selects a visible thread in the replacement project', async () => {

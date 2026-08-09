@@ -117,6 +117,9 @@ export default function ReplicaPluginsView() {
   const [browseError, setBrowseError] = React.useState(null);
   const [browseQuery, setBrowseQuery] = React.useState('');
   const browseRequestRef = React.useRef(0);
+  // M-perf: last manual (Enter) browse query — the debounced effect skips a
+  // duplicate fetch when the user already queried the exact same terms.
+  const lastManualQueryRef = React.useRef(null);
   const projectGenerationRef = React.useRef(0);
   const refreshRequestRef = React.useRef(0);
   const refreshInFlightRef = React.useRef(null);
@@ -190,7 +193,23 @@ export default function ReplicaPluginsView() {
   }, [activeProjectId, marketplaces]);
 
   React.useEffect(() => {
-    if (activeTab === 'browse') loadBrowseResults(browseMarketId, browseQuery);
+    if (activeTab !== 'browse') return undefined;
+    // M-perf: debounce keystroke-driven search — every typed character used to
+    // fire a full marketplace fetch; Enter still runs immediately through
+    // runBrowseQuery (which marks the manual query so the debounce skips it).
+    const timer = setTimeout(() => {
+      const manual = lastManualQueryRef.current;
+      if (
+        manual &&
+        manual.marketplaceId === browseMarketId &&
+        manual.query === browseQuery &&
+        Date.now() - manual.at < 400
+      ) {
+        return; // Enter already queried this exact (marketplace, query)
+      }
+      loadBrowseResults(browseMarketId, browseQuery);
+    }, 300);
+    return () => clearTimeout(timer);
   }, [activeTab, browseMarketId, browseQuery, marketplaces, loadBrowseResults]);
 
   const openBrowseMarketplace = React.useCallback((marketplaceId, _label) => {
@@ -205,6 +224,8 @@ export default function ReplicaPluginsView() {
   const runBrowseQuery = React.useCallback((marketplaceId, query) => {
     setBrowseMarketId(marketplaceId);
     setBrowseQuery(query);
+    // Mark the manual (Enter) query so the debounced effect does not re-fire it.
+    lastManualQueryRef.current = { marketplaceId, query, at: Date.now() };
     return loadBrowseResults(marketplaceId, query);
   }, [loadBrowseResults]);
   const closeBrowseMarketplace = React.useCallback(() => {
