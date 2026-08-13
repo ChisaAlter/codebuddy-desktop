@@ -1,5 +1,5 @@
 const MIN_VERSION = '2.125.0';
-const RECOMMENDED_VERSION = '2.125.0';
+const RECOMMENDED_VERSION = '2.135.0';
 
 function compareVersions(left, right) {
   const parts = (value) =>

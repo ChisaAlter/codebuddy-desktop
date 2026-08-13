@@ -185,7 +185,7 @@ export default function CliSetupDialog() {
   const blocked = isCliBlockedStatus(status);
   const ready = Boolean(cliInfo?.version) && !blocked;
   const versionLabel = cliInfo?.version ? `v${cliInfo.version}` : '';
-  const recommended = cliInfo?.compat?.recommendedVersion || '2.125.0';
+  const recommended = cliInfo?.compat?.recommendedVersion || '2.135.0';
   const busy = loading || installing;
 
   const statusDotClass = busy && !ready

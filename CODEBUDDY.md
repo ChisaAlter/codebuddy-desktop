@@ -8,7 +8,7 @@ CodeBuddy GUI 是 CodeBuddy CLI 的本地 Electron 桌面客户端。产品目�
 
 产品行为以当前安装的 CodeBuddy CLI 能力为准。后端不支持的操作应显示真实的不可用或错误状态，不能模拟成功。
 
-GUI 在 `electron/cli-compat.cjs` 中声明最低/推荐 CLI 版本（当前均为 `2.125.0`）。`runtime:ensure` / `runtime:restart` 会在启动前探测版本：低于最低版本、缺失或无法识别时硬阻断，并引导用户在设置页安装推荐版本。高于推荐版本仅警告，不阻断。
+GUI 在 `electron/cli-compat.cjs` 中声明最低/推荐 CLI 版本（当前最低 `2.125.0`，推荐 `2.135.0`）。`runtime:ensure` / `runtime:restart` 会在启动前探测版本：低于最低版本、缺失或无法识别时硬阻断，并引导用户在设置页安装推荐版本。高于推荐版本仅警告，不阻断。
 
 ## 常用命令
 
