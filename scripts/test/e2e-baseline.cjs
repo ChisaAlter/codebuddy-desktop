@@ -275,14 +275,7 @@ const BASELINE_INVENTORY = Object.freeze([
     owningTask: 'Task 23/25; final F1/F3',
     sources: [source(COVERAGE_REVIEW, 'blockers — missing required reference files')],
   },
-  {
-    id: 'canvas-terminal-duplication',
-    title: 'Canvas route duplicates a terminal surface instead of a distinct artifact canvas',
-    classification: 'confirmed-visual-functional-blocker',
-    disposition: 'OPEN_BASELINE_BLOCKER',
-    owningTask: 'Task 24; visual terminology Task 25',
-    sources: [source(ROUTE_REVIEW, 'blockers 1 / userOutcomeReview — canvas.png')],
-  },
+
   {
     id: 'metrics-impossible-disk-units',
     title: 'Metrics renders impossible disk GiB values and wrapped labels',

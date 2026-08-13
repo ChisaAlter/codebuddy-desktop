@@ -392,12 +392,6 @@ const ITEM_ICONS = {
       <path d="M2 3l4 3-4 3M8 9h6" />
     </svg>
   ),
-  canvas: (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="1" width="14" height="14" rx="2" />
-      <path d="M1 5h14M1 9h14" />
-    </svg>
-  ),
   editor: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M11 1l4 4-8 8H3v-4l8-8z" />

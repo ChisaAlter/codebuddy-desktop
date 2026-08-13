@@ -22,8 +22,8 @@
 
     --color-text-primary: #e5e5e5;
     --color-text-secondary: #a3a3a3;
-    --color-text-tertiary: #7c7c82;
-    --color-text-muted: #7c7c82;
+    --color-text-tertiary: #848484;
+    --color-text-muted: #848484;
     --color-text-disabled: #555558;
 
     --color-border-default: #2e2e33;
@@ -103,8 +103,8 @@
 
     --color-text-primary: #1a1a1a;
     --color-text-secondary: #5c5c5c;
-    --color-text-tertiary: #8e8e93;
-    --color-text-muted: #8e8e93;
+    --color-text-tertiary: #707070;
+    --color-text-muted: #707070;
     --color-text-disabled: #b0b0b5;
 
     --color-border-default: #dcdee3;
@@ -202,8 +202,8 @@ body,
     --color-bg-titlebar: #0c0c0e;
     --color-text-primary: #e5e5e5;
     --color-text-secondary: #a3a3a3;
-    --color-text-tertiary: #7c7c82;
-    --color-text-muted: #7c7c82;
+    --color-text-tertiary: #848484;
+    --color-text-muted: #848484;
     --color-border-default: #2e2e33;
     --color-border-muted: #232328;
     --color-border-input: #252525;
@@ -910,13 +910,6 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workflow-right-panel__member-id { overflow: hidden; margin: 2px 0 0 14px; color: var(--color-text-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-right-panel__report-list { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
-.workflow-right-panel__report { border-top: 1px solid var(--color-border-muted); padding-top: 7px; }
-.workflow-right-panel__report:first-child { border-top: 0; padding-top: 0; }
-.workflow-right-panel__report-title { display: flex; min-width: 0; align-items: center; gap: 7px; }
-.workflow-right-panel__report-title .workflow-right-panel__member-name { flex: 1; }
-.workflow-right-panel__report-conclusion { margin-top: 4px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .subagent-activity-line { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 3px 0 5px; padding: 3px 6px; border-left: 2px solid var(--color-accent-blue); color: var(--color-text-secondary); font-size: 12px; }
 .subagent-card {
   margin: 6px 0 10px;
@@ -985,14 +978,6 @@ select {
   -webkit-line-clamp: 3;
   overflow: hidden;
 }
-.workflow-right-panel__member-detail-box { margin: 4px 0 3px 14px; color: var(--color-text-secondary); font-size: 10px; line-height: 1.5; }
-.workflow-right-panel__member-history { margin-top: 5px; border-left: 1px solid var(--color-border-default); padding-left: 7px; }
-.workflow-right-panel__history-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-right-panel__goal-log { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
-.workflow-right-panel__log-item { display: flex; align-items: flex-start; gap: 7px; color: var(--color-text-secondary); font-size: 11px; }
-.workflow-right-panel__log-dot { width: 6px; height: 6px; flex-shrink: 0; margin-top: 4px; border-radius: 999px; }
-.workflow-right-panel__notice { display: flex; align-items: center; gap: 7px; color: var(--color-accent-red); font-size: 11px; }
-.workflow-right-panel__empty { color: var(--color-text-muted); font-size: 11px; text-align: center; }
 .right-panel-host {
   position: relative;
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
@@ -1008,6 +993,9 @@ select {
 .right-panel-host.is-open,
 .right-panel-host.is-opening { transform: translateX(0); opacity: 1; }
 .workflow-floating-panel-host {
+  /* M4 对比度：面板内 accent 实测达标（WCAG AA）。全局 accent-blue/primary 在亮主题面板底 (#f5f5f7) 上仅 3.77:1、白字在 #1677ff 上仅 4.10:1，故面板局部加深，不影响应用其余部分。 */
+  --color-panel-accent: var(--color-accent-blue);
+  --color-panel-accent-primary: var(--color-accent-primary);
   position: fixed;
   top: 56px;
   right: 18px;
@@ -1027,15 +1015,19 @@ select {
   will-change: transform, opacity;
 }
 .workflow-floating-panel-host.has-right-panel { right: calc(min(420px, 38vw) + 28px); }
+html[data-theme='light'] .workflow-floating-panel-host,
+html[data-theme='light'] .workflow-floating-panel-host .workflow-panel__git-error {
+  --color-panel-accent: #0f63d8; /* 5.08:1 on #f5f5f7 */
+  --color-panel-accent-primary: #0f63d8; /* 白字 5.53:1 */
+}
+html[data-theme='dark'] .workflow-floating-panel-host,
+html[data-theme='dark'] .workflow-floating-panel-host .workflow-panel__git-error {
+  --color-panel-accent: var(--color-accent-blue); /* 6.69:1 on #1c1c1e */
+  --color-panel-accent-primary: #1f6feb; /* 白字 4.63:1 */
+}
 .workflow-floating-panel-host.is-closing { pointer-events: none; transform: translate3d(0, -10px, 0) scale(0.98); opacity: 0; }
 .workflow-floating-panel-host.is-open,
 .workflow-floating-panel-host.is-opening { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
-.workflow-floating-panel-host > .workflow-right-panel {
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
 /* Topbar surface / workflow icon buttons */
 .topbar-icon-btn {
   position: relative;
@@ -1159,7 +1151,6 @@ select {
     max-height: calc(100vh - 62px);
   }
   .workflow-floating-panel-host.has-right-panel { right: auto; left: 10px; }
-  .workflow-right-panel__body { padding: 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .right-panel-host,
@@ -3407,7 +3398,7 @@ select {
   background: none;
   padding: 0;
   font-size: 11px;
-  color: var(--color-accent-blue);
+  color: var(--color-panel-accent);
   cursor: pointer;
   font-family: inherit;
 }
@@ -3444,7 +3435,7 @@ select {
   background: none;
   padding: 0;
   font-size: 11px;
-  color: var(--color-accent-blue);
+  color: var(--color-panel-accent);
   cursor: pointer;
   font-family: inherit;
 }
@@ -3495,10 +3486,10 @@ select {
 }
 .workflow-panel__retry {
   flex: none;
-  border: 1px solid var(--color-accent-blue);
+  border: 1px solid var(--color-panel-accent);
   border-radius: 6px;
   background: transparent;
-  color: var(--color-accent-blue);
+  color: var(--color-panel-accent);
   padding: 4px 10px;
   font-size: 11px;
   font-weight: 600;
@@ -3652,7 +3643,7 @@ select {
   flex: none;
   border: none;
   border-radius: 6px;
-  background: var(--color-accent-primary);
+  background: var(--color-panel-accent-primary);
   padding: 5px 10px;
   font-size: 12px;
   color: #fff;

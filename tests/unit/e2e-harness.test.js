@@ -245,7 +245,7 @@ describe('desktop E2E harness public contract', () => {
   it('captures a complete immutable baseline inventory as BASELINE_FAIL and NOT_RELEASE_PASS', async () => {
     expect(baseline.BASELINE_STATUS).toBe('BASELINE_FAIL');
     expect(baseline.RELEASE_DISPOSITION).toBe('NOT_RELEASE_PASS');
-    expect(baseline.BASELINE_INVENTORY).toHaveLength(39);
+    expect(baseline.BASELINE_INVENTORY).toHaveLength(38);
 
     const ids = new Set(baseline.BASELINE_INVENTORY.map((entry) => entry.id));
     for (const required of [
@@ -265,7 +265,6 @@ describe('desktop E2E harness public contract', () => {
       'terminal-lifecycle-resource-leaks',
       'instances-placeholder-actions',
       'workspace-create-file-no-result',
-      'canvas-terminal-duplication',
       'metrics-impossible-disk-units',
       'traces-toolbar-clipping',
       'cjk-mojibake',

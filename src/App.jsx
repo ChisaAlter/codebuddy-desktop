@@ -8,7 +8,7 @@ import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon-mark.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
-import { presentWorkflowTopbarHighlight } from './lib/workflow-status';
+import { shouldShowWorkflowTopbarHighlight } from './lib/workflow-status';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
 import RightPanelHost from './components/RightPanelHost';
@@ -19,7 +19,6 @@ const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
 const ReplicaWorkspaceView = lazy(() => import('./components/ReplicaWorkspaceView'));
 const ReplicaChangesView = lazy(() => import('./components/ReplicaChangesView'));
-const ReplicaCanvasView = lazy(() => import('./components/ReplicaCanvasView'));
 const ReplicaWorkersView = lazy(() => import('./components/ReplicaWorkersView'));
 const ReplicaMetricsView = lazy(() => import('./components/ReplicaMetricsView'));
 const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'));
@@ -52,7 +51,6 @@ const MAIN_VIEW_COMPONENTS = {
   settings: ReplicaSettingsView,
   editor: ReplicaWorkspaceView,
   changes: ReplicaChangesView,
-  canvas: ReplicaCanvasView,
   workers: ReplicaWorkersView,
   metrics: ReplicaMetricsView,
   plugins: ReplicaPluginsView,
@@ -471,7 +469,6 @@ const ROUTE_TITLES = {
   tasks: '任务',
   archived: '已归档',
   terminal: '终端',
-  canvas: '画布',
   editor: '编辑器',
   changes: '变更',
   plugins: '插件',
@@ -531,7 +528,7 @@ function StatusBar() {
   const activeThreadStatus = useStore((s) => s.threadsById?.[s.activeThreadId]?.status || 'idle');
   const workflowVisible = useMemo(() => {
     const runtime = workflowRuntime || {};
-    return presentWorkflowTopbarHighlight(runtime, activeThreadStatus, runtime.timeline);
+    return shouldShowWorkflowTopbarHighlight(runtime, activeThreadStatus, runtime.timeline);
   }, [workflowRuntime, activeThreadStatus]);
   const surfaceActive = Boolean(rightPanel);
 

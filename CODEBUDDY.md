@@ -214,7 +214,7 @@ Hash 路由定义在 `src/lib/routes.js`，侧边栏分组定义在 `src/lib/cod
 - 可观测：`stats`、`traces`、`monitor`、`metrics`、`logs`、`workers`
 - 配置：`settings`
 
-Canvas 和 Docs 已从产品中移除。Keybindings 保留为真实配置页面，同时管理 GUI 本地快捷键和当前 CodeBuddy CLI 运行时提供的绑定；不要重新添加没有真实后端能力或完整交互的路由。
+Docs 路由是真实功能（通过 ACP `/docs/*` 接口渲染 CLI 文档侧栏与正文）。Canvas 无真实后端能力，已从产品中移除；不要重新添加没有真实后端能力或完整交互的路由。Keybindings 保留为真实配置页面，同时管理 GUI 本地快捷键和当前 CodeBuddy CLI 运行时提供的绑定。
 
 ## IPC
 

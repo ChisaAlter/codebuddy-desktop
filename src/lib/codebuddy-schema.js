@@ -10,7 +10,6 @@ export const NAV_GROUPS = [
     items: [
       { id: 'tasks', label: '任务' },
       { id: 'terminal', label: '终端' },
-      { id: 'canvas', label: '画布' },
       { id: 'editor', label: '编辑器' },
       { id: 'changes', label: '变更' },
       { id: 'plugins', label: '插件' },
