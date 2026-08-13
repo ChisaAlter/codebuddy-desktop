@@ -22,7 +22,11 @@ const { loadDevices, saveDevices } = require('./devices.cjs');
 const defaultConfig = () => ({
   enabled: false,
   relayEndpoint: '127.0.0.1:8787',
-  relayUseTls: false,
+  // H14: TLS on by default — plaintext ws:// lets any Wi-Fi-level attacker read
+  // and forge the E2EE handshake (client→host auth still holds, but the salt
+  // lock and handshake signature rely on transport integrity). Users hosting a
+  // relay behind their own TLS terminator can still opt out explicitly.
+  relayUseTls: true,
 });
 
 class MobileRemoteHost {

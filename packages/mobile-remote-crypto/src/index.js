@@ -427,13 +427,67 @@ export function buildE2eeHelloMessage(ephemeralPublicKeyB64) {
   return JSON.stringify({ type: 'e2ee_hello', publicKeyB64: ephemeralPublicKeyB64 });
 }
 
-export function buildE2eeReadyMessage() {
-  return JSON.stringify({ type: 'e2ee_ready' });
+/**
+ * H14: canonical transcript for the host→client e2ee handshake signature.
+ * Binds the host's serverId and the client's ephemeral key so an active MITM
+ * cannot substitute its own key into e2ee_hello and read host→client frames.
+ * @param {{ serverId: string, clientPublicKeyB64: string, issuedAt: number }} fields
+ */
+export function buildE2eeHandshakeMessage(fields) {
+  return [
+    'cb-mobile-remote-e2ee-handshake-v1',
+    fields.serverId,
+    fields.clientPublicKeyB64,
+    String(fields.issuedAt),
+  ].join('\n');
+}
+
+/**
+ * @param {{ serverId: string, clientPublicKeyB64: string, issuedAt: number }} fields
+ * @param {Uint8Array} secretKey host relay-auth Ed25519 secret key
+ * @returns {string} base64 signature
+ */
+export function signE2eeHandshake(fields, secretKey) {
+  ensurePrng();
+  const msg = new TextEncoder().encode(buildE2eeHandshakeMessage(fields));
+  const sig = nacl.sign.detached(msg, secretKey);
+  return encodeBase64(sig);
+}
+
+/**
+ * @param {{ serverId: string, clientPublicKeyB64: string, issuedAt: number }} fields
+ * @param {string} signatureB64
+ * @param {Uint8Array} publicKey host relay-auth Ed25519 public key
+ * @returns {boolean}
+ */
+export function verifyE2eeHandshake(fields, signatureB64, publicKey) {
+  const msg = new TextEncoder().encode(buildE2eeHandshakeMessage(fields));
+  const sig = decodeBase64(signatureB64);
+  return nacl.sign.detached.verify(msg, sig, publicKey);
+}
+
+/**
+ * Host reply to e2ee_hello. With H14 the host signs the handshake transcript
+ * (serverId + client ephemeral key + issuedAt) so the client can authenticate
+ * the host before trusting any decrypted payload. The no-arg form produces the
+ * legacy unsigned message (kept for tests/back-compat callers).
+ * @param {string|null} [sig] base64 Ed25519 signature (H14)
+ * @param {{ serverId: string, clientPublicKeyB64: string, issuedAt: number }|null} [meta]
+ */
+export function buildE2eeReadyMessage(sig = null, meta = null) {
+  const o = { type: 'e2ee_ready' };
+  if (sig) {
+    o.sig = sig;
+    o.serverId = meta?.serverId;
+    o.clientPublicKeyB64 = meta?.clientPublicKeyB64;
+    o.issuedAt = meta?.issuedAt;
+  }
+  return JSON.stringify(o);
 }
 
 /**
  * @param {string} text
- * @returns {{ type: string, publicKeyB64?: string } | null}
+ * @returns {{ type: string, publicKeyB64?: string, sig?: string, serverId?: string, issuedAt?: number } | null}
  */
 export function parseHandshakeMessage(text) {
   try {

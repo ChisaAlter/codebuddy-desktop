@@ -179,7 +179,27 @@ async function startHostRelayTransport(args) {
         try { session.ws.close(1008, 'bad hello'); } catch (_) {}
         return;
       }
-      const ready = crypto.buildE2eeReadyMessage();
+      // H14: sign the handshake transcript (serverId + client ephemeral key) with
+      // the relay-auth Ed25519 key so the client can authenticate the host before
+      // trusting any decrypted payload. Without this, an active MITM could swap
+      // its own ephemeral key into e2ee_hello and read every host→client frame.
+      let ready;
+      try {
+        const issuedAt = Date.now();
+        const sig = crypto.signE2eeHandshake(
+          { serverId: args.serverId, clientPublicKeyB64: msg.publicKeyB64, issuedAt },
+          args.relayAuthKeyPair.secretKey,
+        );
+        ready = crypto.buildE2eeReadyMessage(sig, {
+          serverId: args.serverId,
+          clientPublicKeyB64: msg.publicKeyB64,
+          issuedAt,
+        });
+      } catch (err) {
+        log('handshake signing failed', err?.message || err);
+        try { session.ws.close(1008, 'handshake failed'); } catch (_) {}
+        return;
+      }
       sendServerFrame(session, ready);
       session.ready = true;
       log('client ready (e2ee)', session.connectionId);

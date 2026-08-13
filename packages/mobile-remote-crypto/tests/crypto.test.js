@@ -7,6 +7,9 @@ import {
   createHostChannelFromHello,
   buildE2eeHelloMessage,
   parseHandshakeMessage,
+  buildE2eeReadyMessage,
+  signE2eeHandshake,
+  verifyE2eeHandshake,
   signRelayServerAuth,
   verifyRelayServerAuth,
   generateRelayAuthKeyPair,
@@ -49,6 +52,63 @@ describe('e2ee channel', () => {
     const frame = clientCh.encrypt('once');
     hostCh.decryptUtf8(frame);
     assert.throws(() => hostCh.decryptUtf8(frame), /replay|sequence/);
+  });
+});
+
+describe('e2ee handshake signature (H14)', () => {
+  const fields = {
+    serverId: 'srv_abcd',
+    clientPublicKeyB64: 'AAAA-BBBB-CCCC',
+    issuedAt: 1_700_000_000_000,
+  };
+
+  it('host signs and client verifies the transcript', () => {
+    const kp = generateRelayAuthKeyPair();
+    const sig = signE2eeHandshake(fields, kp.secretKey);
+    assert.equal(verifyE2eeHandshake(fields, sig, kp.publicKey), true);
+  });
+
+  it('rejects tampered fields', () => {
+    const kp = generateRelayAuthKeyPair();
+    const sig = signE2eeHandshake(fields, kp.secretKey);
+    // Swapped ephemeral key (the MITM substitution the signature exists to stop)
+    assert.equal(
+      verifyE2eeHandshake({ ...fields, clientPublicKeyB64: 'EVIL-EVIL-EVIL' }, sig, kp.publicKey),
+      false,
+    );
+    assert.equal(
+      verifyE2eeHandshake({ ...fields, serverId: 'srv_other' }, sig, kp.publicKey),
+      false,
+    );
+    assert.equal(
+      verifyE2eeHandshake({ ...fields, issuedAt: fields.issuedAt + 1 }, sig, kp.publicKey),
+      false,
+    );
+  });
+
+  it('rejects a signature from a different host key', () => {
+    const hostKp = generateRelayAuthKeyPair();
+    const attackerKp = generateRelayAuthKeyPair();
+    const sig = signE2eeHandshake(fields, attackerKp.secretKey);
+    assert.equal(verifyE2eeHandshake(fields, sig, hostKp.publicKey), false);
+  });
+
+  it('builds a signed e2ee_ready message round-trippable by parseHandshakeMessage', () => {
+    const kp = generateRelayAuthKeyPair();
+    const sig = signE2eeHandshake(fields, kp.secretKey);
+    const ready = buildE2eeReadyMessage(sig, fields);
+    const parsed = parseHandshakeMessage(ready);
+    assert.equal(parsed.type, 'e2ee_ready');
+    assert.equal(parsed.sig, sig);
+    assert.equal(parsed.serverId, fields.serverId);
+    assert.equal(parsed.clientPublicKeyB64, fields.clientPublicKeyB64);
+    assert.equal(parsed.issuedAt, fields.issuedAt);
+    // Signature inside the wire message verifies against the same fields.
+    assert.equal(verifyE2eeHandshake(parsed, parsed.sig, kp.publicKey), true);
+  });
+
+  it('legacy no-arg e2ee_ready stays unsigned', () => {
+    assert.deepEqual(JSON.parse(buildE2eeReadyMessage()), { type: 'e2ee_ready' });
   });
 });
 

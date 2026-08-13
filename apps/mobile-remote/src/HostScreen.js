@@ -25,6 +25,8 @@ import {
   signDeviceAuth,
   deriveDeviceId,
   importDevicePublicKey,
+  importRelayAuthPublicKey,
+  verifyE2eeHandshake,
 } from '@codebuddy/mobile-remote-crypto';
 
 const RECONNECT_BASE_MS = 1000;
@@ -85,6 +87,39 @@ export default function HostScreen({ host, deviceSecretKeyB64, onLeave }) {
     const { ephemeralPublicKeyB64, channel } = createClientChannel(hostPub);
     channelRef.current = channel;
 
+    // H14: verify the host's e2ee_ready signature before trusting any decrypted
+    // payload. The host signs { serverId, clientPublicKeyB64, issuedAt } with
+    // its relay-auth Ed25519 key; without this an active MITM could swap its own
+    // ephemeral key into e2ee_hello and read every host→client frame.
+    const verifyHostHandshake = (msg) => {
+      if (
+        typeof msg.sig !== 'string' ||
+        typeof msg.serverId !== 'string' ||
+        typeof msg.clientPublicKeyB64 !== 'string' ||
+        typeof msg.issuedAt !== 'number'
+      ) {
+        return false;
+      }
+      if (msg.serverId !== host.serverId) return false;
+      if (msg.clientPublicKeyB64 !== ephemeralPublicKeyB64) return false;
+      // Freshness window: a captured signature must not be replayable later.
+      if (Math.abs(Date.now() - msg.issuedAt) > 10 * 60 * 1000) return false;
+      if (!host.relayAuthPublicKeyB64) return false; // legacy pair → re-pair
+      try {
+        return verifyE2eeHandshake(
+          {
+            serverId: msg.serverId,
+            clientPublicKeyB64: msg.clientPublicKeyB64,
+            issuedAt: msg.issuedAt,
+          },
+          msg.sig,
+          importRelayAuthPublicKey(host.relayAuthPublicKeyB64),
+        );
+      } catch {
+        return false;
+      }
+    };
+
     const url = buildRelayWebSocketUrl({
       endpoint: host.relay.endpoint,
       useTls: host.relay.useTls !== false,
@@ -107,6 +142,15 @@ export default function HostScreen({ host, deviceSecretKeyB64, onLeave }) {
       if (!readyRef.current) {
         const msg = parseHandshakeMessage(text);
         if (msg?.type === 'e2ee_ready') {
+          // H14: fail closed if the host cannot prove it owns the relay-auth key
+          // this device paired with.
+          if (!verifyHostHandshake(msg)) {
+            closedByUserRef.current = true;
+            try { ws.close(); } catch {}
+            setStatus('error');
+            setError('主机握手签名验证失败：连接可能被劫持，请确认配对后重试');
+            return;
+          }
           readyRef.current = true;
           setStatus('authenticating');
           attemptRef.current = 0;
@@ -145,7 +189,7 @@ export default function HostScreen({ host, deviceSecretKeyB64, onLeave }) {
         connect();
       }, delay);
     };
-  }, [host.serverId, host.relay.endpoint, host.relay.useTls]);
+  }, [host.serverId, host.relay.endpoint, host.relay.useTls, host.hostPublicKeyB64, host.relayAuthPublicKeyB64]);
 
   useEffect(() => {
     closedByUserRef.current = false;
@@ -420,7 +464,7 @@ export default function HostScreen({ host, deviceSecretKeyB64, onLeave }) {
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>{error || '连接失败'}</Text>
-        <TouchableOpacity style={styles.btn} onPress={() => { attemptRef.current = 0; connect(); }}>
+        <TouchableOpacity style={styles.btn} onPress={() => { closedByUserRef.current = false; attemptRef.current = 0; connect(); }}>
           <Text style={styles.btnText}>重试</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.btnGhost} onPress={onLeave}>
