@@ -28,14 +28,21 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+/**
+ * Canonical status vocabulary — MUST stay in sync with
+ * src/lib/workflow-normalize.js (guarded by the workflow-status-single-source
+ * unit test). Electron is CJS and cannot import the renderer ESM module, so the
+ * map is duplicated here and the test asserts parity.
+ */
 function normalizeStatus(value, fallback = 'running') {
   const status = String(value || '').trim().toLowerCase();
   if (!status) return fallback;
   if (['complete', 'completed', 'done', 'success', 'succeeded'].includes(status)) return 'completed';
   if (['failed', 'failure', 'error'].includes(status)) return 'failed';
   if (['cancelled', 'canceled', 'aborted'].includes(status)) return 'cancelled';
+  if (['waiting', 'blocked', 'paused'].includes(status)) return 'waiting';
   if (['pending', 'queued'].includes(status)) return 'pending';
-  if (['working', 'running', 'in_progress', 'in-progress', 'executing'].includes(status)) return 'running';
+  if (['working', 'running', 'in_progress', 'in-progress', 'planning', 'executing'].includes(status)) return 'running';
   return status;
 }
 
@@ -231,6 +238,7 @@ async function readProjectWorkflowProgress({ runtimeManager, configRoot, request
 
 module.exports = {
   compressWorkspacePath,
+  normalizeStatus,
   readLatestWorkflowProgress,
   readProjectWorkflowProgress,
 };

@@ -47,7 +47,7 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
-import { deriveWorkflowView, DISMISS_WINDOW_MS, presentWorkflowAutoOpen } from '../../lib/workflow-status';
+import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
 
 const BACKGROUND_DRAIN_WINDOW_MS = 60_000;
@@ -164,7 +164,7 @@ export function createSessionsChatSlice(set, get, ctx) {
               const currentPanel = get().workflowFloatingPanel;
               if (
                 currentPanel?.payload?.runId !== normalized.runId &&
-                presentWorkflowAutoOpen(view, {
+                shouldWorkflowAutoOpen(view, {
                   dismissed: get().workflowPanelDismissed,
                   runId: normalized.runId,
                 })
@@ -494,7 +494,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       const currentPanel = get().workflowFloatingPanel;
       if (
         !view.empty &&
-        presentWorkflowAutoOpen(view, { dismissed: get().workflowPanelDismissed, runId }) &&
+        shouldWorkflowAutoOpen(view, { dismissed: get().workflowPanelDismissed, runId }) &&
         currentPanel == null
       ) {
         get().openWorkflowPanel({

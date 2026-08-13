@@ -1,20 +1,4 @@
-const ACTIVE_STATUSES = new Set(['working', 'running', 'in_progress', 'in-progress', 'pending', 'planning', 'executing']);
-
-function firstValue(...values) {
-  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
-}
-
-function normalizeStatus(value, fallback = 'running') {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) return fallback;
-  if (['complete', 'completed', 'done', 'success', 'succeeded'].includes(raw)) return 'completed';
-  if (['failed', 'failure', 'error'].includes(raw)) return 'failed';
-  if (['cancelled', 'canceled', 'aborted'].includes(raw)) return 'cancelled';
-  if (['waiting', 'blocked', 'paused'].includes(raw)) return 'waiting';
-  if (['pending', 'queued'].includes(raw)) return 'pending';
-  if (ACTIVE_STATUSES.has(raw)) return 'running';
-  return raw;
-}
+import { firstValue, normalizeStatus } from './workflow-normalize';
 
 function normalizeProgress(value) {
   if (value == null) return { current: null, total: null, percent: null, message: '' };

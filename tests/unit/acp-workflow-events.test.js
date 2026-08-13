@@ -6,7 +6,6 @@ import {
   goalEventFromPayload,
   mergeCodeBuddyTeamState,
   mergeWorkflowProgressEvent,
-  normalizeTeamUpdate,
   subagentMetadata,
   workflowProgressEventFromPayload,
 } from '../../src/lib/acp-workflow-events';

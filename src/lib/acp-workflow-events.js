@@ -1,3 +1,7 @@
+// 注意：本模块被 src/lib/timeline.js 以 require() 加载（node 原生 ESM loader），
+// 相对导入必须带 .js 扩展，否则 node 无法解析（无扩展名仅 vite 支持）。
+import { firstValue } from './workflow-normalize.js';
+
 const TEAM_META_KEY = 'codebuddy.ai/teamUpdate';
 const MEMBER_EVENT_META_KEY = 'codebuddy.ai/memberEvent';
 const SUBAGENT_META_KEYS = {
@@ -29,10 +33,6 @@ const WORKFLOW_PROGRESS_META_KEYS = {
   agentError: 'codebuddy.ai/workflowAgentError',
   agentTokens: 'codebuddy.ai/workflowAgentTokens',
 };
-
-function firstValue(...values) {
-  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
-}
 
 function memberIdentity(member, index = 0) {
   return String(firstValue(
@@ -72,6 +72,17 @@ function normalizeMember(member, index = 0) {
   };
 }
 
+/**
+ * Merge-preservation rule for one member field: an incoming non-empty value
+ * wins; otherwise keep the previous value when it is set. Mirrors the
+ * "preserve previous" semantics of mergeMembers without the nested spreads.
+ */
+function preservedField(source, normalized, previous, key, altKeys = []) {
+  if ([key, ...altKeys].some((k) => Boolean(source[k]))) return { [key]: normalized[key] };
+  if (previous[key]) return { [key]: previous[key] };
+  return {};
+}
+
 function mergeMembers(previous = [], incoming = []) {
   const result = new Map();
   for (const [index, member] of (Array.isArray(previous) ? previous : []).entries()) {
@@ -86,16 +97,10 @@ function mergeMembers(previous = [], incoming = []) {
     result.set(key, {
       ...previous,
       ...normalized,
-      ...(source.name || source.agentName || source.displayName || source.role
-        ? { name: normalized.name }
-        : previous.name ? { name: previous.name } : {}),
-      ...(source.description || source.prompt || source.task
-        ? { description: normalized.description }
-        : previous.description ? { description: previous.description } : {}),
-      ...(source.color || source.agentColor
-        ? { color: normalized.color }
-        : previous.color ? { color: previous.color } : {}),
-      ...(source.sessionId ? { sessionId: normalized.sessionId } : previous.sessionId ? { sessionId: previous.sessionId } : {}),
+      ...preservedField(source, normalized, previous, 'name', ['agentName', 'displayName', 'role']),
+      ...preservedField(source, normalized, previous, 'description', ['prompt', 'task']),
+      ...preservedField(source, normalized, previous, 'color', ['agentColor']),
+      ...preservedField(source, normalized, previous, 'sessionId'),
       tokenUsage: normalized.tokenUsage || previous.tokenUsage || null,
       toolCallCount: Object.prototype.hasOwnProperty.call(source, 'toolCallCount')
         ? normalized.toolCallCount

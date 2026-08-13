@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  RAW_GROWTH_BYTES,
   compareGrowth,
   loadBaseline,
 } from '../../scripts/test/bundle-budget.cjs';

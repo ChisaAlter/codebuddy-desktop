@@ -22,6 +22,7 @@ const {
   launchDesktop,
   seedProductState,
   waitForRendererValue,
+  wait,
 } = require('./e2e-driver.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -43,10 +44,6 @@ function check(name, ok, detail = '') {
   results.push(result);
   console.log(`${result.ok ? 'PASS' : 'FAIL'} ${name}${result.detail ? ` — ${result.detail}` : ''}`);
   return result.ok;
-}
-
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function capture(client, name) {

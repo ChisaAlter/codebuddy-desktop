@@ -11,7 +11,7 @@ import {
   deriveWorkflowView,
   normalizeWorkflowStatus,
   presentWorkflowActivity,
-  presentWorkflowAutoOpen,
+  shouldWorkflowAutoOpen,
 } from '../../src/lib/workflow-status';
 import {
   hasUsableMemberConclusions,
@@ -94,12 +94,12 @@ describe('QA contract: workflow autoOpen / tools-only', () => {
     });
     expect(status.source).toBe('tools');
     expect(status.shouldAutoOpen).toBe(false);
-    expect(presentWorkflowAutoOpen(status, { runId: 'run-1' })).toBe(false);
+    expect(shouldWorkflowAutoOpen(status, { runId: 'run-1' })).toBe(false);
     expect(status.capabilityMessage).toBe('tools-only');
     const view = deriveWorkflowView({ threadStatus: 'running', runtime, timeline });
     expect(view.empty).toBe(true);
     expect(view.toolsOnly).toBe(true);
-    expect(presentWorkflowAutoOpen(view, { runId: 'run-1' })).toBe(false);
+    expect(shouldWorkflowAutoOpen(view, { runId: 'run-1' })).toBe(false);
   });
 
   it('team source may auto-open unless dismissed', () => {
@@ -115,10 +115,10 @@ describe('QA contract: workflow autoOpen / tools-only', () => {
     });
     expect(status.source).toBe('team');
     expect(status.shouldAutoOpen).toBe(true);
-    expect(presentWorkflowAutoOpen(status, { runId: 'run-team' })).toBe(true);
+    expect(shouldWorkflowAutoOpen(status, { runId: 'run-team' })).toBe(true);
     // M2：dismissed 结构 { runId, at }——超窗 + 同 run 永久抑制
     expect(
-      presentWorkflowAutoOpen(status, { runId: 'run-team', dismissed: { runId: 'run-team', at: Date.now() - 5000 } }),
+      shouldWorkflowAutoOpen(status, { runId: 'run-team', dismissed: { runId: 'run-team', at: Date.now() - 5000 } }),
     ).toBe(false);
   });
 

@@ -1,22 +1,5 @@
 import { currentGoal, goalList, goalsFromTimeline } from './goal-state';
-
-const ACTIVE_STATUSES = new Set(['working', 'running', 'in_progress', 'pending', 'planning', 'waiting']);
-
-function firstValue(...values) {
-  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
-}
-
-function normalizeStatus(value, fallback = 'running') {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw) return fallback;
-  if (['complete', 'completed', 'done', 'success', 'succeeded'].includes(raw)) return 'completed';
-  if (['failed', 'failure', 'error'].includes(raw)) return 'failed';
-  if (['cancelled', 'canceled', 'aborted'].includes(raw)) return 'cancelled';
-  if (['waiting', 'blocked', 'paused'].includes(raw)) return 'waiting';
-  if (['pending', 'queued'].includes(raw)) return 'pending';
-  if (['working', 'running', 'in_progress', 'in-progress', 'planning', 'executing'].includes(raw)) return 'running';
-  return raw;
-}
+import { ACTIVE_STATUSES, firstValue, normalizeStatus } from './workflow-normalize';
 
 // M4 单源状态文案：normalizeStatus 输出键 → i18n 键（组件 t() 渲染）。
 // 与 STATUS_LABELS 同源，避免组件内另维护一份中文映射。
@@ -211,7 +194,27 @@ function phaseValue(agentPhase, progress) {
   return firstValue(progressType, phase, '') || '';
 }
 
+// M3：normalizeWorkflowStatus 引用级记忆化——相同 (runtime, threadStatus, timeline)
+// 引用直接返回上次结果，避免面板各子段重复派生同一输入（有界 Map 防泄漏）。
+const NORMALIZE_VIEW_CACHE_LIMIT = 50;
+const normalizeViewCache = new Map();
+
 export function normalizeWorkflowStatus({ runtime = {}, threadStatus = 'idle', timeline, now = Date.now() } = {}) {
+  const timelineKey = timeline ?? runtime.timeline ?? null;
+  const cached = normalizeViewCache.get(runtime);
+  if (cached && cached.threadStatus === threadStatus && cached.timeline === timelineKey) {
+    return cached.result;
+  }
+  const result = computeWorkflowStatus(runtime, threadStatus, timelineKey, now);
+  if (normalizeViewCache.size >= NORMALIZE_VIEW_CACHE_LIMIT) {
+    // Map 迭代顺序 = 插入顺序：淘汰最旧条目
+    normalizeViewCache.delete(normalizeViewCache.keys().next().value);
+  }
+  normalizeViewCache.set(runtime, { threadStatus, timeline: timelineKey, result });
+  return result;
+}
+
+function computeWorkflowStatus(runtime, threadStatus, timeline, now) {
   const promptStartedAt = Number(runtime.promptStartedAt) || null;
   const entries = currentTurnEntries(timeline ?? runtime.timeline, promptStartedAt);
   const workflowSnapshot = runtime.workflowState || runtime.lastWorkflowState || null;
@@ -542,7 +545,7 @@ export function presentWorkflowActivity(status, t) {
  */
 export const DISMISS_WINDOW_MS = 3000;
 
-export function presentWorkflowAutoOpen(status, { dismissed = null, runId = null } = {}) {
+export function shouldWorkflowAutoOpen(status, { dismissed = null, runId = null } = {}) {
   if (!status || status.empty || !status.shouldAutoOpen) return false;
   if (dismissed && Number.isFinite(dismissed.at)) {
     if (Date.now() - dismissed.at < DISMISS_WINDOW_MS) return false;
@@ -553,6 +556,6 @@ export function presentWorkflowAutoOpen(status, { dismissed = null, runId = null
 }
 
 /** Topbar highlight — same source as panel empty contract. */
-export function presentWorkflowTopbarHighlight(runtime = {}, threadStatus = 'idle', timeline) {
+export function shouldShowWorkflowTopbarHighlight(runtime = {}, threadStatus = 'idle', timeline) {
   return deriveWorkflowView({ runtime, threadStatus, timeline }).highlightTopbar;
 }

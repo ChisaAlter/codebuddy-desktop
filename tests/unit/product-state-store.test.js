@@ -200,7 +200,7 @@ describe('electron product-state store', () => {
         },
       ],
     };
-    const normalized = store.load();
+    store.load();
     // Use normalizeProductState indirectly by saving + loading.
     await store.save({ ...emptyProductState(), projectsById: { p1: { id: 'p1', workspacePath: '/x' } }, projectOrder: ['p1'], threadsById: { t1: thread }, threadOrderByProject: { p1: ['t1'] } });
     const loaded = store.load();

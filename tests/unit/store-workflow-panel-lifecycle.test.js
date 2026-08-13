@@ -87,13 +87,13 @@ describe('M2 workflow panel lifecycle & dismissed race', () => {
       expect(useStore.getState().workflowFloatingPanel).toBeNull();
     });
 
-    it('payload 无 runId 时用 activePromptRunId', () => {
+    it('payload 无 runId 时记录 null（不回退 activePromptRunId，契约 §1）', () => {
       useStore.setState({
         workflowFloatingPanel: { payload: { projectId: 'p1', threadId: 't1', runId: null } },
         activePromptRunId: 'run-live',
       });
       useStore.getState().closeWorkflowPanel();
-      expect(useStore.getState().workflowPanelDismissed.runId).toBe('run-live');
+      expect(useStore.getState().workflowPanelDismissed.runId).toBeNull();
     });
 
     it('两者皆无 → runId null（不再 fallback lastPromptRunId）', () => {

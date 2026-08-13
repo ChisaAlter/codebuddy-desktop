@@ -3458,6 +3458,7 @@ module.exports = {
   finalizeHarnessRun,
   finalizeUnsafeHarnessFailure,
   throwIfAborted,
+  wait,
   normalizeProcessEntry,
   sameProcessIdentity,
   createOwnedProcessTracker,

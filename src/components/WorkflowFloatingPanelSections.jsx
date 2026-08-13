@@ -11,15 +11,9 @@ import {
   retryPushAfterCommitted,
 } from '../lib/git-commit-flow';
 import { normalizeWorkflowStatus, STATUS_LABELS } from '../lib/workflow-status';
+import { usePanelT } from '../lib/use-panel-t';
 import { emptyThreadRuntime } from '../store/helpers/thread-runtime';
 import { getPanelGoals, getPanelReports, isWorkflowHistory } from '../lib/workflow-panel-data';
-import { resolveLocaleMode, translate } from '../lib/i18n';
-
-// M4/M5：面板 i18n（跟随应用 locale 设置；languagechange 由 App.jsx 统一驱动）
-function usePanelT() {
-  const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
-  return useCallback((key, vars) => translate(resolveLocaleMode(localeMode), key, vars), [localeMode]);
-}
 
 function statusLabel(status, t) {
   const key = STATUS_LABELS[String(status || '').toLowerCase()];
@@ -409,7 +403,12 @@ export const GoalsSection = memo(function GoalsSection({ goals, history = false 
       ) : null}
       <ul className="workflow-panel__goal-list">
         {ordered.map((goal, index) => (
-          <li key={goal.goalId || `goal-${index}`} className="workflow-panel__goal">
+          // M4-D：key 稳定化——goal 用 sequence/eventKey（结构变化才换 key），
+          // 避免 goalId||index 在同名/同 id 目标上重建行
+          <li
+            key={goal.sequence != null ? `goal-seq-${goal.sequence}` : (goal.eventKey ?? goal.goalId ?? `goal-${index}`)}
+            className="workflow-panel__goal"
+          >
             <span className="workflow-panel__goal-badge">{index + 1}</span>
             <span className="workflow-panel__goal-title" title={goal.title}>
               {goal.title}
@@ -422,6 +421,7 @@ export const GoalsSection = memo(function GoalsSection({ goals, history = false 
                   : ''}
             </span>
             <Dot status={goal.status} />
+            <span className="sr-only">{statusLabel(goal.status, t)}</span>
           </li>
         ))}
       </ul>
@@ -450,6 +450,7 @@ export const TasksSection = memo(function TasksSection({ steps }) {
             <span className="workflow-panel__task-title" title={task.task || task.name}>
               {task.name || task.task || t('workflow.tasks.title')}
             </span>
+            <span className="sr-only">{statusLabel(task.status, t)}</span>
           </li>
         ))}
       </ul>

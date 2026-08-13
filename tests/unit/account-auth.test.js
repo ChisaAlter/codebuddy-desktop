@@ -13,7 +13,6 @@ import {
   normalizeLastAccountUser,
   pickAuthMethodId,
   preferredAuthMethodIdsForSite,
-  unwrapPromptErrorPayload,
 } from '../../src/lib/account-auth';
 
 describe('account-auth helpers', () => {

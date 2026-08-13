@@ -1124,8 +1124,10 @@ export const useStore = create((set, get) => {
 
   closeWorkflowPanel() {
     const current = get().workflowFloatingPanel;
-    // M2：禁用 lastPromptRunId fallback——runId 无法确定时记录 null（仅时间窗抑制）
-    const runId = current?.payload?.runId || get().activePromptRunId || null;
+    // M2：禁用 lastPromptRunId fallback——runId 无法确定时记录 null（仅时间窗抑制）。
+    // 不回退 activePromptRunId：关闭动作不应把“当前正在跑的任务”误绑定为被关闭
+    // 面板的 runId（契约 §1：payload 无 runId 时禁用 fallback）。
+    const runId = current?.payload?.runId ?? null;
     set({
       workflowFloatingPanel: null,
       workflowPanelDismissed: { runId, at: Date.now() },

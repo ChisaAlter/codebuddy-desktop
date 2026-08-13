@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveWorkflowView,
   normalizeWorkflowStatus,
-  presentWorkflowTopbarHighlight,
+  shouldShowWorkflowTopbarHighlight,
 } from '../../src/lib/workflow-status';
 
 const memberNames = ['主进程', '渲染层', 'preload/shared', '构建配置', '测试文档', 'git 历史'];
@@ -107,7 +107,7 @@ describe('workflow status normalization', () => {
     expect(view.phase).toBe('');
     // Hard invariant: never completed chrome when empty
     expect(view.status).not.toBe('completed');
-    expect(presentWorkflowTopbarHighlight(runtime, 'idle', runtime.timeline)).toBe(false);
+    expect(shouldShowWorkflowTopbarHighlight(runtime, 'idle', runtime.timeline)).toBe(false);
   });
 
   it('deriveWorkflowView never pairs completed status with empty body', () => {

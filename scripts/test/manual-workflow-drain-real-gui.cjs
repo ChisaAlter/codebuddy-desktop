@@ -21,6 +21,7 @@ const {
   requireUsableCodeBuddyStartup,
   seedProductState,
   waitForRendererValue,
+  wait,
 } = require('./e2e-driver.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -81,10 +82,6 @@ let summary = {
   screenshots: {},
   observations: {},
 };
-
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function serializeError(error) {
   return {

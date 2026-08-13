@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { resolveLocaleMode, translate } from '../lib/i18n';
+import { usePanelT } from '../lib/use-panel-t';
 import { WorkflowFloatingPanelBody } from './WorkflowFloatingPanelSections';
 import { PanelHeader } from './RightPanelHost';
 import { usePanelTransition } from './usePanelTransition';
@@ -9,8 +9,7 @@ export default function WorkflowFloatingPanelHost() {
   const panel = useStore((state) => state.workflowFloatingPanel);
   const rightPanel = useStore((state) => state.rightPanel);
   const closeWorkflowPanel = useStore((state) => state.closeWorkflowPanel);
-  const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
-  const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
+  const t = usePanelT();
   const transitioned = usePanelTransition(panel);
   const closeButtonRef = useRef(null);
   const returnFocusRef = useRef(null);

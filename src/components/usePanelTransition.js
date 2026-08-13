@@ -11,6 +11,9 @@ export function usePanelTransition(value, duration = PANEL_TRANSITION_MS) {
     if (value) {
       if (timerRef.current) clearTimeout(timerRef.current);
       setMountedValue(value);
+      // 每次打开都显式经过 'opening' 相位：host 常驻挂载时，仅靠 useState 初值
+      // 会让后续打开永远跳过 'opening'，导致 M4 的初始焦点/焦点返回效果失效。
+      setPhase('opening');
       const frame = requestAnimationFrame(() => setPhase('open'));
       return () => cancelAnimationFrame(frame);
     }

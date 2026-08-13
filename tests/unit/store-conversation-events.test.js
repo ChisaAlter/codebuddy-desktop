@@ -794,7 +794,7 @@ describe('subagent report rebuild frequency (M-perf)', () => {
 
   beforeEach(() => {
     calls = 0;
-    const module = { collectSubagentReports: vi.fn((args) => ({ rebuilt: ++calls, at: Date.now() })) };
+    const module = { collectSubagentReports: vi.fn(() => ({ rebuilt: ++calls, at: Date.now() })) };
     // Re-import with a spy on collectSubagentReports through the slice's import.
     vi.doMock('../../src/lib/subagent-report', () => module);
     // The slice module is already loaded with the real import; use the store's
