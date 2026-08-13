@@ -1,0 +1,1225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>工作流与子代理面板 — HTML 原型 v3（10 项必含状态）</title>
+<style>
+  :root {
+    --bg-base: #000000;
+    --bg-secondary: #1c1c1e;
+    --bg-card: #1a1a1a;
+    --bg-hover: #2a2a2a;
+    --bg-tertiary: #242424;
+    --border-default: #2e2e33;
+    --border-muted: #232328;
+    --text-primary: #e5e5e5;
+    --text-secondary: #a3a3a3;
+    --text-muted: #848484; /* M4：对比度 ≥4.5:1 on #1c1c1e */
+    --text-disabled: #555558;
+    --accent-blue: #60a5fa;
+    --accent-green: #4ade80;
+    --accent-red: #f87171;
+    --accent-yellow: #fbbf24;
+    --focus-ring: #60a5fa;
+    --color-bg-base: #000000;
+    --color-bg-primary: #000000;
+    --color-bg-secondary: #1c1c1e;
+    --color-bg-tertiary: #242424;
+    --color-bg-card: #1a1a1a;
+    --color-bg-hover: #2a2a2a;
+    --color-bg-input: #1a1a1a;
+    --color-bg-sidebar: #111113;
+    --color-text-primary: #e5e5e5;
+    --color-text-secondary: #a3a3a3;
+    --color-text-muted: #848484;
+    --color-text-disabled: #555558;
+    --color-border-default: #2e2e33;
+    --color-border-muted: #232328;
+    --color-border-input: #252525;
+    --color-border-active: #4dabf7;
+    --color-accent-primary: #1f6feb;
+    --color-accent-blue: #60a5fa;
+    --color-accent-green: #4ade80;
+    --color-accent-red: #f87171;
+    --color-accent-yellow: #eab308;
+    --color-focus-ring: #60a5fa;
+
+    --border-active: #4dabf7;
+    --border-input: #252525;
+    --color-panel-accent: #60a5fa;
+    --color-panel-accent-primary: #1f6feb;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono: Menlo, Monaco, Consolas, 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 40px 0 8px; color: var(--text-primary); }
+  .hint { color: var(--text-muted); font-size: 12px; margin-bottom: 20px; line-height: 1.6; }
+  .stage { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .stage-label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+  .note {
+    border: 1px dashed var(--border-default);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.7;
+    max-width: 300px;
+    background: var(--bg-card);
+  }
+  .note b { color: var(--accent-blue); font-weight: 600; }
+
+  /* ── 面板外壳（与生产一致：尺寸/圆角/阴影/过渡 220ms）── */
+  .panel {
+    width: 440px;
+    max-height: min(760px, calc(100vh - 74px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  }
+  .panel-header {
+    display: flex;
+    height: 44px;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--border-default);
+    padding: 0 12px;
+  }
+  .panel-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; color: var(--text-primary); }
+  .panel-close {
+    border: none;
+    background: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1;
+  }
+  .panel-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .panel-body { overflow-y: auto; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* ── 面板段（与生产类名一致，便于像素对照）── */
+  .workflow-panel__section { display: flex; flex-direction: column; gap: 8px; }
+  .workflow-panel__section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .workflow-panel__count { margin-left: auto; color: var(--text-muted); font-size: 11px; font-weight: 400; }
+  .workflow-panel__history-badge {
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+  .workflow-panel__history-note { color: var(--text-muted); font-size: 11px; }
+  .workflow-panel__muted { color: var(--text-muted); font-size: 12px; }
+  .workflow-panel__refresh {
+    margin-left: auto;
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 11px;
+    color: var(--accent-blue);
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .workflow-panel__refresh-link {
+    align-self: flex-start;
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 11px;
+    color: var(--accent-blue);
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .workflow-panel__git-list { display: flex; flex-direction: column; gap: 6px; }
+  .workflow-panel__git-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--border-muted);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+  }
+  .workflow-panel__git-row-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workflow-panel__added { color: var(--accent-green); font-weight: 600; }
+  .workflow-panel__deleted { color: var(--accent-red); font-weight: 600; }
+  .workflow-panel__git-error {
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .workflow-panel__git-error-title { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; }
+  .workflow-panel__git-error-body { color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+  .workflow-panel__banner { border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.5; }
+  .workflow-panel__banner.is-ok { background: rgba(74, 222, 128, 0.1); color: var(--accent-green); }
+  .workflow-panel__banner.is-bad { background: rgba(248, 113, 113, 0.1); color: var(--accent-red); }
+  .workflow-panel__git-composer { display: flex; gap: 6px; }
+  .workflow-panel__git-input {
+    flex: 1;
+    border: 1px solid var(--border-input);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+  .workflow-panel__git-commit {
+    border: none;
+    border-radius: 6px;
+    background: var(--accent-blue);
+    padding: 5px 10px;
+    font-size: 12px;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .workflow-panel__commit-step { color: var(--text-muted); font-size: 11px; }
+  .workflow-panel__goal-list, .workflow-panel__task-list, .workflow-panel__subagent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .workflow-panel__goal, .workflow-panel__task {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .workflow-panel__goal-badge {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+
+    color: var(--text-secondary);
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .workflow-panel__goal-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workflow-panel__goal-progress { color: var(--text-muted); font-size: 11px; }
+  .workflow-panel__dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .workflow-panel__dot.is-running, .workflow-panel__dot.is-working, .workflow-panel__dot.is-in_progress { background: var(--accent-blue); }
+  .workflow-panel__dot.is-completed, .workflow-panel__dot.is-success { background: var(--accent-green); }
+  .workflow-panel__dot.is-failed, .workflow-panel__dot.is-error { background: var(--accent-red); }
+  .workflow-panel__dot.is-idle { background: var(--text-disabled); }
+  .workflow-panel__task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workflow-panel__subagent {
+    border: 1px solid var(--border-muted);
+    border-radius: 8px;
+    background: var(--bg-card);
+    overflow: hidden;
+  }
+  .workflow-panel__subagent-head {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    background: none;
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .workflow-panel__subagent-name { color: var(--text-primary); font-weight: 600; }
+  .workflow-panel__subagent-activity { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+  .workflow-panel__subagent-status { color: var(--text-muted); font-size: 11px; }
+  .workflow-panel__subagent-chevron { color: var(--text-muted); }
+  .workflow-panel__subagent-body { border-top: 1px solid var(--border-muted); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .workflow-panel__subagent-conclusion { color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+  .workflow-panel__subagent-meta { color: var(--text-muted); font-size: 11px; }
+  .workflow-panel__path-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .workflow-panel__path-item { color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; }
+
+  /* 骨架（加载态） */
+  .skeleton { border-radius: 6px; background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .skeleton-line { height: 12px; }
+
+  /* 焦点（M4：:focus-visible） */
+  .focus-demo:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-radius: 4px; }
+  .focus-demo { border: 1px dashed var(--border-default); border-radius: 6px; padding: 6px 10px; color: var(--text-secondary); font-size: 12px; background: var(--bg-card); }
+
+  /* aria-live 区域标注 */
+  .aria-live-zone { border: 1px dashed var(--accent-yellow); border-radius: 8px; padding: 6px 10px; color: var(--text-secondary); font-size: 11px; }
+
+  /* 双面板共存 */
+  .duo { position: relative; }
+  .duo .right { position: absolute; right: 28px; top: 0; width: 420px; }
+  .duo .right::before { content: '右侧工作面 (420px)'; position: absolute; top: -22px; left: 0; font-size: 11px; color: var(--text-muted); }
+  .duo .floating { width: 320px; }
+
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+<style>
+/* 像素对照保真层：从 src/index.css 提取的面板规则（构建产物同源） */
+
+.workflow-floating-panel-host {
+  /* M4 对比度：面板内 accent 实测达标（WCAG AA）。全局 accent-blue/primary 在亮主题面板底 (#f5f5f7) 上仅 3.77:1、白字在 #1677ff 上仅 4.10:1，故面板局部加深，不影响应用其余部分。 */
+  --color-panel-accent: var(--color-accent-blue);
+  --color-panel-accent-primary: var(--color-accent-primary);
+  position: fixed;
+  top: 56px;
+  right: 18px;
+  z-index: 75;
+  display: flex;
+  width: min(320px, calc(100vw - 36px));
+  max-height: min(760px, calc(100vh - 74px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
+  transform: translate3d(0, 0, 0);
+  opacity: 1;
+  will-change: transform, opacity;
+}
+
+.workflow-floating-panel-host.has-right-panel { right: calc(min(420px, 38vw) + 28px); }
+
+html[data-theme='light'] .workflow-floating-panel-host,
+html[data-theme='light'] .workflow-floating-panel-host .workflow-panel__git-error {
+  --color-panel-accent: #0f63d8; /* 5.08:1 on #f5f5f7 */
+  --color-panel-accent-primary: #0f63d8; /* 白字 5.53:1 */
+}
+
+html[data-theme='dark'] .workflow-floating-panel-host,
+html[data-theme='dark'] .workflow-floating-panel-host .workflow-panel__git-error {
+  --color-panel-accent: var(--color-accent-blue); /* 6.69:1 on #1c1c1e */
+  --color-panel-accent-primary: #1f6feb; /* 白字 4.63:1 */
+}
+
+.workflow-floating-panel-host.is-closing { pointer-events: none; transform: translate3d(0, -10px, 0) scale(0.98); opacity: 0; }
+
+.workflow-floating-panel-host.is-open,
+.workflow-floating-panel-host.is-opening { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+@media (max-width: 640px) {
+  .right-panel-host {
+    position: fixed;
+    inset: 44px 0 0 auto;
+    z-index: 80;
+    width: min(420px, 100vw);
+    min-width: 0;
+    box-shadow: -12px 0 30px rgba(0, 0, 0, 0.2);
+  }
+  .workflow-floating-panel-host,
+  .workflow-floating-panel-host.has-right-panel {
+    top: 52px;
+    right: 10px;
+    width: min(320px, calc(100vw - 20px));
+    max-height: calc(100vh - 62px);
+  }
+  .workflow-floating-panel-host.has-right-panel { right: auto; left: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .right-panel-host,
+  .workflow-floating-panel-host { transition-duration: 1ms; }
+}
+
+
+
+/* ── 工作流与子代理浮层（重设计：Git 工具 / 目标 / 任务 / 子代理）── */
+.workflow-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+}
+
+.workflow-panel__section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workflow-panel__section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.workflow-panel__count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__muted {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__error {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-accent-red);
+}
+
+.workflow-panel__refresh {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-panel-accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.workflow-panel__refresh:hover { text-decoration: underline; }
+
+.workflow-panel__refresh:disabled { opacity: 0.6; cursor: default; }
+
+
+/* M1：Git 错误态分层（非仓库/权限/超时/16MB，恒显刷新） */
+.workflow-panel__git-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.06);
+  padding: 8px 10px;
+}
+
+.workflow-panel__git-error-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-accent-red);
+}
+
+.workflow-panel__git-error-title svg { flex: none; }
+
+.workflow-panel__git-error-body {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.workflow-panel__refresh-link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-panel-accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.workflow-panel__refresh-link:hover { text-decoration: underline; }
+
+.workflow-panel__refresh-link:disabled { opacity: 0.55; cursor: default; }
+
+
+/* M1：提交事务分步（添加中/提交中/推送中） + 部分失败（已提交，推送失败） */
+.workflow-panel__commit-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.workflow-panel__commit-step::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border: 2px solid rgba(96, 165, 250, 0.3);
+  border-top-color: var(--color-accent-blue);
+  border-radius: 50%;
+  animation: workflow-panel-commit-spin 0.8s linear infinite;
+}
+
+@keyframes workflow-panel-commit-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .workflow-panel__commit-step::before { animation: none; }
+}
+
+.workflow-panel__banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.workflow-panel__banner svg { flex: none; margin-top: 1px; }
+
+.workflow-panel__banner.is-ok {
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  color: var(--color-accent-green);
+}
+
+.workflow-panel__banner.is-bad {
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: var(--color-accent-red);
+}
+
+.workflow-panel__retry {
+  flex: none;
+  border: 1px solid var(--color-panel-accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-panel-accent);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.workflow-panel__retry:hover { background: rgba(96, 165, 250, 0.12); }
+
+.workflow-panel__retry:disabled { opacity: 0.5; cursor: default; }
+
+
+/* M2：终态回退历史徽标与说明 */
+.workflow-panel__history-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+}
+
+.workflow-panel__history-note {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  border-left: 2px solid var(--color-border-default);
+  padding-left: 8px;
+}
+
+
+/* 状态点 */
+.workflow-panel__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-text-disabled);
+}
+
+.workflow-panel__dot.is-running,
+.workflow-panel__dot.is-working,
+.workflow-panel__dot.is-in_progress {
+  background: var(--color-accent-blue);
+  box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.5);
+  animation: workflow-panel-dot-pulse 1.6s ease-out infinite;
+}
+
+.workflow-panel__dot.is-completed,
+.workflow-panel__dot.is-done,
+.workflow-panel__dot.is-success { background: var(--color-accent-green); }
+
+.workflow-panel__dot.is-failed,
+.workflow-panel__dot.is-error { background: var(--color-accent-red); }
+
+.workflow-panel__dot.is-cancelled,
+.workflow-panel__dot.is-canceled { background: var(--color-accent-yellow); }
+
+.workflow-panel__dot.is-pending,
+.workflow-panel__dot.is-idle { background: var(--color-text-disabled); }
+
+@keyframes workflow-panel-dot-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workflow-panel__dot.is-running,
+  .workflow-panel__dot.is-working,
+  .workflow-panel__dot.is-in_progress { animation: none; }
+}
+
+
+/* Git 工具（紧凑列表行，对齐参考图） */
+.workflow-panel__git-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workflow-panel__git-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.workflow-panel__git-row.is-changes {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
+}
+
+.workflow-panel__git-row.is-action {
+  cursor: pointer;
+}
+
+.workflow-panel__git-row.is-action:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.workflow-panel__git-row.is-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.workflow-panel__git-icon {
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__git-row-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.workflow-panel__git-row-meta {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.workflow-panel__added { color: var(--color-accent-green); font-weight: 600; }
+
+.workflow-panel__deleted { color: var(--color-accent-red); font-weight: 600; }
+
+.workflow-panel__git-ahead {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__git-chevron {
+  flex: none;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__git-composer {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0 2px 2px;
+}
+
+.workflow-panel__git-input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--color-border-input);
+  border-radius: 6px;
+  background: var(--color-bg-input);
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.workflow-panel__git-input:focus { border-color: var(--color-focus-ring); }
+
+.workflow-panel__git-commit {
+  flex: none;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-panel-accent-primary);
+  padding: 5px 10px;
+  font-size: 12px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.workflow-panel__git-commit:disabled { opacity: 0.5; cursor: default; }
+
+
+/* 目标 */
+.workflow-panel__goal-list,
+.workflow-panel__task-list,
+.workflow-panel__subagent-list {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workflow-panel__goal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-panel__goal-badge {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-active);
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-accent-blue);
+}
+
+.workflow-panel__goal-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.workflow-panel__goal-progress {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+
+/* 任务 */
+.workflow-panel__task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-panel__task-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+
+/* 子代理 */
+.workflow-panel__subagent {
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-bg-card);
+}
+
+.workflow-panel__subagent-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: none;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.workflow-panel__subagent-head:hover { background: var(--color-bg-hover); }
+
+.workflow-panel__subagent-head:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
+
+.workflow-panel__subagent-name {
+  flex: none;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workflow-panel__subagent-activity {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.workflow-panel__subagent-status {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__subagent-chevron {
+  flex: none;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__subagent-body {
+  border-top: 1px solid var(--color-border-muted);
+  padding: 8px 10px;
+}
+
+.workflow-panel__subagent-desc {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+}
+
+.workflow-panel__subagent-conclusion {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.workflow-panel__subagent-pathlist {
+  margin-top: 6px;
+}
+
+.workflow-panel__path-items {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workflow-panel__path-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+}
+
+.workflow-panel__subagent-meta {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.workflow-panel__more {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+</style>
+</head>
+<body>
+<h1>工作流与子代理面板 — HTML 原型 v3</h1>
+<p class="hint">
+  10 项必含状态（计划 P0-1）。结构与生产一致（同尺寸/圆角/阴影/过渡、同类名），
+  供像素三方 diff 与人工审核使用。交互语义（IME/焦点/dismiss/aria-live）用标注说明。
+</p>
+
+<h2>① Git 加载骨架</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">加载中（首次打开）</div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close" aria-label="关闭工作流与子代理面板">✕</button></div>
+      <div class="panel-body">
+        <section class="workflow-panel__section">
+          <div class="workflow-panel__section-title"><span>Git 工具</span><span class="workflow-panel__refresh" aria-hidden="true">刷新</span></div>
+          <div class="workflow-panel__muted">读取中…</div>
+        </section>
+        <section class="workflow-panel__section">
+          <div class="workflow-panel__section-title"><span>目标</span></div>
+          <div class="skeleton skeleton-line" style="width: 70%"></div>
+          <div class="skeleton skeleton-line" style="width: 45%"></div>
+        </section>
+        <section class="workflow-panel__section">
+          <div class="workflow-panel__section-title"><span>子代理</span></div>
+          <div class="skeleton skeleton-line" style="width: 55%"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="note">
+    <b>加载骨架</b>：首次打开/切换项目时 Git 工具段显示「读取中…」；目标/子代理段显示骨架占位。<br>
+    刷新按钮在加载中置灰（disabled）。
+  </div>
+</div>
+
+<h2>② Git 错误态分层（4 类独立文案 + 恒显刷新按钮）</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">非仓库</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-error">
+          <div class="workflow-panel__git-error-title">⚠ 不是 Git 仓库</div>
+          <div class="workflow-panel__git-error-body">当前目录不是 Git 仓库。可运行 <code>git init</code> 后重试。</div>
+          <button class="workflow-panel__refresh-link">刷新</button>
+        </div>
+      </section>
+    </div></div>
+  </div>
+  <div>
+    <div class="stage-label">权限不足</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-error">
+          <div class="workflow-panel__git-error-title">🔒 权限不足</div>
+          <div class="workflow-panel__git-error-body">无法读取目录权限。请检查目录权限后在终端中执行。</div>
+          <button class="workflow-panel__refresh-link">刷新</button>
+        </div>
+      </section>
+    </div></div>
+  </div>
+  <div>
+    <div class="stage-label">读取超时</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-error">
+          <div class="workflow-panel__git-error-title">⏱ 读取超时</div>
+          <div class="workflow-panel__git-error-body">Git 读取超过 60 秒。可重试或到终端执行。</div>
+          <button class="workflow-panel__refresh-link">刷新</button>
+        </div>
+      </section>
+    </div></div>
+  </div>
+  <div>
+    <div class="stage-label">输出过大（16MB 截断）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-error">
+          <div class="workflow-panel__git-error-title">📄 输出过大已截断</div>
+          <div class="workflow-panel__git-error-body">仓库输出超过 16MB，已截断显示。请到终端执行。</div>
+          <button class="workflow-panel__refresh-link">刷新</button>
+        </div>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>错误态恒显示刷新按钮</b>（修复 gitState 门控 bug）：非仓库/权限/超时/截断各带独立图标文案，
+    全部可一键刷新重试。分类判定：stderr 关键字 + .git 存在性 / EACCES / 超时消息 / 截断标志。
+  </div>
+</div>
+
+<h2>③ 提交三连分步 busy 态 + 「已提交，推送失败」中间态</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">提交中（分步 busy）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh" disabled>刷新</button></div>
+        <div class="workflow-panel__git-list">
+          <div class="workflow-panel__git-row"><span class="workflow-panel__git-row-label">变更</span><span><b class="workflow-panel__added">+3</b> <b class="workflow-panel__deleted">-1</b></span></div>
+          <div class="workflow-panel__git-row"><span class="workflow-panel__git-row-label">main</span><span>已领先 1</span></div>
+          <div class="workflow-panel__git-row is-action" style="opacity: 0.6"><span class="workflow-panel__git-row-label">提交中…</span></div>
+          <div class="workflow-panel__git-composer"><input class="workflow-panel__git-input" value="feat: 修复面板对比度" disabled><button class="workflow-panel__git-commit" disabled>提交中</button></div>
+        </div>
+        <div class="workflow-panel__commit-step">正在添加文件…</div>
+      </section>
+    </div></div>
+  </div>
+  <div>
+    <div class="stage-label">已提交，推送失败（可重试推送，不重复 add）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-list">
+          <div class="workflow-panel__banner is-ok"><b>✓ 已提交</b><br>feat: 修复面板对比度</div>
+          <div class="workflow-panel__banner is-bad"><b>✕ 推送失败</b><br>远端拒绝：non-fast-forward。可重试推送（不会重复 add/commit）。</div>
+          <div class="workflow-panel__git-row is-action"><span class="workflow-panel__git-row-label">重试推送</span></div>
+        </div>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>提交事务状态机</b>：idle → adding → committing → pushing →（成功 idle / 失败 error / add-commit 成功但 push 失败 → <b>committed_push_failed</b>）。
+    分步提示随阶段切换；中间态重试只执行 push。cwd 一次性快照绑定，切项目即拒。
+  </div>
+</div>
+
+<h2>④ 空态 → 有态过渡</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">空态（无活动/无子代理）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh">刷新</button></div>
+        <div class="workflow-panel__git-list">
+          <div class="workflow-panel__git-row"><span class="workflow-panel__git-row-label">变更</span><span><b class="workflow-panel__added">+0</b> <b class="workflow-panel__deleted">-0</b></span></div>
+          <div class="workflow-panel__git-row"><span class="workflow-panel__git-row-label">main</span></div>
+          <div class="workflow-panel__git-row is-action"><span class="workflow-panel__git-row-label">提交并推送</span></div>
+        </div>
+      </section>
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>子代理</span></div>
+        <div class="workflow-panel__muted">暂无子代理活动</div>
+      </section>
+    </div></div>
+  </div>
+  <div>
+    <div class="stage-label">有态（结构事件后出现目标/任务/子代理）</div>
+    <div class="panel" id="pixel-stage" style="width: 320px"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close" aria-label="关闭工作流与子代理面板">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh">刷新</button></div>
+        <div class="workflow-panel__git-list">
+          <div class="workflow-panel__git-row is-changes"><svg class="workflow-panel__git-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.906 1.627L11.75 5.427V2h2.156a.25.25 0 0 1 .177.073ZM4.72 7.22a.75.75 0 0 1 1.06 0l.97.97.97-.97a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734l-1.25 1.25a.75.75 0 0 1-1.06 0L4.72 8.28a.75.75 0 0 1 0-1.06Zm0 4.56a.75.75 0 0 1 1.06 0l.97.97.97-.97a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734l-1.25 1.25a.75.75 0 0 1-1.06 0l-1.25-1.25a.75.75 0 0 1 0-1.06Z"/></svg><span class="workflow-panel__git-row-label">更改</span><span><b class="workflow-panel__added">+0</b> <b class="workflow-panel__deleted">-0</b></span></div>
+          <div class="workflow-panel__git-row"><svg class="workflow-panel__git-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg><span class="workflow-panel__git-row-label">main</span><span class="workflow-panel__git-chevron" aria-hidden="true">▾</span></div>
+          <div class="workflow-panel__git-row is-action"><svg class="workflow-panel__git-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/></svg><span class="workflow-panel__git-row-label">提交或推送</span></div>
+        </div>
+      </section>
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>目标</span><span class="workflow-panel__count">1/2</span></div>
+        <ul class="workflow-panel__goal-list">
+          <li class="workflow-panel__goal"><span class="workflow-panel__goal-badge">1</span><span class="workflow-panel__goal-title">QA 目标一</span><span class="workflow-panel__goal-progress">1/2</span><span class="workflow-panel__dot is-running"></span><span class="sr-only">运行中</span></li>
+          <li class="workflow-panel__goal"><span class="workflow-panel__goal-badge">2</span><span class="workflow-panel__goal-title">QA 目标二</span><span class="workflow-panel__goal-progress">2/2</span><span class="workflow-panel__dot is-completed"></span><span class="sr-only">已完成</span></li>
+        </ul>
+      </section>
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>子代理</span><span class="workflow-panel__count">1</span></div>
+        <ul class="workflow-panel__subagent-list">
+          <li class="workflow-panel__subagent">
+            <button class="workflow-panel__subagent-head" aria-expanded="false">
+              <span class="workflow-panel__dot is-running"></span>
+              <span class="workflow-panel__subagent-name">Explore</span>
+              <span class="workflow-panel__subagent-activity">正在读取 package.json</span>
+              <span class="workflow-panel__subagent-status">运行中</span>
+              <span class="workflow-panel__subagent-chevron">▸</span>
+            </button>
+          </li>
+        </ul>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>空态→有态过渡</b>：纯 chunk 流不触发面板重算（M3 渲染门禁）；
+    目标/任务/子代理段在结构事件后才出现。sr-only 状态文本随行（目标/任务行）。
+  </div>
+</div>
+
+<h2>⑤ 终态回退展示（lastGoalState 标注为历史）</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">历史回退（无实时状态，展示上一轮终态）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>目标</span><span class="workflow-panel__history-badge">历史</span><span class="workflow-panel__count">1/1</span></div>
+        <div class="workflow-panel__history-note">显示上一回合的最终状态（当前无活动运行）</div>
+        <ul class="workflow-panel__goal-list">
+          <li class="workflow-panel__goal"><span class="workflow-panel__goal-badge">1</span><span class="workflow-panel__goal-title">完成面板重设计</span><span class="workflow-panel__goal-progress">100%</span><span class="workflow-panel__dot is-completed"></span><span class="sr-only">已完成</span></li>
+        </ul>
+      </section>
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>子代理</span><span class="workflow-panel__history-badge">历史</span><span class="workflow-panel__count">1</span></div>
+        <ul class="workflow-panel__subagent-list">
+          <li class="workflow-panel__subagent">
+            <button class="workflow-panel__subagent-head" aria-expanded="false">
+              <span class="workflow-panel__dot is-completed"></span>
+              <span class="workflow-panel__subagent-name">qa-agent</span>
+              <span class="workflow-panel__subagent-activity">任务：跑 31 项实机 QA</span>
+              <span class="workflow-panel__subagent-status">已完成</span>
+              <span class="workflow-panel__subagent-chevron">▸</span>
+            </button>
+          </li>
+        </ul>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>终态回退</b>：goals/reports 读 <code>lastGoalState</code> / <code>lastSubagentReports</code>；
+    「在干什么」回退文案加 <b>「任务：」前缀</b> 与实时活动区分；段落带「历史」徽标。
+    发送新 prompt 清空 subagentReports（消除跨回合串扰）。
+  </div>
+</div>
+
+<h2>⑥ IME 组合态说明（提交输入框）</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">IME 组合中（中文输入法）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span></div>
+        <div class="workflow-panel__git-composer">
+          <input class="workflow-panel__git-input" value="修复对比度" style="border-color: var(--focus-ring)" aria-label="提交信息">
+          <button class="workflow-panel__git-commit">提交并推送</button>
+        </div>
+        <div class="workflow-panel__muted">输入法组合中（isComposing=true）——Enter 不触发提交</div>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>IME 守卫</b>：提交输入框 <code>onKeyDown</code> 检查 <code>event.nativeEvent.isComposing === false</code>；
+    组合态 Enter 仅确认候选词，不触发提交；Escape 关闭输入框并清空草稿。
+  </div>
+</div>
+
+<h2>⑦ 键盘焦点全流程</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">Tab 环示例（打开 → 关闭按钮 → 段内控件）</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close focus-demo" style="border:none" autofocus>✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh focus-demo" style="border:none">刷新</button></div>
+        <button class="focus-demo" style="width:100%">提交并推送</button>
+        <button class="focus-demo" style="width:100%">子代理行（aria-expanded 切换）</button>
+      </section>
+      <div class="aria-live-zone" role="status" aria-live="polite">aria-live=polite 播报区（结构变化/状态切换）</div>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>焦点管理</b>：打开时初始焦点 → 关闭按钮（<code>closeButtonRef.focus()</code>）；
+    关闭后焦点返回触发打开的元素（<code>returnFocusRef</code>）；<code>:focus-visible</code> 2px 轮廓；
+    Escape 在 capture 阶段 <code>stopImmediatePropagation</code>，优先于全局快捷键。
+  </div>
+</div>
+
+<h2>⑧ 双面板共存布局</h2>
+<div class="stage">
+  <div class="duo" style="width: 900px; height: 380px">
+    <div class="panel right">
+      <div class="panel-header"><span class="panel-title">文件</span></div>
+      <div class="panel-body"><div class="workflow-panel__muted">右侧工作面（文件/浏览器/插件…）</div></div>
+    </div>
+    <div class="panel floating">
+      <div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div>
+      <div class="panel-body">
+        <section class="workflow-panel__section">
+          <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh">刷新</button></div>
+          <div class="workflow-panel__git-list">
+            <div class="workflow-panel__git-row"><span class="workflow-panel__git-row-label">变更</span><span><b class="workflow-panel__added">+2</b> <b class="workflow-panel__deleted">-0</b></span></div>
+          </div>
+        </section>
+        <section class="workflow-panel__section">
+          <div class="workflow-panel__section-title"><span>子代理</span><span class="workflow-panel__count">1</span></div>
+          <div class="workflow-panel__muted">子代理列表</div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="note">
+    <b>双面板共存</b>：右工作面打开时悬浮面板 <code>right: min(420px, 38vw) + 28px</code> 避让，
+    不遮挡右侧内容；两面板均可独立 Escape 关闭。
+  </div>
+</div>
+
+<h2>⑨ dismiss 交互语义</h2>
+<div class="stage">
+  <div class="note" style="max-width: 520px">
+    <b>dismiss 语义（M2）</b>：<br>
+    1. 用户关闭面板 → 记录 <code>{ runId, at }</code>（runId 取关闭时 payload 的 runId，无则 null——不回退 activePromptRunId）。<br>
+    2. <b>时间窗 3s</b>：关闭后 3 秒内的自动打开被抑制（防误开）。<br>
+    3. <b>同 runId 永久抑制</b>：同一次运行的面板被手动关闭后，该 runId 不再自动重开（意图尊重）。<br>
+    4. 用户<b>手动打开</b>面板 → 清除 dismiss 窗（后续自动打开恢复）。<br>
+    5. 生命周期切换（activateProject/deleteThread/archiveThread/newSession）→ 幂等关闭，不写 dismissed。
+  </div>
+</div>
+
+<h2>⑩ aria-live 播报区域标注</h2>
+<div class="stage">
+  <div>
+    <div class="stage-label">面板内播报区</div>
+    <div class="panel"><div class="panel-header"><span class="panel-title">工作流与子代理</span><button class="panel-close">✕</button></div><div class="panel-body">
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>Git 工具</span><button class="workflow-panel__refresh">刷新</button></div>
+        <div class="workflow-panel__banner is-ok" role="status">✓ 已提交并推送</div>
+        <div class="workflow-panel__banner is-bad" role="alert">✕ 推送失败（读屏 alert）</div>
+      </section>
+      <section class="workflow-panel__section">
+        <div class="workflow-panel__section-title"><span>目标</span></div>
+        <div class="aria-live-zone" role="status" aria-live="polite">aria-live=polite：目标完成/失败播报（局部降噪，不用全局 announce）</div>
+      </section>
+    </div></div>
+  </div>
+  <div class="note">
+    <b>aria-live 降噪</b>：播报仅挂在目标完成/失败与提交结果等局部区域；
+    高频流式 chunk 不触发播报。关闭按钮 <code>aria-label="关闭工作流与子代理面板"</code>；
+    面板 <code>role="dialog" aria-modal="true" aria-labelledby</code>。
+  </div>
+</div>
+
+</body>
+</html>

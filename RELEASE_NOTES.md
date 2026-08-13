@@ -2,6 +2,34 @@
 
 1.1.0 将工作流、团队/子代理状态和 `/goal` 目标进度从聊天顶部移到可持续查看的右侧面板，并强化流式取消与消息渲染安全边界。
 
+## 1.1.1（对抗性审查修复）
+
+1.1.1 依据生产交付流程的对抗性审查，逐项核销 1.1.0 的审查缺口：安全、可访问性、发布管线与实机 QA 覆盖。
+
+### 安全（mobile-remote H14）
+
+- 恢复被误删的 mobile-remote 客户端与协议/加密/中继包（无授权删除导致 `test:gate` 与 pre-push 失败，发布管线中断）。
+- E2EE 握手签名补全：host 用 relay-auth Ed25519 密钥签名握手原文（serverId + 客户端临时公钥 + 时间戳），客户端验签后才信任解密载荷，封堵主动 MITM 换钥（08-06 审查 4 项协议缺陷的最后一项）。
+- relay 传输 TLS 默认开启（`relayUseTls: true`），明文 ws 改为可显式关闭的例外。
+
+### 可访问性与对比度（M4 实测）
+
+- 亮色主题 muted/tertiary `#8e8e93` → `#707070`（2.99:1 → 4.55:1），暗色 `#7c7c82` → `#848484`（4.10:1 → 4.55:1），均按 WCAG 公式在真实面板底色上实测。
+- 面板内 accent 改为面板作用域 token：亮色刷新按钮 `#1677ff` → `#0f63d8`（3.77:1 → 5.08:1）；暗色提交按钮底色 `#60a5fa` → `#1f6feb`（白字 2.54:1 → 4.63:1）。
+- 目标/任务行补 sr-only 状态文本；目标行 key 稳定化（sequence/eventKey）；移除旧 WorkflowRightPanel/WorkflowStatusPanel 的全部死 CSS。
+
+### 代码卫生
+
+- `firstValue`/`normalizeStatus`/`normalizeMember` 单源化（新 `src/lib/workflow-normalize.js`）+ electron 跨进程一致性单测（防漂移）；`usePanelT` 共享 hook；`present*` 布尔函数改名 `should*`；`mergeMembers` 抽具名 helper；6 个 manual-*gui 脚本复用 e2e-driver 的 `wait`。
+- Canvas 占位路由移除（无真实后端，符合 CODEBUDDY.md 路由纪律）；CODEBUDDY.md 同步修正（Docs 恢复为真实功能）。
+- `normalizeWorkflowStatus` 引用级记忆化（有界缓存）；`closeWorkflowPanel` 不再回退 `activePromptRunId`（契约 §1）。
+
+### 实机 QA 覆盖（M6 终门）
+
+- panel-qa 扩展至约 46 项：键盘焦点全流程（初始焦点/面板内 Tab 环/Escape 焦点返回）、IME 组合态守卫（CDP 真实组合）、双主题对比度 computed-style 实测、亮暗即时切换、reduced-motion、窄窗自适应、高频流式渲染计数（DOM 变更不随 chunk 线性增长）、超长 message（4096 上限）、连点守卫、刷新竞态 latest-wins、behind-only/detached HEAD/空仓库/GBK 引号转义安全、跨项目与删除线程生命周期关闭、dismiss 动画期幂等、跨回合串扰清除。
+- 新增像素三方 diff 工具（实机面板 vs 改动前基线 vs 原型 v3，1px 容差 + 超差理由日志），输出 `.omo/evidence/panel-pixel-diff/`。
+- 新增原型 v3（`docs/prototypes/workflow-panel-v3.html`，计划 P0-1 的 10 项必含状态）。
+
 ## 本版本重点
 
 ### 输入、终端与切换性能
