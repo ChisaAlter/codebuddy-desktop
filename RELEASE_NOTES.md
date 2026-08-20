@@ -30,6 +30,16 @@
 - 新增像素三方 diff 工具（实机面板 vs 改动前基线 vs 原型 v3，1px 容差 + 超差理由日志），输出 `.omo/evidence/panel-pixel-diff/`。
 - 新增原型 v3（`docs/prototypes/workflow-panel-v3.html`，计划 P0-1 的 10 项必含状态）。
 
+### 安全加固与体验（本批新增）
+
+- **主进程工作区信任模型**（`electron/workspace-trust.cjs`）：信任目录 = 对话框选择的目录（10 分钟 TTL）∪ 磁盘产品状态中的 `projectsById.*.workspacePath` ∪ `preferences.workspaceExtraDirs`；运行时项目 cwd、MCP cwd 与 git 允许列表在发起时都在主进程重新核验，渲染层无法伪造工作区路径。
+- **IPC 发送者信任**：所有特权 IPC handler 统一经过 `requireTrustedMainSender`（`event.sender` 必须是主窗口），封堵伪造 sender 的调用面；`git-security.cjs` 提供与可信 git 检查复用的发送者信任助手。
+- **窗口状态持久化**（`electron/window-state.cjs`）：重启后恢复上次窗口位置/尺寸/最大化，带工作区重叠面积校验与最小尺寸钳制，跨屏显示器变化不会把窗口恢复到屏幕外。
+- **文件编辑工具白名单**（`src/lib/file-edit-tools.js`）：工具名统一归一化（camelCase→snake）后匹配 `write`/`edit`/`str_replace`/`notebook_edit`/`apply_patch`，挂进 ACP 工具门禁。
+- **会话用量统计持久化** + **ACP 请求模式分发**：`resolveAcpRequestMode` 区分 live / usage-refresh / history-replay / rebind，仅用量类请求不再走流式渲染路径。
+- **mobile-remote 设备管理加固**：设备存储支持 admin 设备，配对手牌加 TTL 与一次性 token，吊销仅限 admin 或设备自身。
+- **工作流面板 git 分支菜单**：面板内可查看当前分支、打开变更、切换/新建分支，复用单源的 normalized 工作流状态。
+
 ## 本版本重点
 
 ### 输入、终端与切换性能
