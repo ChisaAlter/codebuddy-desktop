@@ -391,9 +391,7 @@ export function createEncryptedChannel(sharedKey) {
       const cipher = bundle.subarray(NONCE_LENGTH);
       const salt = nonce.subarray(0, SALT_LENGTH);
       const seq = readSeq(nonce.subarray(SALT_LENGTH, NONCE_LENGTH));
-      if (recvSalt == null) {
-        recvSalt = new Uint8Array(salt);
-      } else {
+      if (recvSalt != null) {
         for (let i = 0; i < SALT_LENGTH; i += 1) {
           if (recvSalt[i] !== salt[i]) throw new Error('salt mismatch');
         }
@@ -401,6 +399,7 @@ export function createEncryptedChannel(sharedKey) {
       if (seq <= recvSeq) throw new Error('replay or out-of-order sequence');
       const plain = nacl.box.open.after(cipher, nonce, sharedKey);
       if (!plain) throw new Error('decrypt failed');
+      if (recvSalt == null) recvSalt = new Uint8Array(salt);
       recvSeq = seq;
       return plain;
     },

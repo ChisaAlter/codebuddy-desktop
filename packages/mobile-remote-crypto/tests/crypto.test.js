@@ -53,6 +53,17 @@ describe('e2ee channel', () => {
     hostCh.decryptUtf8(frame);
     assert.throws(() => hostCh.decryptUtf8(frame), /replay|sequence/);
   });
+
+  it('does not lock recvSalt before AEAD succeeds', () => {
+    const host = generateKeyPair();
+    const { ephemeralPublicKeyB64, channel: clientCh } = createClientChannel(host.publicKey);
+    const hostCh = createHostChannelFromHello(host, ephemeralPublicKeyB64);
+    const frame = clientCh.encrypt('hello');
+    const raw = Buffer.from(frame, 'base64');
+    raw[raw.length - 1] ^= 0xff;
+    assert.throws(() => hostCh.decryptUtf8(raw.toString('base64')), /decrypt failed/);
+    assert.equal(hostCh.decryptUtf8(frame), 'hello');
+  });
 });
 
 describe('e2ee handshake signature (H14)', () => {

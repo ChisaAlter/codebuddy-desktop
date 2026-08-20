@@ -225,4 +225,45 @@ describe('store permission request dedupe and respond', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].permissionRequests).toHaveLength(1);
     expect(useStore.getState().threadsById['thread-1'].status).toBe('waiting');
   });
+
+  it('allows an interruption on a background thread even when activeThread is different', async () => {
+    useStore.setState({
+      activeThreadId: 'thread-1',
+      sessionId: 'session-1',
+      threadsById: {
+        ...useStore.getState().threadsById,
+        'thread-2': {
+          id: 'thread-2',
+          projectId: 'project-1',
+          sessionId: 'session-2',
+          metadata: {},
+          status: 'waiting',
+          timeline: [],
+        },
+      },
+      threadRuntimeById: {
+        ...useStore.getState().threadRuntimeById,
+        'thread-2': runtime({
+          sessionId: 'session-2',
+          permissionRequests: [{ interruptionId: 'ir-bg', toolCallId: 'tool-bg' }],
+          timeline: [
+            {
+              type: 'interruption',
+              status: 'pending',
+              interruptionId: 'ir-bg',
+              toolCallId: 'tool-bg',
+            },
+          ],
+        }),
+      },
+    });
+
+    await expect(
+      useStore.getState().respondToInterruption('ir-bg', 'allow', 'tool-bg', 'thread-2'),
+    ).resolves.toBe(true);
+
+    expect(respondToPermissionRequest).toHaveBeenCalledWith('ir-bg', 'tool-bg', 'allow');
+    expect(useStore.getState().threadRuntimeById['thread-2'].permissionRequests).toHaveLength(0);
+    expect(useStore.getState().activeThreadId).toBe('thread-1');
+  });
 });

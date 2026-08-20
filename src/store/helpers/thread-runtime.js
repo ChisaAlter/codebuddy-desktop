@@ -45,7 +45,8 @@ export function emptyThreadRuntime() {
     compactState: null,
     compactCancelled: false,
     historyReplayActive: false,
-    // 重连成功后会话尚未 rebind（session_restored 前置位；不持久化）。
+    // 压缩完成后若 turn 仍忙，session/load 用量刷新推迟到终态。
+    usageRefreshPending: false,
     sessionRestoreNeeded: false,
     models: [],
     modes: [],
@@ -177,6 +178,7 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'compactState',
   'compactCancelled',
   'historyReplayActive',
+  'usageRefreshPending',
   'models',
   'modes',
   'currentModel',

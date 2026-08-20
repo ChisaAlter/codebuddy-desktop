@@ -365,7 +365,7 @@ describe('store prompt session selection', () => {
         cwd: 'C:/Project',
         mcpServers: [],
       },
-      { promptRunId: expect.stringMatching(/^run-/), historyReplay: true },
+      { promptRunId: expect.stringMatching(/^run-/), historyReplay: true, mode: 'history-replay' },
     );
     expect(
       useStore

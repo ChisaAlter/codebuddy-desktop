@@ -265,6 +265,39 @@ describe('store sidebar session mutations', () => {
     expect(state.error).toContain('runtime failed');
   });
 
+  it('removes the blank preferNewThread session when activation fails after persist', async () => {
+    useStore.setState({
+      projectsById: {
+        p1: project,
+        p2: { ...project, id: 'p2', name: 'Second', workspacePath: 'C:/Second' },
+      },
+      projectOrder: ['p1', 'p2'],
+      threadsById: {
+        t1: thread('t1'),
+        existing: { ...thread('existing'), projectId: 'p2' },
+      },
+      threadOrderByProject: { p1: ['t1'], p2: ['existing'] },
+      persistActiveProjectWorkspaceState: vi.fn().mockResolvedValue(true),
+      persistActiveProjectTerminalState: vi.fn().mockResolvedValue(true),
+      persistProductState: vi.fn().mockResolvedValue(true),
+      ensureProjectRuntime: vi.fn().mockResolvedValue(null),
+      loadProjectTerminalState: vi.fn(),
+    });
+
+    await expect(
+      useStore.getState().activateProject('p2', {
+        deferInitializationUntilAuth: true,
+        preferNewThread: true,
+      }),
+    ).resolves.toBe(false);
+
+    const state = useStore.getState();
+    expect(state.activeProjectId).toBe('p1');
+    expect(state.activeThreadId).toBe('t1');
+    expect(Object.keys(state.threadsById).sort()).toEqual(['existing', 't1']);
+    expect(state.threadOrderByProject.p2).toEqual(['existing']);
+  });
+
   it('removes the active project and selects a visible thread in the replacement project', async () => {
     useStore.setState({
       projectsById: {

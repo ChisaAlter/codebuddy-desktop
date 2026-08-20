@@ -58,9 +58,11 @@ export default function MobileRemoteSettingsCard({ t }) {
 
   const loadOffer = useCallback(async () => {
     if (!available) return;
+    const fetchOffer = api.mobileRemoteGetPairingOfferWithToken || api.mobileRemoteGetPairingOffer;
+    if (!fetchOffer) return;
     setBusy(true);
     try {
-      const result = await api.mobileRemoteGetPairingOffer();
+      const result = await fetchOffer();
       const url = result?.offerUrl || result?.qrPayload || '';
       setOfferUrl(url);
       if (url) {
@@ -80,31 +82,7 @@ export default function MobileRemoteSettingsCard({ t }) {
     }
   }, [api, available, refresh]);
 
-  // C1: load an offer that embeds a fresh one-time pairing token, required to pair
-  // a NEW device when devices already exist. The first device pairs without a token.
-  const loadOfferWithToken = useCallback(async () => {
-    if (!available || !api.mobileRemoteGetPairingOfferWithToken) return;
-    setBusy(true);
-    try {
-      const result = await api.mobileRemoteGetPairingOfferWithToken();
-      const url = result?.offerUrl || result?.qrPayload || '';
-      setOfferUrl(url);
-      if (url) {
-        const { default: QRCode } = await import('qrcode');
-        setQrDataUrl(
-          await QRCode.toDataURL(url, { width: 220, margin: 1, errorCorrectionLevel: 'M' }),
-        );
-      } else {
-        setQrDataUrl('');
-      }
-      setError('');
-      await refresh();
-    } catch (e) {
-      setError(e?.message || String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [api, available, refresh]);
+  const loadOfferWithToken = loadOffer;
 
   const setEnabled = async (enabled) => {
     if (!available || !config) return;
@@ -305,7 +283,7 @@ export default function MobileRemoteSettingsCard({ t }) {
                   className="btn-ghost px-2 py-1 text-[11px]"
                   disabled={busy}
                   onClick={loadOfferWithToken}
-                  title={devices.length > 0 ? '生成带配对令牌的二维码（用于添加新设备）' : '生成配对二维码（首台设备无需令牌）'}
+                  title="生成带配对令牌的二维码（用于添加新设备）"
                 >
                   {busy ? '…' : t('mobileRemote.pairNew')}
                 </button>

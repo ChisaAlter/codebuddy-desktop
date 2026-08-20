@@ -25,6 +25,7 @@ import { deleteSession as apiDeleteSession, renameSession as apiRenameSession } 
 import { saveGuiSettings } from '../../lib/gui-settings';
 import { classifyPromptRefusal, normalizeLastAccountUser } from '../../lib/account-auth';
 import { isCliPermissionBypassMode } from '../../lib/session-mode-labels';
+import { isFileEditTool } from '../../lib/file-edit-tools';
 import {
   hasCompletePromptResponse,
   hasPromptRunActivity,
@@ -56,6 +57,9 @@ const BACKGROUND_DRAIN_EXTENSION_MS = 15_000;
 const WORKFLOW_PROGRESS_POLL_MS = 500;
 const WORKFLOW_PROGRESS_IDLE_GRACE_MS = 5_000;
 const WORKFLOW_PROGRESS_MAX_MS = 12 * 60 * 60 * 1_000;
+// 压缩完成后 CLI 未必推送新的 usage_update；延迟到 turn 终态（activePromptRunId
+// 清理）后轻量 session/load 一次刷新用量。覆盖终态收尾 + 迟到重放窗口。
+const COMPACT_USAGE_REFRESH_DELAY_MS = 2_000;
 const workflowProgressMonitors = new Map();
 
 /**
@@ -446,19 +450,30 @@ export function createSessionsChatSlice(set, get, ctx) {
     const progressType = typeof progressMeta === 'string' ? progressMeta : progressMeta?.type;
     const prevCompactState = runtime.compactState;
     let compactTimelinePayload = null;
-    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/compact-cancelled')) {
+    // Compact transitions from session/load history must not drive UI or schedule
+    // another usage refresh. Only a live turn or an explicit history replay is
+    // authoritative (usage-refresh / rebind never reach this path).
+    const liveTurn = Boolean(runtime.activePromptRunId || runtime.historyReplayActive);
+    if (liveTurn && Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/compact-cancelled')) {
       runtimePatch.compactCancelled = true;
       runtimePatch.compactState = 'cancelled';
       compactTimelinePayload = { phase: 'cancelled' };
-    } else if (progressType === 'compacting') {
+    } else if (liveTurn && progressType === 'compacting') {
       if (prevCompactState !== 'compacting') {
         runtimePatch.compactState = 'compacting';
         compactTimelinePayload = { phase: 'compacting' };
       }
-    } else if (prevCompactState === 'compacting' && progressType && progressType !== 'compacting') {
+    } else if (liveTurn && prevCompactState === 'compacting' && progressType && progressType !== 'compacting') {
       // progress 转为其他类型且此前在 compacting → 视为完成。
       runtimePatch.compactState = 'compacted';
+      runtimePatch.usageRefreshPending = true;
       compactTimelinePayload = { phase: 'compacted' };
+      // 压缩完成后 CLI 未必主动推送新的 usage_update，上下文用量环可能停留在
+      // 旧值。延迟轻量 session/load（mode=usage-refresh）；turn 仍忙则终态再刷。
+      const compactedThreadId = threadId;
+      setTimeout(() => {
+        void get().refreshUsageAfterCompact(compactedThreadId).catch(() => {});
+      }, COMPACT_USAGE_REFRESH_DELAY_MS);
     }
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
     if (workflowActivity || subagent || memberName) {
@@ -646,19 +661,15 @@ export function createSessionsChatSlice(set, get, ctx) {
       // 本会话自动通过文件编辑权限：当 GUI 设置开启且该中断属于文件编辑类工具时，
       // 直接以 allow 响应，不弹出权限对话框（与 WebUI「本会话自动通过文件编辑权限」语义一致）。
       const autoAllowFileEdits = get().guiSettings?.sessionAutoAllowFileEdits === true;
-      if (autoAllowFileEdits && toolName !== 'AskUserQuestion') {
-        const lowerTool = String(toolName || '').toLowerCase();
-        const isFileEdit = /edit|write|create|str_replace|file|apply.*patch|update.*file/.test(lowerTool);
-        if (isFileEdit) {
-          const autoInterruptionId = update.interruptionId || requestIds[0] || null;
-          const autoToolCallId = update.toolCallId || null;
-          // Append a brief timeline entry so the auto-allow is visible, then resolve.
-          get().appendThreadTimelineEvent(threadId, su, { ...update, _autoAllowed: true });
-          queueMicrotask(() => {
-            get().respondToInterruption(autoInterruptionId, 'allow', autoToolCallId).catch(() => null);
-          });
-          return;
-        }
+      if (autoAllowFileEdits && toolName !== 'AskUserQuestion' && isFileEditTool(toolName)) {
+        const autoInterruptionId = update.interruptionId || requestIds[0] || null;
+        const autoToolCallId = update.toolCallId || null;
+        // Append a brief timeline entry so the auto-allow is visible, then resolve.
+        get().appendThreadTimelineEvent(threadId, su, { ...update, _autoAllowed: true });
+        queueMicrotask(() => {
+          get().respondToInterruption(autoInterruptionId, 'allow', autoToolCallId, threadId).catch(() => null);
+        });
+        return;
       }
       get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
@@ -694,6 +705,16 @@ export function createSessionsChatSlice(set, get, ctx) {
           : ['error', 'failed'].includes(rawStatus)
             ? 'error'
             : rawStatus || 'running';
+      const statusGateRuntime = get().threadRuntimeById[threadId] || runtime;
+      const statusGateLocal = get().threadsById[threadId]?.status || 'idle';
+      const statusHasLiveRun = Boolean(
+        statusGateRuntime.activePromptRunId
+          || statusGateRuntime.isAwaitingResponse
+          || statusGateRuntime.promptDispatchInFlight,
+      );
+      if (!statusHasLiveRun && ['idle', 'cancelled', 'error'].includes(statusGateLocal)) {
+        return;
+      }
       let finalStatus = normalizedStatus;
       if (['idle', 'error', 'cancelled'].includes(normalizedStatus)) {
         const latestRuntime = get().threadRuntimeById[threadId] || runtime;
@@ -765,6 +786,9 @@ export function createSessionsChatSlice(set, get, ctx) {
         status: finalStatus,
         unread: get().activeThreadId !== threadId && ['idle', 'error', 'cancelled'].includes(finalStatus),
       });
+      if (['idle', 'error', 'cancelled'].includes(finalStatus)) {
+        get().flushPendingUsageRefresh(threadId);
+      }
     }
     get().appendThreadTimelineEvent(threadId, su, update);
   },
@@ -874,10 +898,27 @@ export function createSessionsChatSlice(set, get, ctx) {
       const update = (detail || {}).update || {};
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const promptRunId = detail?._client?.promptRunId || null;
+      const clientMode = detail?._client?.mode || 'live';
       const serverRequestId = String(detail?._client?.requestId || '').trim();
       const serverInitiated = detail?._client?.serverInitiated === true;
       const sessionUpdate = update.sessionUpdate || update.session_update || update.type;
+      if (clientMode === 'usage-refresh') {
+        if (sessionUpdate === 'usage_update') get().handleThreadSessionUpdate(threadId, update);
+        return;
+      }
+      if (clientMode === 'rebind') {
+        return;
+      }
+      const historyMode = update?._meta?.['codebuddy.ai']?.mode === 'history';
       const promptContentEvent = PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
+      if (
+        historyMode &&
+        promptContentEvent &&
+        !runtime.historyReplayActive &&
+        clientMode !== 'history-replay'
+      ) {
+        return;
+      }
       const promptTerminalEvent = sessionUpdate === 'session_end';
       const now = Date.now();
       let backgroundDrainRunId = runtime.backgroundDrainRunId || null;
@@ -2144,21 +2185,23 @@ export function createSessionsChatSlice(set, get, ctx) {
     return true;
   },
 
-  async respondToInterruption(interruptionId, decision = 'allow', toolCallId = null) {
+  async respondToInterruption(interruptionId, decision = 'allow', toolCallId = null, boundThreadId = null) {
     const state = get();
-    const projectId = state.activeProjectId;
-    const threadId = state.activeThreadId;
-    const sessionId = state.sessionId;
+    const threadId = boundThreadId || state.activeThreadId;
+    const thread = state.threadsById[threadId];
+    const runtimeHint = state.threadRuntimeById[threadId] || emptyThreadRuntime();
+    const projectId = thread?.projectId || (threadId === state.activeThreadId ? state.activeProjectId : null);
+    const sessionId =
+      thread?.sessionId ||
+      runtimeHint.sessionId ||
+      (threadId === state.activeThreadId ? state.sessionId : null);
     if (!projectId || !threadId || !sessionId || !interruptionId) return false;
     set({ error: null });
     return runUniqueSessionAction(threadId + ':interruption:' + interruptionId, async () => {
       const thread = get().threadsById[threadId];
-      if (
-        !thread ||
-        thread.projectId !== projectId ||
-        thread.sessionId !== sessionId
-      )
-        return false;
+      const liveSession =
+        thread?.sessionId || (get().threadRuntimeById[threadId] || emptyThreadRuntime()).sessionId;
+      if (!thread || thread.projectId !== projectId || liveSession !== sessionId) return false;
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       // 放宽前置：status_change 竞态可能把线程改成 idle 但 permissionRequests 仍有匹配项。
       // 只要存在匹配的待处理项且有 client，就允许响应，避免权限卡片死锁。
@@ -2405,9 +2448,11 @@ export function createSessionsChatSlice(set, get, ctx) {
           }),
           permissionRequests: [],
           questions: [],
+          promptQueue: [],
           timeline,
         }),
       );
+      void get().persistThreadPromptQueue(threadId, []).catch(() => {});
       set((state) => ({
         threadsById: {
           ...state.threadsById,
@@ -2430,6 +2475,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       // critical path. `silent` prevents a slow/failed save from creating a red
       // error banner immediately after a successful cancellation.
       void get().persistProductState({ silent: true }).catch(() => {});
+      get().flushPendingUsageRefresh(threadId);
 
       if (backendMayBeRunning && client.notify && client.sessionCancelSupported !== false) {
         let cancelPromise;
@@ -2750,7 +2796,7 @@ export function createSessionsChatSlice(set, get, ctx) {
             cwd: project?.workspacePath || '.',
             mcpServers: [],
           },
-          { promptRunId: activePromptRunId, historyReplay: true },
+          { promptRunId: activePromptRunId, historyReplay: true, mode: 'history-replay' },
         );
       } finally {
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -3056,6 +3102,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       } else {
         get().notifyThreadResult(threadId, 'success');
       }
+      get().flushPendingUsageRefresh(threadId);
       // turn 终态：若重连后会话未绑定，补一次 session/load rebind（不阻塞，失败保留标记）。
       void get().rebindSessionAfterTurn(threadId).catch(() => {});
       return true;
@@ -3133,6 +3180,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       // composer send button and have no reliable close path for /compact etc.
       if (get().activeThreadId === threadId) set({ error: null });
       get().notifyThreadResult(threadId, 'error');
+      get().flushPendingUsageRefresh(threadId);
       // turn 终态（失败）：同样补一次会话 rebind（不阻塞，失败保留标记）。
       void get().rebindSessionAfterTurn(threadId).catch(() => {});
       return false;
@@ -3155,7 +3203,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       await client.request(
         'session/load',
         { sessionId, cwd: project?.workspacePath || '.', mcpServers: [] },
-        { historyReplay: true },
+        { mode: 'rebind' },
       );
       if (typeof client.markSessionBound === 'function') {
         client.markSessionBound(sessionId, project?.workspacePath || '.');
@@ -3186,6 +3234,47 @@ export function createSessionsChatSlice(set, get, ctx) {
       // 传输类失败：保留标记，下次操作再试；不阻塞当前 turn。
       return false;
     }
+  },
+
+  // 压缩完成后刷新上下文用量：轻量 session/load（不带 promptRunId）让 CLI
+  // 重新推送 usage_update。重放的历史 chunk 会被终态门控丢弃，仅用量事件
+  // 生效；失败静默，后续自然推送的 usage_update 仍会刷新。
+  async refreshUsageAfterCompact(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const thread = get().threadsById[threadId];
+    const sessionId = thread?.sessionId || runtime.sessionId;
+    if (!sessionId) return false;
+    if (
+      runtime.activePromptRunId ||
+      runtime.isAwaitingResponse ||
+      runtime.promptDispatchInFlight
+    ) {
+      get().patchThreadRuntime(threadId, { usageRefreshPending: true });
+      return false;
+    }
+    if (runtime.usageRefreshPending) {
+      get().patchThreadRuntime(threadId, { usageRefreshPending: false });
+    }
+    const client = get().getThreadClient(threadId);
+    const project = thread ? get().projectsById?.[thread.projectId] : null;
+    if (!client || typeof client.request !== 'function') return false;
+    try {
+      await client.request(
+        'session/load',
+        { sessionId, cwd: project?.workspacePath || '.', mcpServers: [] },
+        { mode: 'usage-refresh' },
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
+  flushPendingUsageRefresh(threadId) {
+    const runtime = get().threadRuntimeById[threadId];
+    if (!runtime?.usageRefreshPending) return false;
+    void get().refreshUsageAfterCompact(threadId).catch(() => {});
+    return true;
   },
 
   async drainThreadPromptQueue(threadId) {

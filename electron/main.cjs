@@ -17,7 +17,8 @@ const { createQuitRequestController } = require('./quit-request-controller.cjs')
 const { createFinalExitController } = require('./final-exit-controller.cjs');
 const { deleteModelConfig, ensureModelConfigFile, listModelConfig, saveModelConfig } = require('./model-config.cjs');
 const { normalizeGitRequest, validateGitArgs } = require('./git-validate.cjs');
-const { normalizeDirList, isAllowedGitCwd, isTrustedGitSender } = require('./git-security.cjs');
+const { normalizeDirList, isAllowedGitCwd, isTrustedGitSender, isTrustedMainSender } = require('./git-security.cjs');
+const { createWorkspaceTrust } = require('./workspace-trust.cjs');
 const { buildAttachmentChooseDialogOptions } = require('./attachment-choose.cjs');
 const { createAttachmentScope } = require('./attachment-scope.cjs');
 const {
@@ -25,6 +26,14 @@ const {
   normalizeExternalHttpUrl,
   rendererOriginForEntry,
 } = require('./navigation-policy.cjs');
+const {
+  DEFAULT_HEIGHT,
+  DEFAULT_WIDTH,
+  MIN_HEIGHT,
+  MIN_WIDTH,
+  clampWindowState,
+  windowStateIsVisible,
+} = require('./window-state.cjs');
 const {
   RECOMMENDED_VERSION,
   buildCompatStatus,
@@ -148,6 +157,12 @@ const productStateSaveController = createProductStateSaveController({
   delayMs: 800,
   logger: logStartup,
 });
+const workspaceTrust = createWorkspaceTrust({ loadProductState: () => productStateStore.load() });
+
+function sanitizeProductStateSnapshot(state) {
+  const previous = productStateStore.load();
+  return workspaceTrust.sanitizeIncomingState(state, previous);
+}
 
 function readWindowState() {
   try {
@@ -161,14 +176,26 @@ function readWindowState() {
   }
 }
 
-function windowStateIsVisible(state) {
-  if (typeof state?.x !== 'number' || typeof state?.y !== 'number') return true;
-  const minimumVisibleSize = 80;
-  return screen.getAllDisplays().some(({ workArea }) => {
-    const visibleWidth = Math.min(state.x + state.width, workArea.x + workArea.width) - Math.max(state.x, workArea.x);
-    const visibleHeight = Math.min(state.y + state.height, workArea.y + workArea.height) - Math.max(state.y, workArea.y);
-    return visibleWidth >= minimumVisibleSize && visibleHeight >= minimumVisibleSize;
-  });
+function restoredWindowBounds(state) {
+  if (!state) return null;
+  const displays = screen.getAllDisplays();
+  if (!windowStateIsVisible(state, displays)) return null;
+  return clampWindowState(state, displays, { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
+}
+
+// 无已存窗口状态时：显式主屏居中，不依赖 Windows 默认放置。多显示器下
+// CW_USEDEFAULT 可能把窗口放到屏幕外（尤其上次窗口在副屏/负坐标时），
+// 侧栏会被显示器裁掉。有 savedBounds 时走 clamp 恢复。
+function primaryCenteredBounds() {
+  const workArea = screen.getPrimaryDisplay().workArea || { x: 0, y: 0, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
+  const width = Math.min(DEFAULT_WIDTH, Math.max(MIN_WIDTH, workArea.width));
+  const height = Math.min(DEFAULT_HEIGHT, Math.max(MIN_HEIGHT, workArea.height));
+  return {
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + (workArea.height - height) / 2),
+    width,
+    height,
+  };
 }
 
 function writeWindowState(state) {
@@ -789,6 +816,9 @@ function validateBackgroundCwd(value) {
   } catch (_) {
     throw new Error(`项目目录不存在或不可访问: ${cwd}`);
   }
+  if (!workspaceTrust.isTrustedCwd(cwd)) {
+    throw new Error('后台会话目录不在已信任的工作区内');
+  }
   return cwd;
 }
 
@@ -806,36 +836,12 @@ async function startBackgroundSession(payload = {}) {
 
   let result;
   const bgEnv = resolveCodeBuddySpawnSpec(['--version'], process.env).env || process.env;
-  if (process.platform === 'win32') {
-    const windowsPowerShell = path.join(
-      process.env.SystemRoot || 'C:\\Windows',
-      'System32',
-      'WindowsPowerShell',
-      'v1.0',
-      'powershell.exe',
-    );
-    const command = fs.existsSync(windowsPowerShell) ? windowsPowerShell : 'powershell.exe';
-    result = await runCapturedProcess(
-      command,
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        '$name=$env:CODEBUDDY_GUI_BG_NAME; $prompt=$env:CODEBUDDY_GUI_BG_PROMPT; Remove-Item Env:CODEBUDDY_GUI_BG_NAME -ErrorAction SilentlyContinue; Remove-Item Env:CODEBUDDY_GUI_BG_PROMPT -ErrorAction SilentlyContinue; & codebuddy --bg --name $name -- $prompt',
-      ],
-      {
-        cwd,
-        env: { ...bgEnv, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
-        timeoutMs: 60000,
-      },
-    );
-  } else {
-    const spec = resolveCodeBuddySpawnSpec(['--bg', '--name', name, '--', prompt], bgEnv);
-    result = await runCapturedProcess(spec.command, spec.args, { cwd, env: spec.env, timeoutMs: 60000 });
-  }
+  const spec = resolveCodeBuddySpawnSpec(['--bg', '--name', name, '--', prompt], {
+    ...bgEnv,
+    CODEBUDDY_GUI_BG_NAME: name,
+    CODEBUDDY_GUI_BG_PROMPT: prompt,
+  });
+  result = await runCapturedProcess(spec.command, spec.args, { cwd, env: spec.env, timeoutMs: 60000 });
   let snapshot = await listBackgroundSessions();
   for (let attempt = 0; attempt < 4 && !snapshot.sessions.some((item) => item.name === name); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -889,18 +895,11 @@ async function killBackgroundSession(pidValue) {
 }
 
 async function openBackgroundSessionEndpoint(value) {
-  let target;
-  try {
-    target = new URL(String(value || ''));
-  } catch (_) {
-    throw new Error('后台会话 Endpoint 无效');
+  if (!isAllowedLocalRuntimeUrl(value, { allowDevPort: false })) {
+    throw new Error('只允许打开已登记的本机 CodeBuddy Endpoint');
   }
-  const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
-  if (!['http:', 'https:'].includes(target.protocol) || !localHosts.has(target.hostname)) {
-    throw new Error('只允许打开本机 CodeBuddy Endpoint');
-  }
-  await shell.openExternal(target.toString());
-  return { url: target.toString() };
+  await shell.openExternal(String(value));
+  return { url: String(value) };
 }
 
 function spawnDetachedInteractiveProcess(command, args, { cwd, windowsHide }) {
@@ -1462,6 +1461,26 @@ function isAllowedLocalRuntimeUrl(rawUrl, { allowDevPort = false } = {}) {
   return allowed.has(port);
 }
 
+function assertTrustedRuntimeCwd(projectId, cwd) {
+  if (!workspaceTrust.isTrustedCwd(cwd)) {
+    throw new Error('untrusted workspace cwd');
+  }
+  const state = productStateStore.load();
+  const project = projectId ? state.projectsById?.[projectId] : null;
+  if (project?.workspacePath) {
+    const expected = path.resolve(project.workspacePath);
+    let actual;
+    try {
+      actual = path.resolve(cwd);
+    } catch (_) {
+      throw new Error('invalid cwd');
+    }
+    if (actual !== expected) {
+      throw new Error('cwd does not match project workspace');
+    }
+  }
+}
+
 const runtimeManager = createCodeBuddyRuntimeManager({
   net,
   logger: (message) => logStartup(redactSecrets(message)),
@@ -1474,6 +1493,7 @@ const runtimeManager = createCodeBuddyRuntimeManager({
 
 ipcMain.handle('runtime:ensure', async (_event, request = {}) => {
   await ensureCodeBuddyCliCompatibleForRuntime();
+  assertTrustedRuntimeCwd(request.projectId, request.cwd);
   return runtimeManager.ensure(request.projectId, request.cwd, {
     accountLoginSite: request.accountLoginSite,
   });
@@ -1489,6 +1509,7 @@ ipcMain.handle('workflow:readProgress', (_event, request = {}) =>
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
 ipcMain.handle('runtime:restart', async (_event, request = {}) => {
   await ensureCodeBuddyCliCompatibleForRuntime();
+  assertTrustedRuntimeCwd(request.projectId, request.cwd);
   return runtimeManager.restart(request.projectId, request.cwd, {
     accountLoginSite: request.accountLoginSite,
   });
@@ -1665,10 +1686,23 @@ ipcMain.handle('app:getInfo', () => ({
   userDataPath: app.getPath('userData'),
 }));
 
+function requireTrustedMainSender(event) {
+  if (!isTrustedMainSender(event.sender, mainWindow)) {
+    throw new Error('forbidden: untrusted sender');
+  }
+}
+
 // 手机远程（mobile-remote）：与微信/企微「远程控制」channel 分离
-ipcMain.handle('mobileRemote:getStatus', async () => getMobileRemoteHost().getStatus());
-ipcMain.handle('mobileRemote:getConfig', () => readMobileRemoteConfig());
-ipcMain.handle('mobileRemote:setConfig', async (_event, config = {}) => {
+ipcMain.handle('mobileRemote:getStatus', async (event) => {
+  requireTrustedMainSender(event);
+  return getMobileRemoteHost().getStatus();
+});
+ipcMain.handle('mobileRemote:getConfig', (event) => {
+  requireTrustedMainSender(event);
+  return readMobileRemoteConfig();
+});
+ipcMain.handle('mobileRemote:setConfig', async (event, config = {}) => {
+  requireTrustedMainSender(event);
   const next = writeMobileRemoteConfig(config);
   const host = getMobileRemoteHost();
   let startError = null;
@@ -1691,31 +1725,41 @@ ipcMain.handle('mobileRemote:setConfig', async (_event, config = {}) => {
   }
   return { config: next, status: host.getStatus(), startError };
 });
-ipcMain.handle('mobileRemote:getPairingOffer', async () => getMobileRemoteHost().getPairingOffer());
-// C1: generate a one-time pairing token and embed it in the offer so a new
-// device can pair against a non-empty trust store (first device pairs free).
-ipcMain.handle('mobileRemote:getPairingOfferWithToken', async () => {
-  const host = getMobileRemoteHost();
-  await host.ensureMaterial();
-  const token = host.generatePairingToken();
-  return host.getPairingOffer({ pairingToken: token });
+ipcMain.handle('mobileRemote:getPairingOffer', async (event) => {
+  requireTrustedMainSender(event);
+  return getMobileRemoteHost().getPairingOffer();
 });
-ipcMain.handle('mobileRemote:start', async () => {
+ipcMain.handle('mobileRemote:getPairingOfferWithToken', async (event) => {
+  requireTrustedMainSender(event);
+  return getMobileRemoteHost().getPairingOffer();
+});
+ipcMain.handle('mobileRemote:start', async (event) => {
+  requireTrustedMainSender(event);
   const config = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: true });
   const status = await getMobileRemoteHost().start();
   return { config, status };
 });
-ipcMain.handle('mobileRemote:stop', async () => {
+ipcMain.handle('mobileRemote:stop', async (event) => {
+  requireTrustedMainSender(event);
   const config = writeMobileRemoteConfig({ ...readMobileRemoteConfig(), enabled: false });
   const status = await getMobileRemoteHost().stop();
   return { config, status };
 });
-ipcMain.handle('mobileRemote:listDevices', () => getMobileRemoteHost().listDevices());
-ipcMain.handle('mobileRemote:revokeDevice', async (_event, deviceId) =>
-  getMobileRemoteHost().revokeDevice(deviceId),
-);
+ipcMain.handle('mobileRemote:listDevices', (event) => {
+  requireTrustedMainSender(event);
+  return getMobileRemoteHost().listDevices();
+});
+ipcMain.handle('mobileRemote:revokeDevice', async (event, deviceId) => {
+  requireTrustedMainSender(event);
+  return getMobileRemoteHost().revokeDevice(deviceId);
+});
 
-ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
+ipcMain.handle('mcp:listConfigs', (_event, cwd) => {
+  if (!workspaceTrust.isTrustedCwd(cwd)) {
+    throw new Error('mcp cwd is not a trusted workspace');
+  }
+  return listConfiguredMcpServers(cwd);
+});
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
 ipcMain.handle('sandbox:kill', (_event, sandboxId) =>
   runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]),
@@ -1913,13 +1957,14 @@ async function createWindow() {
 
   // 恢复上次窗口状态（P0-3）：bounds + isMaximized，最小化不存
   const restoredWindowState = readWindowState();
-  const savedBounds = restoredWindowState && windowStateIsVisible(restoredWindowState) ? restoredWindowState : null;
+  const savedBounds = restoredWindowBounds(restoredWindowState);
+  const defaultBounds = primaryCenteredBounds();
   closeToTrayHintShown = Boolean(restoredWindowState?.closeToTrayHintShown);
   const winOpts = {
-    width: savedBounds?.width || 1440,
-    height: savedBounds?.height || 920,
-    minWidth: 900,
-    minHeight: 640,
+    width: savedBounds?.width || defaultBounds.width,
+    height: savedBounds?.height || defaultBounds.height,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#000000',
@@ -1942,6 +1987,9 @@ async function createWindow() {
   if (savedBounds?.x != null && savedBounds?.y != null) {
     winOpts.x = savedBounds.x;
     winOpts.y = savedBounds.y;
+  } else {
+    winOpts.x = defaultBounds.x;
+    winOpts.y = defaultBounds.y;
   }
   mainWindow = new BrowserWindow(winOpts);
   const loadTrustedRendererUrl = (url) => {
@@ -2351,16 +2399,26 @@ function createTimeoutSignal(timeoutMs) {
   };
 }
 
-// 已注册的允许 Git 工作目录（M1 安全面：渲染进程经 git:registerWorkspaces 上报，
-// 仅注册项目 workspacePath + workspaceExtraDirs 的解析后集合；空集合 = 拒绝任意目录）
+// 已注册的允许 Git 工作目录（M1 安全面：主进程信任集是唯一真相源。
+// git:registerWorkspaces 的 dirs 只做交集提示，不能扩大白名单。）
 let gitAllowedWorkspaces = new Set();
+
+function gitTrustAllowlist() {
+  return workspaceTrust.listTrustedDirs();
+}
 
 ipcMain.handle('git:registerWorkspaces', (event, payload = {}) => {
   if (!isTrustedGitSender(event.sender, mainWindow)) {
     return { ok: false, error: 'forbidden: untrusted sender' };
   }
+  const trusted = gitTrustAllowlist();
   const dirs = Array.isArray(payload?.dirs) ? payload.dirs : [];
-  gitAllowedWorkspaces = normalizeDirList(dirs);
+  const requested = normalizeDirList(dirs);
+  if (requested.size === 0) {
+    gitAllowedWorkspaces = trusted;
+  } else {
+    gitAllowedWorkspaces = new Set([...requested].filter((dir) => trusted.has(dir)));
+  }
   return { ok: true, count: gitAllowedWorkspaces.size };
 });
 
@@ -2372,7 +2430,7 @@ ipcMain.handle('git:run', async (event, payload = {}) => {
   const validationError = validateGitArgs(args);
   if (validationError) return { ok: false, error: validationError };
   if (!cwd || !path.isAbsolute(cwd)) return { ok: false, error: 'git cwd must be an absolute project path' };
-  if (!isAllowedGitCwd(cwd, gitAllowedWorkspaces)) {
+  if (!isAllowedGitCwd(cwd, gitTrustAllowlist())) {
     return { ok: false, error: 'git cwd is not an allowed project directory' };
   }
   const resolvedCwd = path.resolve(cwd);
@@ -2867,7 +2925,9 @@ ipcMain.handle('workspace:choose', async () => {
     title: '选择工作区目录',
   });
   if (result.canceled || !result.filePaths.length) return null;
-  return result.filePaths[0];
+  const chosen = result.filePaths[0];
+  workspaceTrust.registerChosen(chosen);
+  return chosen;
 });
 const ATTACHMENT_IMAGE_TYPES = {
   '.png': 'image/png',
@@ -3093,10 +3153,12 @@ ipcMain.handle('productState:load', () => productStateStore.load());
 // blocked by a synchronous writeFileSync while other IPC (keystrokes, route
 // switches) is queued. Only the freshest snapshot of a window is kept; the
 // returned promise resolves when the batch containing this snapshot has landed.
-ipcMain.handle('productState:save', (_event, state) => productStateSaveController.request(state));
+ipcMain.handle('productState:save', (_event, state) =>
+  productStateSaveController.request(sanitizeProductStateSnapshot(state)),
+);
 
 ipcMain.on('productState:saveSync', (event, state) => {
-  event.returnValue = productStateSaveController.saveSync(state);
+  event.returnValue = productStateSaveController.saveSync(sanitizeProductStateSnapshot(state));
 });
 ipcMain.on('window:openDevTools', () => {
   // L2: only allow DevTools in development; production builds ignore the IPC.

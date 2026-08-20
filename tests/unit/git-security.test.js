@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { normalizeDir, normalizeDirList, isAllowedGitCwd, isTrustedGitSender } = require('../../electron/git-security.cjs');
+const { normalizeDir, normalizeDirList, isAllowedGitCwd, isTrustedGitSender, isTrustedMainSender } = require('../../electron/git-security.cjs');
 
 // Windows 下 path.resolve('/a/b') = 'C:\\a\\b'，断言一律用 path.resolve 计算期望
 const P_A = path.resolve('/a/b');
@@ -78,6 +78,11 @@ describe('isTrustedGitSender - sender 信任校验', () => {
     expect(isTrustedGitSender(destroyedSender, mainWindow)).toBe(false);
     const destroyedWindow = { webContents: mainWc, isDestroyed: () => true };
     expect(isTrustedGitSender(mainWc, destroyedWindow)).toBe(false);
+  });
+
+  it('isTrustedMainSender is the shared alias of isTrustedGitSender', () => {
+    expect(isTrustedMainSender(mainWc, mainWindow)).toBe(true);
+    expect(isTrustedMainSender(otherWc, mainWindow)).toBe(false);
   });
 
   it('缺省/畸形入参拒绝（不抛异常）', () => {

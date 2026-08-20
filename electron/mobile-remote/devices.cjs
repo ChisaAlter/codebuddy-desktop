@@ -12,7 +12,7 @@ function devicesPath(userDataPath) {
   return path.join(userDataPath, 'mobile-remote-devices.json');
 }
 
-function loadDevices(userDataPath, options = {}) {
+function loadDeviceStore(userDataPath, options = {}) {
   const log = options.log || (() => {});
   try {
     const raw = JSON.parse(fs.readFileSync(devicesPath(userDataPath), 'utf8'));
@@ -32,21 +32,34 @@ function loadDevices(userDataPath, options = {}) {
       if (droppedCount > 0) {
         log(`devices: dropped ${droppedCount} legacy device(s) missing publicKeyB64 (re-pair required)`);
       }
-      return filtered.slice(0, DEFAULT_MAX);
+      const devices = filtered.slice(0, DEFAULT_MAX);
+      const adminDeviceId =
+        typeof raw.adminDeviceId === 'string' &&
+        raw.adminDeviceId.trim() &&
+        devices.some((d) => d.deviceId === raw.adminDeviceId)
+          ? raw.adminDeviceId
+          : null;
+      return { devices, adminDeviceId };
     }
   } catch {
     /* missing/corrupt -> empty */
   }
-  return [];
+  return { devices: [], adminDeviceId: null };
 }
 
-function saveDevices(userDataPath, devices) {
+function loadDevices(userDataPath, options = {}) {
+  return loadDeviceStore(userDataPath, options).devices;
+}
+
+function saveDevices(userDataPath, devices, extra = {}) {
   const file = devicesPath(userDataPath);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ devices }, null, 2), { encoding: 'utf8', mode: 0o600 });
+  const adminDeviceId =
+    typeof extra.adminDeviceId === 'string' && extra.adminDeviceId.trim() ? extra.adminDeviceId : null;
+  fs.writeFileSync(tmp, JSON.stringify({ devices, adminDeviceId }, null, 2), { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, file);
   try { fs.chmodSync(file, 0o600); } catch { /* windows */ }
 }
 
-module.exports = { loadDevices, saveDevices, devicesPath, DEFAULT_MAX };
+module.exports = { loadDevices, loadDeviceStore, saveDevices, devicesPath, DEFAULT_MAX };

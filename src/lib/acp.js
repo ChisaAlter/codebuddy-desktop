@@ -321,6 +321,15 @@ function promptEventRequestId(message) {
   return metadata?.['codebuddy.ai/requestId'] || metadata?.['codebuddy.ai']?.requestId || null;
 }
 
+const ACP_REQUEST_MODES = new Set(['live', 'usage-refresh', 'history-replay', 'rebind']);
+
+export function resolveAcpRequestMode(context) {
+  const explicit = context?.mode;
+  if (ACP_REQUEST_MODES.has(explicit)) return explicit;
+  if (context?.historyReplay) return 'history-replay';
+  return 'live';
+}
+
 function incomingEventFingerprint(message) {
   // M-st11: previously this stringified the entire message (including every
   // streaming token) on each event, costing CPU and storing up to 4000 long
@@ -546,15 +555,21 @@ export class AcpClient {
     const promptRequestEvent = promptContentEvent || promptTerminalEvent;
     const requestId = promptRequestEvent ? promptEventRequestId(message) : null;
     const mappedPromptRunId = requestId ? this.promptRunIdByRequestId.get(requestId) : null;
+    const requestMode = resolveAcpRequestMode(context);
+    const suppressLatePrompt = requestMode === 'usage-refresh' || requestMode === 'rebind';
     // Prefer explicit request mapping, then caller context, then last known run for this session
     // (covers late GET-SSE chunks without codebuddy.ai/requestId after POST settles).
+    // usage-refresh / rebind must not inherit the just-finished promptRunId — those
+    // session/load streams replay history and would otherwise pollute the live transcript.
     const eventContext = mappedPromptRunId
-      ? { promptRunId: mappedPromptRunId }
+      ? { promptRunId: mappedPromptRunId, mode: requestMode }
       : context?.promptRunId
-        ? context
+        ? { ...context, mode: requestMode }
         : requestId
-          ? null
-          : this.latePromptContext(sessionId);
+          ? (requestMode !== 'live' ? { mode: requestMode } : null)
+          : suppressLatePrompt
+            ? { mode: requestMode }
+            : { ...(this.latePromptContext(sessionId) || {}), mode: requestMode };
     if (source === 'notification' && promptContentEvent) {
       if (this.hasActivePrompt(sessionId)) {
         // Always queue while a prompt is live. POST cancels the same fingerprint when it
@@ -605,7 +620,9 @@ export class AcpClient {
         !eventContext?.promptRunId &&
         !this.hasActivePrompt(sessionId)
       );
-      const eventParams = source && (promptRequestEvent || eventContext?.promptRunId)
+      const attachClient =
+        source && (promptRequestEvent || eventContext?.promptRunId || requestMode !== 'live');
+      const eventParams = attachClient
         ? {
             ...params,
             _client: {
@@ -613,6 +630,7 @@ export class AcpClient {
               ...(requestId ? { requestId } : {}),
               ...(eventContext?.promptRunId ? { promptRunId: eventContext.promptRunId } : {}),
               ...(serverInitiated ? { serverInitiated: true } : {}),
+              ...(requestMode !== 'live' ? { mode: requestMode } : {}),
             },
           }
         : params;

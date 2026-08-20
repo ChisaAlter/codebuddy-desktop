@@ -3,6 +3,10 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import MobileRemoteSettingsCard, { deviceDisplayName } from '../../src/components/MobileRemoteSettingsCard';
 
+vi.mock('qrcode', () => ({
+  default: { toDataURL: vi.fn().mockResolvedValue('data:image/png;base64,xx') },
+}));
+
 describe('deviceDisplayName', () => {
   it('prefers the device label when present', () => {
     expect(deviceDisplayName({ label: '我的手机', deviceId: 'abcdef123456' })).toBe('我的手机');
@@ -91,5 +95,63 @@ describe('MobileRemoteSettingsCard TLS toggle', () => {
       await Promise.resolve();
     });
     expect(tlsToggle.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('MobileRemoteSettingsCard pairing QR', () => {
+  let container;
+  let root;
+  let originalElectronAPI;
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    originalElectronAPI = window.electronAPI;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    window.electronAPI = originalElectronAPI;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it('regenerates a tokenized offer even when no devices are paired', async () => {
+    const getOffer = vi.fn().mockResolvedValue({ offerUrl: 'cbmr://offer-with-token' });
+    const getOfferWithToken = vi.fn().mockResolvedValue({ offerUrl: 'cbmr://offer-with-token' });
+    window.electronAPI = {
+      mobileRemoteGetStatus: vi.fn().mockResolvedValue({}),
+      mobileRemoteGetConfig: vi.fn().mockResolvedValue({
+        enabled: true,
+        relayEndpoint: '127.0.0.1:8787',
+        relayUseTls: false,
+      }),
+      mobileRemoteListDevices: vi.fn().mockResolvedValue([]),
+      mobileRemoteGetPairingOffer: getOffer,
+      mobileRemoteGetPairingOfferWithToken: getOfferWithToken,
+    };
+    const t = (key) => key;
+
+    await act(async () => {
+      root.render(React.createElement(MobileRemoteSettingsCard, { t }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('首台设备无需令牌');
+
+    const regenerate = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'mobileRemote.regenerate',
+    );
+    expect(regenerate).toBeTruthy();
+
+    await act(async () => {
+      regenerate.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getOfferWithToken).toHaveBeenCalled();
   });
 });

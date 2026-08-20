@@ -47,9 +47,12 @@ function isTrustedGitSender(sender, mainWindow) {
   return sender === mainWindow.webContents;
 }
 
+const isTrustedMainSender = isTrustedGitSender;
+
 module.exports = {
   normalizeDir,
   normalizeDirList,
   isAllowedGitCwd,
   isTrustedGitSender,
+  isTrustedMainSender,
 };

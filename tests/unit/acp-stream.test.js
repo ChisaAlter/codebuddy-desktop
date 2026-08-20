@@ -562,6 +562,65 @@ describe('AcpClient GET SSE notification stream', () => {
     }
   });
 
+  it('usage-refresh and rebind do not stamp latePromptContext promptRunId', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+    const unregister = client.trackActivePrompt('s-usage-refresh', () => {}, { promptRunId: 'run-just-finished' });
+    unregister();
+
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-usage-refresh',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'hist-load',
+            content: { type: 'text', text: 'SHOULD_NOT_INHERIT_RUN' },
+          },
+        },
+      },
+      'request',
+      { mode: 'usage-refresh' },
+    );
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]._client).toEqual({ source: 'request', mode: 'usage-refresh' });
+
+    updates.length = 0;
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-usage-refresh',
+          update: { sessionUpdate: 'usage_update', used: 1, size: 10 },
+        },
+      },
+      'request',
+      { mode: 'usage-refresh' },
+    );
+    expect(updates[0]._client).toEqual({ source: 'request', mode: 'usage-refresh' });
+
+    updates.length = 0;
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-usage-refresh',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'rebind-hist',
+            content: { type: 'text', text: 'REBIND' },
+          },
+        },
+      },
+      'request',
+      { mode: 'rebind' },
+    );
+    expect(updates[0]._client).toEqual({ source: 'request', mode: 'rebind' });
+  });
+
   it('retains the mapped prompt run on a late notification after the prompt stream closes', () => {
     const client = new AcpClient();
     const updates = [];

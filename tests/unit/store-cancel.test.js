@@ -204,6 +204,29 @@ describe('store cancellation', () => {
     expect(mocks.cancelQuestionAnswers).not.toHaveBeenCalled();
   });
 
+  it('clears the prompt queue on local cancel so the next send does not drain a stale item', async () => {
+    mocks.request.mockResolvedValue({ stopReason: 'end_turn' });
+    useStore.setState((state) => ({
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': {
+          ...state.threadRuntimeById['thread-1'],
+          promptQueue: [{ id: 'queued-old', text: 'stale queued prompt' }],
+        },
+      },
+    }));
+
+    await expect(useStore.getState().cancelSession()).resolves.toBe(true);
+
+    const runtime = useStore.getState().threadRuntimeById['thread-1'];
+    expect(runtime.promptQueue).toEqual([]);
+    expect(useStore.getState().threadsById['thread-1'].metadata.promptQueue).toEqual([]);
+
+    mocks.request.mockClear();
+    await useStore.getState().drainThreadPromptQueue('thread-1');
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
   it('closes stale assistant streams when a project disconnects', async () => {
     await useStore.getState().disconnectProjectThreads('project-1');
 

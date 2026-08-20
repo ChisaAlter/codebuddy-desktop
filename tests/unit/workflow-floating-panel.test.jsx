@@ -5,26 +5,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const store = vi.hoisted(() => ({
   workflowFloatingPanel: null,
   closeWorkflowPanel: vi.fn(),
+  setRoute: vi.fn(),
+  toggleRightPanel: vi.fn(),
   activeThreadId: 'thread-1',
   threadRuntimeById: {},
   threadsById: {},
   guiSettings: { locale: 'zh' },
 }));
 
-vi.mock('../../src/store', () => ({
-  useStore(selector) {
-    return selector(store);
-  },
-}));
+vi.mock('../../src/store', () => {
+  const useStore = (selector) => selector(store);
+  useStore.getState = () => store;
+  return { useStore };
+});
 
 import WorkflowFloatingPanelHost from '../../src/components/WorkflowFloatingPanelHost';
 
-function setupGitMock() {
+function setupGitMock(branchList = 'dev\nfeature\n') {
   window.electronAPI = {
     runGit: vi.fn(({ args }) => {
-      if (args[0] === 'branch') return Promise.resolve({ ok: true, output: 'master\n' });
+      if (args[0] === 'branch') {
+        // --list 分支列表与 --show-current 当前分支分开 mock
+        if (args.includes('--list')) return Promise.resolve({ ok: true, output: branchList });
+        return Promise.resolve({ ok: true, output: 'master\n' });
+      }
       if (args[0] === 'diff') return Promise.resolve({ ok: true, output: '3\t1\tpackage.json\n' });
       if (args[0] === 'status') return Promise.resolve({ ok: true, output: '## master...origin/master [ahead 2]\n M file.txt\n' });
+      if (args[0] === 'checkout') return Promise.resolve({ ok: true, output: '' });
       return Promise.resolve({ ok: true, output: '' });
     }),
   };
@@ -77,6 +84,8 @@ describe('WorkflowFloatingPanelHost', () => {
     };
     store.threadsById = { 'thread-1': { id: 'thread-1', status: 'running', timeline: [] } };
     store.closeWorkflowPanel.mockReset();
+    store.setRoute.mockReset();
+    store.toggleRightPanel.mockReset();
   });
   afterEach(() => {
     container.remove();
@@ -101,6 +110,55 @@ describe('WorkflowFloatingPanelHost', () => {
     expect(container.textContent).toContain('搜索');
     expect(container.textContent).toContain('正在读取 package.json');
     expect(container.textContent).toContain('6 paths');
+    root.unmount();
+  });
+
+  it('opens the changes panel in the right sidebar when the changes row is clicked', async () => {
+    setupGitMock();
+    const { createRoot } = await import('react-dom/client');
+    const root = createRoot(container);
+    await act(async () => root.render(React.createElement(WorkflowFloatingPanelHost)));
+    await flush();
+
+    const changesRow = container.querySelector('[data-testid="workflow-git-changes"]');
+    expect(changesRow).toBeTruthy();
+    await act(async () => {
+      changesRow.click();
+    });
+    expect(store.toggleRightPanel).toHaveBeenCalledWith('diff');
+    expect(store.setRoute).not.toHaveBeenCalled();
+    root.unmount();
+  });
+
+  it('opens the branch menu and switches branch via checkout', async () => {
+    setupGitMock('dev\nfeature\n');
+    const { createRoot } = await import('react-dom/client');
+    const root = createRoot(container);
+    await act(async () => root.render(React.createElement(WorkflowFloatingPanelHost)));
+    await flush();
+
+    const branchRow = container.querySelector('[data-testid="workflow-git-branch"]');
+    await act(async () => {
+      branchRow.click();
+    });
+    const menu = container.querySelector('[data-testid="workflow-git-branch-menu"]');
+    expect(menu).toBeTruthy();
+    // 分支列表：非当前分支（master 已过滤）
+    expect(menu.textContent).toContain('dev');
+    expect(menu.textContent).toContain('feature');
+    expect(menu.textContent).not.toContain('master');
+
+    await act(async () => {
+      const devItem = [...menu.querySelectorAll('button')].find((b) => b.textContent.includes('dev'));
+      devItem.click();
+      await flush();
+    });
+    const checkoutCalls = window.electronAPI.runGit.mock.calls.filter(
+      (call) => call[0].args[0] === 'checkout',
+    );
+    expect(checkoutCalls.some((call) => call[0].args[1] === 'dev')).toBe(true);
+    // 切换成功后菜单关闭
+    expect(container.querySelector('[data-testid="workflow-git-branch-menu"]')).toBeNull();
     root.unmount();
   });
 

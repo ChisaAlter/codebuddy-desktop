@@ -92,7 +92,7 @@ describe('ReplicaSidebar new chat button', () => {
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   });
 
-  it('creates a session in the active project without opening the workspace dialog', async () => {
+  it('opens the workspace picker even when a project is active', async () => {
     await act(async () => {
       root.render(<ReplicaSidebar />);
     });
@@ -103,11 +103,11 @@ describe('ReplicaSidebar new chat button', () => {
       await Promise.resolve();
     });
     expect(mocks.setRoute).toHaveBeenCalledWith('chat');
-    expect(mocks.newSession).toHaveBeenCalledTimes(1);
-    expect(mocks.chooseWorkspace).not.toHaveBeenCalled();
+    expect(mocks.chooseWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.newSession).not.toHaveBeenCalled();
   });
 
-  it('opens workspace picker only when no project is active', async () => {
+  it('opens workspace picker when no project is active', async () => {
     mocks.state = baseState({
       activeProjectId: null,
       projectsById: {},
@@ -125,6 +125,34 @@ describe('ReplicaSidebar new chat button', () => {
       await Promise.resolve();
     });
     expect(mocks.chooseWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.newSession).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the workspace picker is cancelled', async () => {
+    mocks.chooseWorkspace.mockResolvedValueOnce(null);
+    await act(async () => {
+      root.render(<ReplicaSidebar />);
+    });
+    const button = container.querySelector('button[aria-label="新对话"]');
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(mocks.chooseWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.newSession).not.toHaveBeenCalled();
+  });
+
+  it('does not fire when busy', async () => {
+    mocks.state = baseState({ newSessionBusy: true });
+    await act(async () => {
+      root.render(<ReplicaSidebar />);
+    });
+    const button = container.querySelector('button[aria-label="新对话"]');
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(mocks.chooseWorkspace).not.toHaveBeenCalled();
     expect(mocks.newSession).not.toHaveBeenCalled();
   });
 });

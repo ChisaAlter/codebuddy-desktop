@@ -218,11 +218,9 @@ function createBridge(deps) {
         }
 
         case 'device_pair': {
-          // C1: pair a new device (first device pairs free; later devices need a
-          // pairing token embedded in the offer). The device presents its Ed25519
-          // public key + a signed challenge proving key possession. The host-side
-          // pairDevice verifies the signature, derives deviceId, and stores the
-          // public key.
+          // C1: pair a new device. The host consumes a one-time pairing token
+          // from the QR offer (including the first device). The device presents
+          // its Ed25519 public key + a signed challenge proving key possession.
           const publicKeyB64 = String(op.publicKeyB64 || '').trim();
           const label = String(op.label || '').trim().slice(0, 64);
           const signedChallenge = String(op.signedChallenge || '').trim();

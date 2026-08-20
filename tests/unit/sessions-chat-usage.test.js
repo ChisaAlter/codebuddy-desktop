@@ -213,4 +213,110 @@ describe('sessions-chat - compact meta 处理', () => {
     const tl = state.threadRuntimeById['thread-1'].timeline;
     expect(tl.some((e) => e.type === 'compact' && e.meta?.phase === 'cancelled')).toBe(true);
   });
+
+  it('compacted 后延迟触发 refreshUsageAfterCompact 执行轻量 session/load', async () => {
+    vi.useFakeTimers();
+    try {
+      const { state, slice } = createFakeStore();
+      const request = vi.fn().mockResolvedValue({});
+      state.getThreadClient = () => ({ request });
+      // 压缩完成事件到达时 turn 尚未终态（activePromptRunId 存在），直接刷新应被跳过
+      slice.handleThreadSessionUpdate('thread-1', {
+        sessionUpdate: 'status_change',
+        _meta: { 'codebuddy.ai/progress': { type: 'compacting' } },
+      });
+      slice.handleThreadSessionUpdate('thread-1', {
+        sessionUpdate: 'status_change',
+        _meta: { 'codebuddy.ai/progress': { type: 'responding' } },
+      });
+      expect(state.compactState).toBe('compacted');
+      expect(state.threadRuntimeById['thread-1'].usageRefreshPending).toBe(true);
+      // 终态：清理 activePromptRunId（模拟 turn 结束），推进延迟窗口
+      state.threadRuntimeById['thread-1'].activePromptRunId = null;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(request).toHaveBeenCalledWith(
+        'session/load',
+        expect.objectContaining({ sessionId: 's1', cwd: '.' }),
+        expect.objectContaining({ mode: 'usage-refresh' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshUsageAfterCompact 在 turn 活跃时跳过并记下 pending，终态再刷', async () => {
+    const { state, slice } = createFakeStore();
+    const request = vi.fn().mockResolvedValue({});
+    state.getThreadClient = () => ({ request });
+    state.threadRuntimeById['thread-1'].activePromptRunId = 'run-1';
+    const ok = await slice.refreshUsageAfterCompact('thread-1');
+    expect(ok).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    expect(state.threadRuntimeById['thread-1'].usageRefreshPending).toBe(true);
+
+    state.threadRuntimeById['thread-1'].activePromptRunId = null;
+    const flushed = slice.flushPendingUsageRefresh('thread-1');
+    expect(flushed).toBe(true);
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledWith(
+      'session/load',
+      expect.objectContaining({ sessionId: 's1' }),
+      expect.objectContaining({ mode: 'usage-refresh' }),
+    );
+  });
+
+  it('usage-refresh 的历史 chunk / status_change 不进入 timeline，只接受 usage_update', () => {
+    const { state, slice } = createFakeStore();
+    state.threadRuntimeById['thread-1'].activePromptRunId = null;
+    state.threadRuntimeById['thread-1'].lastPromptRunId = 'run-1';
+    state.threadRuntimeById['thread-1'].lastPromptRunAt = Date.now();
+    const before = state.threadRuntimeById['thread-1'].timeline.length;
+
+    slice.handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 's1',
+        _client: { mode: 'usage-refresh' },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'hist-1',
+          content: { type: 'text', text: 'LOAD_HISTORY_MUST_NOT_LAND' },
+        },
+      },
+    });
+    slice.handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 's1',
+        _client: { mode: 'usage-refresh' },
+        update: { sessionUpdate: 'status_change', status: 'running' },
+      },
+    });
+    expect(state.threadRuntimeById['thread-1'].timeline.length).toBe(before);
+    expect(state.threadsById['thread-1'].status).toBe('idle');
+
+    slice.handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 's1',
+        _client: { mode: 'usage-refresh' },
+        update: { sessionUpdate: 'usage_update', used: 12, size: 100 },
+      },
+    });
+    expect(state.usage?.used).toBe(12);
+  });
+
+  it('无 live run 且本地已终态时忽略重放的 status_change', () => {
+    const { state, slice } = createFakeStore();
+    state.threadRuntimeById['thread-1'].activePromptRunId = null;
+    state.threadsById['thread-1'].status = 'cancelled';
+    slice.handleThreadSessionUpdate('thread-1', {
+      sessionUpdate: 'status_change',
+      status: 'running',
+    });
+    expect(state.threadsById['thread-1'].status).toBe('cancelled');
+  });
 });

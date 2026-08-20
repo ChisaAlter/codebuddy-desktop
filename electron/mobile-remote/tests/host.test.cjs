@@ -129,3 +129,85 @@ describe('MobileRemoteHost serverId derivation (P0-9)', () => {
     }
   });
 });
+
+describe('MobileRemoteHost pairing token and admin', () => {
+  async function pairWithToken(host, token, label, connectionId) {
+    const kp = host._crypto.generateDeviceKeyPair();
+    const pub = host._crypto.exportDevicePublicKey(kp.publicKey);
+    const deviceId = host._crypto.deriveDeviceId(kp.publicKey);
+    const issuedAt = Date.now();
+    const sig = host._crypto.signDeviceAuth(
+      { serverId: host.state.serverId, deviceId, connectionId, issuedAt },
+      kp.secretKey,
+    );
+    const res = host._pairDevice(pub, label, connectionId, token, sig, issuedAt);
+    return { kp, deviceId, res };
+  }
+
+  it('rejects pairing an empty trust store when no token is presented', async () => {
+    const { host, userDataPath } = await makeHost();
+    try {
+      await host.ensureMaterial();
+      const kp = host._crypto.generateDeviceKeyPair();
+      const pub = host._crypto.exportDevicePublicKey(kp.publicKey);
+      const deviceId = host._crypto.deriveDeviceId(kp.publicKey);
+      const issuedAt = Date.now();
+      const sig = host._crypto.signDeviceAuth(
+        { serverId: host.state.serverId, deviceId, connectionId: 'conn-first', issuedAt },
+        kp.secretKey,
+      );
+      const res = host._pairDevice(pub, 'first', 'conn-first', null, sig, issuedAt);
+      assert.equal(res.ok, false);
+      assert.match(res.error, /pairing token/);
+      assert.equal(host.devices.length, 0);
+      assert.equal(host.adminDeviceId, null);
+    } finally {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
+    }
+  });
+
+  it('getPairingOffer mints a token and invalidates the previous one', async () => {
+    const { host, userDataPath } = await makeHost();
+    try {
+      const first = await host.getPairingOffer();
+      const token1 = first.offer.pairingToken;
+      assert.ok(token1);
+      assert.ok(first.offer.exp - Date.now() <= 5 * 60 * 1000 + 50);
+      const second = await host.getPairingOffer();
+      const token2 = second.offer.pairingToken;
+      assert.ok(token2);
+      assert.notEqual(token1, token2);
+      assert.equal(host.activePairingTokens.has(token1), false);
+      assert.equal(host.activePairingTokens.has(token2), true);
+    } finally {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
+    }
+  });
+
+  it('does not promote the next device when admin is revoked', async () => {
+    const { host, userDataPath } = await makeHost();
+    try {
+      await host.ensureMaterial();
+      const offer1 = await host.getPairingOffer();
+      const admin = await pairWithToken(host, offer1.offer.pairingToken, 'admin', 'conn-admin');
+      assert.equal(admin.res.ok, true);
+      assert.equal(host.adminDeviceId, admin.deviceId);
+
+      const offer2 = await host.getPairingOffer();
+      const second = await pairWithToken(host, offer2.offer.pairingToken, 'second', 'conn-second');
+      assert.equal(second.res.ok, true);
+      assert.equal(host.adminDeviceId, admin.deviceId);
+
+      const revoked = await host.revokeDevice(admin.deviceId);
+      assert.equal(revoked.ok, true);
+      assert.equal(host.adminDeviceId, null);
+      assert.equal(host.devices.length, 1);
+      assert.equal(host.devices[0].deviceId, second.deviceId);
+
+      const denied = host._revokeDevice('anyone-else', second.deviceId);
+      assert.equal(denied.ok, false);
+    } finally {
+      fs.rmSync(userDataPath, { recursive: true, force: true });
+    }
+  });
+});

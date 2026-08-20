@@ -179,6 +179,7 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
     let previousProjectId = null;
     let previousThreadId = null;
     let previousWorkspacePath = null;
+    let insertedThreadId = null;
     try {
       const confirmed = await requestDirtyFileConfirmation(set, get, '切换项目');
       if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
@@ -193,6 +194,7 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (options.preferNewThread) {
         thread = createThreadRecord(projectId);
         threadId = thread.id;
+        insertedThreadId = thread.id;
         set((state) => ({
           threadsById: { ...state.threadsById, [thread.id]: thread },
           threadOrderByProject: {
@@ -248,6 +250,21 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (isProjectNavigationCurrent(navigation)) {
         const message = error?.message || '切换项目失败';
         set({ error: message });
+        if (insertedThreadId) {
+          set((state) => {
+            if (!state.threadsById[insertedThreadId]) return {};
+            const restThreads = { ...state.threadsById };
+            delete restThreads[insertedThreadId];
+            const order = (state.threadOrderByProject[projectId] || []).filter((id) => id !== insertedThreadId);
+            return {
+              threadsById: restThreads,
+              threadOrderByProject: {
+                ...state.threadOrderByProject,
+                [projectId]: order,
+              },
+            };
+          });
+        }
         // Roll back a half-switch: the active pointers moved to the new project
         // before the runtime started; on failure restore the previous project so
         // the UI (and the persisted active pointer) do not stick to a broken one.
@@ -260,8 +277,8 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
             ...resetFileWorkspace(previousWorkspacePath),
           }));
           get().loadProjectTerminalState(previousProjectId);
-          void get().persistProductState().catch(() => {});
         }
+        void get().persistProductState().catch(() => {});
         finishProjectNavigation(set, navigation, message);
       }
       return false;

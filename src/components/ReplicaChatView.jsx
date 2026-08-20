@@ -3026,6 +3026,10 @@ export default function ReplicaChatView() {
     const submittedRevision = inputRevisionRef.current;
     sendLaunchInFlightRef.current = operation;
     setSendLaunchInFlight(true);
+    // 发送即清空输入框，不等 AI 输出结束：sendPrompt 的 ACP session/prompt
+    // 请求直到输出流结束才 resolve，若等到 finally 才清空，整个输出期间文本
+    // 都会滞留输入框。发送失败时 store 会恢复草稿，finally 会重新对齐输入框。
+    setInputLocal('');
     const isCurrent = () =>
       projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
     setChatError(null);

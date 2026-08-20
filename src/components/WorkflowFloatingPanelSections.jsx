@@ -14,6 +14,7 @@ import { normalizeWorkflowStatus, STATUS_LABELS } from '../lib/workflow-status';
 import { usePanelT } from '../lib/use-panel-t';
 import { emptyThreadRuntime } from '../store/helpers/thread-runtime';
 import { getPanelGoals, getPanelReports, isWorkflowHistory } from '../lib/workflow-panel-data';
+import { switchBranch } from '../lib/git';
 
 function statusLabel(status, t) {
   const key = STATUS_LABELS[String(status || '').toLowerCase()];
@@ -72,6 +73,9 @@ export function GitToolSection() {
   const [commitPhase, setCommitPhase] = useState(COMMIT_PHASES.IDLE);
   const [pushError, setPushError] = useState('');
   const [committedMessage, setCommittedMessage] = useState('');
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [branches, setBranches] = useState([]);
+  const [branchSwitching, setBranchSwitching] = useState('');
   const requestIdRef = useRef(0);
   const signalRef = useRef({ aborted: false });
   const commitInputRef = useRef(null);
@@ -86,11 +90,12 @@ export function GitToolSection() {
     setLoading(true);
     setError('');
     try {
-      const [branchRaw, workRaw, cachedRaw, statusRaw] = await Promise.all([
+      const [branchRaw, workRaw, cachedRaw, statusRaw, branchListRaw] = await Promise.all([
         runGit(['branch', '--show-current']),
         runGit(['diff', '--numstat']),
         runGit(['diff', '--cached', '--numstat']),
         runGit(['status', '-sb']).catch(() => ''),
+        runGit(['branch', '--list', '--format=%(refname:short)']).catch(() => ''),
       ]);
       if (requestId !== requestIdRef.current) return;
       let added = 0;
@@ -109,13 +114,21 @@ export function GitToolSection() {
       const behindMatch = firstLine.match(/behind (\d+)\]/);
       const ahead = aheadMatch ? Number(aheadMatch[1]) : 0;
       const behind = behindMatch ? Number(behindMatch[1]) : 0;
+      const currentBranch = String(branchRaw || '').trim();
       setGitState({
-        branch: String(branchRaw || '').trim(),
+        branch: currentBranch,
         added,
         deleted,
         ahead,
         behind,
       });
+      setBranches(
+        String(branchListRaw || '')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .filter((name) => name !== currentBranch),
+      );
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
       setError(err?.message || t('workflow.gitError.other.title'));
@@ -124,6 +137,26 @@ export function GitToolSection() {
       if (requestId === requestIdRef.current) setLoading(false);
     }
   }, [t]);
+
+  const openChanges = () => {
+    // 右侧栏 diff 面板内嵌 ReplicaChangesView，而不是全屏路由切换
+    useStore.getState().toggleRightPanel?.('diff');
+  };
+
+  const switchToBranch = async (name) => {
+    if (branchSwitching || !name || name === gitState?.branch) return;
+    setBranchSwitching(name);
+    setError('');
+    try {
+      await switchBranch(name);
+      setBranchMenuOpen(false);
+      await refresh();
+    } catch (err) {
+      setError(err?.message || t('workflow.gitError.other.title'));
+    } finally {
+      setBranchSwitching('');
+    }
+  };
 
   useEffect(() => {
     refresh();
@@ -251,19 +284,28 @@ export function GitToolSection() {
       ) : gitState ? (
         <>
           <div className="workflow-panel__git-list">
-            <div className="workflow-panel__git-row is-changes" data-testid="workflow-git-changes">
+            <button
+              type="button"
+              className="workflow-panel__git-row is-changes is-action"
+              data-testid="workflow-git-changes"
+              onClick={openChanges}
+              title={t('workflow.git.changes')}
+            >
               <GitIcon name="changes" />
               <span className="workflow-panel__git-row-label">{t('workflow.git.changes')}</span>
               <span className="workflow-panel__git-row-meta">
                 <b className="workflow-panel__added">+{gitState.added}</b>{' '}
                 <b className="workflow-panel__deleted">-{gitState.deleted}</b>
               </span>
-            </div>
+            </button>
 
-            <div
-              className="workflow-panel__git-row is-branch"
+            <button
+              type="button"
+              className="workflow-panel__git-row is-action is-branch"
               data-testid="workflow-git-branch"
               title={t('workflow.git.branch', { name: gitState.branch || t('workflow.git.noBranch') })}
+              aria-expanded={branchMenuOpen}
+              onClick={() => setBranchMenuOpen((open) => !open)}
             >
               <GitIcon name="branch" />
               <span className="workflow-panel__git-row-label">
@@ -276,7 +318,31 @@ export function GitToolSection() {
                 </span>
               ) : null}
               <span className="workflow-panel__git-chevron" aria-hidden="true">▾</span>
-            </div>
+            </button>
+
+            {branchMenuOpen ? (
+              <div className="workflow-panel__git-branch-menu" data-testid="workflow-git-branch-menu" role="listbox">
+                {branches.length === 0 ? (
+                  <div className="workflow-panel__git-branch-empty">{t('workflow.git.noBranch')}</div>
+                ) : (
+                  branches.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      role="option"
+                      className="workflow-panel__git-branch-item"
+                      disabled={Boolean(branchSwitching)}
+                      onClick={() => switchToBranch(name)}
+                    >
+                      {branchSwitching === name ? (
+                        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--color-border-default)] border-t-[var(--color-text-primary)]" />
+                      ) : null}
+                      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{name}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            ) : null}
 
             {commitPhase === COMMIT_PHASES.COMMITTED_PUSH_FAILED ? (
               <>

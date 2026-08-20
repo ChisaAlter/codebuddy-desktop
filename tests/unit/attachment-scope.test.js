@@ -53,6 +53,11 @@ describe('attachment read scoping (H7)', () => {
     expect(scope.isWithinWorkspace('C:/Project', 'C:/Project')).toBe(true);
   });
 
+  it('does not treat a path as in-workspace unless product-state lists that cwd', () => {
+    const { scope } = makeScope(['C:/Project']);
+    expect(scope.allow('C:/ForgedWorkspace/secret.env')).toBe('no');
+  });
+
   it('returns no project cwds when product state is empty', () => {
     const { scope, loadProductState } = makeScope([]);
     loadProductState.mockReturnValue({ projectsById: {} });

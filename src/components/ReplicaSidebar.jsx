@@ -780,15 +780,8 @@ export default function ReplicaSidebar() {
                 onClick={async () => {
                   if (newSessionBusy || projectNavigationBusy) return;
                   setRoute('chat');
-                  const state = useStore.getState();
-                  // 已有活动项目：在当前项目下直接新建会话（与项目树 "+" 一致）。
-                  // 无项目时才打开目录选择，避免每次「新对话」都弹出系统对话框，
-                  // 也保证 e2e / 键盘用户能可靠创建会话。
-                  if (state.activeProjectId) {
-                    await state.newSession();
-                    return;
-                  }
-                  await state.chooseWorkspace();
+                  // 点击「新对话」= 直接弹系统目录选择框，选中的目录作为新会话的工作目录
+                  await useStore.getState().chooseWorkspace();
                 }}
               >
                 {newSessionBusy || projectNavigationBusy ? (
