@@ -281,6 +281,138 @@ describe('SessionHub auth', () => {
     assert.equal(overflow.closed?.code, 1013);
   });
 
+  // Shared helper: authenticated control socket + client, returns the
+  // relay-assigned connectionId and signing material for data sockets.
+  function setupSignedSession(hub, nonceSeed = 'n') {
+    const kp = generateRelayAuthKeyPair();
+    const pub = exportRelayAuthPublicKey(kp.publicKey);
+    const issuedAt = Date.now();
+    const serverId = deriveServerId(pub);
+    const ctrlSig = signRelayServerAuth(
+      { serverId, role: 'server', connectionId: '', nonce: `${nonceSeed}-ctrl`, issuedAt },
+      kp.secretKey,
+    );
+    const serverCtrl = new FakeSocket();
+    hub.attach(
+      serverCtrl,
+      new URLSearchParams({
+        serverId,
+        role: 'server',
+        relayAuthNonce: `${nonceSeed}-ctrl`,
+        relayAuthIssuedAt: String(issuedAt),
+        relayAuthSig: ctrlSig,
+        relayAuthPublicKeyB64: pub,
+      }),
+    );
+    assert.equal(serverCtrl.closed, null);
+
+    const clientWs = new FakeSocket();
+    hub.attach(clientWs, new URLSearchParams({ serverId, role: 'client' }));
+    const connectionId = serverCtrl.sent
+      .map((s) => JSON.parse(String(s)))
+      .find((m) => m.type === 'connected').connectionId;
+
+    const attachData = (nonce) => {
+      const sig = signRelayServerAuth(
+        { serverId, role: 'server', connectionId, nonce, issuedAt },
+        kp.secretKey,
+      );
+      const dataWs = new FakeSocket();
+      hub.attach(
+        dataWs,
+        new URLSearchParams({
+          serverId,
+          role: 'server',
+          connectionId,
+          relayAuthNonce: nonce,
+          relayAuthIssuedAt: String(issuedAt),
+          relayAuthSig: sig,
+          relayAuthPublicKeyB64: pub,
+        }),
+      );
+      return dataWs;
+    };
+
+    return { serverId, serverCtrl, clientWs, connectionId, attachData };
+  }
+
+  // R9: pending frames are capped by BYTES, not only by frame count. Oldest
+  // frames are evicted first once the byte budget (1 MiB) is exceeded.
+  it('caps pending client frames by total bytes, dropping oldest first', () => {
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const { clientWs, attachData } = setupSignedSession(hub, 'nonce-bytes');
+
+    // 3 × 400 KiB = 1.2 MiB > 1 MiB cap, but only 3 frames (far below the
+    // 256-frame cap). The first frame must be evicted; the last two (800 KiB)
+    // fit within the budget.
+    const big = (tag) => tag + 'x'.repeat(400 * 1024);
+    clientWs.emit('message', big('frame-1:'), false);
+    clientWs.emit('message', big('frame-2:'), false);
+    clientWs.emit('message', big('frame-3:'), false);
+
+    const dataWs = attachData('nonce-bytes-data');
+    const flushed = dataWs.sent.filter((s) => typeof s === 'string' && s.startsWith('frame-'));
+    assert.deepEqual(
+      flushed.map((s) => s.slice(0, 8)),
+      ['frame-2:', 'frame-3:'],
+      'oldest frame must be evicted once the byte cap is exceeded',
+    );
+  });
+
+  // R9: a single frame larger than the whole byte budget is dropped without
+  // evicting already-buffered frames.
+  it('drops an oversized single frame without evicting the existing buffer', () => {
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const { clientWs, attachData } = setupSignedSession(hub, 'nonce-oversize');
+
+    clientWs.emit('message', 'small-frame', false);
+    clientWs.emit('message', 'huge:' + 'x'.repeat(1024 * 1024 + 1), false);
+
+    const dataWs = attachData('nonce-oversize-data');
+    assert.ok(dataWs.sent.includes('small-frame'));
+    assert.ok(!dataWs.sent.some((s) => typeof s === 'string' && s.startsWith('huge:')));
+  });
+
+  // R9: when the host's data socket closes, client frames must be re-buffered
+  // (not silently dropped) and flushed to the NEXT data socket the host opens.
+  it('re-buffers client frames after data-socket close and flushes to the next data socket', () => {
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const { clientWs, attachData } = setupSignedSession(hub, 'nonce-reattach');
+
+    const dataWs1 = attachData('nonce-reattach-d1');
+    clientWs.emit('message', 'while-data-open', false);
+    assert.ok(dataWs1.sent.includes('while-data-open'));
+
+    // Host data socket drops (e.g. host reconnects). Frames sent in the gap
+    // must not vanish.
+    dataWs1.close(1006, 'host data socket lost');
+    clientWs.emit('message', 'sent-during-gap-1', false);
+    clientWs.emit('message', 'sent-during-gap-2', false);
+
+    const dataWs2 = attachData('nonce-reattach-d2');
+    assert.ok(dataWs2.sent.includes('sent-during-gap-1'), 'gap frame 1 must be flushed to the new data socket');
+    assert.ok(dataWs2.sent.includes('sent-during-gap-2'), 'gap frame 2 must be flushed to the new data socket');
+
+    // And live bridging continues on the new socket.
+    clientWs.emit('message', 'after-reattach', false);
+    assert.ok(dataWs2.sent.includes('after-reattach'));
+  });
+
+  // R9 guard: a stale data socket's close must NOT sever a newer data socket's
+  // rewire (replacement may already have rewired the client).
+  it('stale data-socket close does not break a newer data socket rewire', () => {
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const { clientWs, attachData } = setupSignedSession(hub, 'nonce-stale');
+
+    const dataWs1 = attachData('nonce-stale-d1');
+    const dataWs2 = attachData('nonce-stale-d2');
+    // Old socket closes AFTER the replacement attached.
+    dataWs1.close(1006, 'stale');
+
+    clientWs.emit('message', 'still-live', false);
+    assert.ok(dataWs2.sent.includes('still-live'), 'frames must keep flowing to the replacement data socket');
+  });
+
   // H10: per-session client count is capped.
   it('caps concurrent clients per session', () => {
     const hub = new SessionHub({ allowUnsignedServer: true });

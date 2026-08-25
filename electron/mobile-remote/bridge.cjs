@@ -9,7 +9,11 @@ const { randomBytes } = require('crypto');
  */
 
 const DEFAULT_TIMEOUT_MS = 30000;
-const PROMPT_TIMEOUT_MS = 120000;
+// R8: prompt streams use a per-chunk idle window (armed on every read), NOT a
+// wall-clock cap. A long tool run that keeps emitting SSE events must never be
+// cut mid-stream; only a stream that stays silent for the whole window times out.
+// Mirrors the main-process openStream armTimeout pattern (electron/main.cjs).
+const PROMPT_IDLE_TIMEOUT_MS = 120000;
 
 /**
  * @param {object} deps
@@ -18,11 +22,15 @@ const PROMPT_TIMEOUT_MS = 120000;
  *           list: () => Array<{projectId,cwd,status,port,pid}>,
  *           stop: (id: string) => Promise<any> }} deps.runtimeManager
  * @param {() => any} deps.getProductState
+ * @param {number} [deps.promptIdleTimeoutMs] per-chunk idle window for prompt streams (test hook)
  * @param {(...a: unknown[]) => void} [deps.log]
  */
 function createBridge(deps) {
   const log = deps.log || (() => {});
   const { net, runtimeManager, getProductState } = deps;
+  const promptIdleTimeoutMs = Number.isFinite(deps.promptIdleTimeoutMs)
+    ? deps.promptIdleTimeoutMs
+    : PROMPT_IDLE_TIMEOUT_MS;
 
   /**
    * @param {string} projectId
@@ -119,8 +127,16 @@ function createBridge(deps) {
     };
     if (runtime.password) headers.Authorization = `Bearer ${runtime.password}`;
     const controller = new AbortController();
-    const timeoutMs = init.timeoutMs ?? PROMPT_TIMEOUT_MS;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // R8: `timeoutMs` is an IDLE window re-armed on every received chunk, not a
+    // wall-clock deadline. `timeoutMs: 0` disables the deadline entirely.
+    const idleMs = init.timeoutMs ?? promptIdleTimeoutMs;
+    let idleTimer = null;
+    const armIdleTimeout = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleMs <= 0) return;
+      idleTimer = setTimeout(() => controller.abort(), idleMs);
+    };
+    armIdleTimeout();
     if (init.signal) {
       init.signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
@@ -143,16 +159,17 @@ function createBridge(deps) {
       }
       const decoder = new TextDecoder();
       let buffer = '';
-      const tMax = Date.now() + timeoutMs;
       while (true) {
+        // Re-arm the abort timer for each read: only per-chunk silence counts.
+        armIdleTimeout();
         let readResult;
         try {
-          readResult = await readWithDeadline(reader, Math.max(1, tMax - Date.now()));
+          readResult = idleMs > 0 ? await readWithDeadline(reader, idleMs) : await reader.read();
         } catch (error) {
           if (error !== STREAM_READ_DEADLINE) throw error;
           controller.abort();
           try { reader.cancel(); } catch (_) {}
-          return { ok: false, status: 0, body: 'stream read deadline exceeded' };
+          return { ok: false, status: 0, body: `stream idle for ${idleMs}ms; read deadline exceeded` };
         }
         const { done, value } = readResult;
         if (done) break;
@@ -172,7 +189,7 @@ function createBridge(deps) {
       }
       return { ok: true, status: response.status };
     } finally {
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
     }
   }
 
@@ -431,13 +448,26 @@ function createBridge(deps) {
           activePrompts.set(runId, controller);
           ctx.send({ type: 'prompt_started', id, runId, projectId, threadId });
 
-          // ACP session/prompt via SSE
+          // R7: ACP session/prompt takes a content-block ARRAY, same shape the
+          // desktop renderer sends (src/store/slices/sessions-chat.js). A bare
+          // string is not part of the ACP contract.
+          const prompt = [{ type: 'text', text }];
           const body = JSON.stringify({
             jsonrpc: '2.0',
             method: 'session/prompt',
-            params: { sessionId, prompt: text },
+            params: { sessionId, prompt },
             id: runId,
           });
+          // R7: completion is the JSON-RPC RESPONSE to our request (matching id)
+          // carrying an ACP result with `stopReason` (end_turn / cancelled /
+          // refusal / max_tokens …) or an error. `result.done` is kept only as a
+          // legacy fallback for older CLI builds.
+          let doneSent = false;
+          const sendPromptDone = (extra) => {
+            if (doneSent) return;
+            doneSent = true;
+            ctx.send({ type: 'prompt_done', id, runId, projectId, threadId, stopReason: null, error: null, ...extra });
+          };
           cliStream(runtime, '/api/v1/acp', {
             method: 'POST',
             body,
@@ -445,32 +475,29 @@ function createBridge(deps) {
             signal: controller.signal,
             onMessage: (msg) => {
               ctx.send({ type: 'stream_event', id, runId, projectId, threadId, event: msg });
-              if (msg?.result?.done || msg?.error) {
-                ctx.send({ type: 'prompt_done', id, runId, projectId, threadId, error: msg?.error || null });
+              const stopReason = typeof msg?.result?.stopReason === 'string' ? msg.result.stopReason : null;
+              const isResponseToRun = msg?.id === runId && (msg?.result !== undefined || msg?.error !== undefined);
+              const legacyDone = msg?.result?.done === true;
+              if (msg?.error) {
+                sendPromptDone({ error: msg.error, stopReason });
+              } else if (stopReason || isResponseToRun || legacyDone) {
+                sendPromptDone({ stopReason });
               }
             },
           })
             .then((r) => {
               if (!r.ok) {
-                ctx.send({
-                  type: 'prompt_done',
-                  id,
-                  runId,
-                  projectId,
-                  threadId,
+                sendPromptDone({
                   error: { code: 'prompt_failed', message: `HTTP ${r.status}`, body: r.body?.slice?.(0, 500) },
                 });
+              } else {
+                // Stream ended without an explicit response frame; do not leave
+                // the client hanging without a terminal event.
+                sendPromptDone({ stopReason: 'stream_end' });
               }
             })
             .catch((err) => {
-              ctx.send({
-                type: 'prompt_done',
-                id,
-                runId,
-                projectId,
-                threadId,
-                error: { code: 'prompt_error', message: err?.message || String(err) },
-              });
+              sendPromptDone({ error: { code: 'prompt_error', message: err?.message || String(err) } });
             })
             .finally(() => {
               activePrompts.delete(runId);

@@ -41,6 +41,31 @@ describe('PtySocket Electron SSE transport', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  // P1: the PTY output stream is a resident long-lived connection, exactly like
+  // the ACP notification stream in acp.js. Without timeoutMs: 0 the main-process
+  // openStream applies its default 30s chunk-idle timeout and kills the stream
+  // of any terminal that is simply quiet, silently losing all later output.
+  it('opens the SSE output stream with timeoutMs: 0 (no idle kill for quiet terminals)', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        body: '{}',
+        headers: { 'content-type': 'application/json' },
+      })),
+      openCodeBuddyStream: vi.fn(() => ({ close: () => {} })),
+    };
+
+    const socket = new PtySocket('pty-idle');
+    socket.connect();
+    await vi.waitFor(() => expect(window.electronAPI.openCodeBuddyStream).toHaveBeenCalledOnce());
+
+    const request = window.electronAPI.openCodeBuddyStream.mock.calls[0][0];
+    expect(request.url).toContain('/api/v1/pty/pty-idle/output');
+    expect(request.timeoutMs).toBe(0);
+  });
+
   // M-ls5: a failed SSE connect must reset _transport so a later connect() can
   // retry WS instead of silently POSTing to /input/send on a half-dead session.
   it('resets _transport to null when the SSE connect fails', async () => {

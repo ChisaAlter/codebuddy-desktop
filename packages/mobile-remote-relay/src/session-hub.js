@@ -17,6 +17,10 @@ const MAX_NONCE_CACHE = 2000;
 const MAX_SESSIONS = 1024;
 const MAX_CLIENTS_PER_SESSION = 32;
 const MAX_PENDING_FRAMES_PER_CLIENT = 256;
+// R9: frame-count cap alone still allows 256 × maxPayload bytes per client to
+// sit in relay memory. Cap total buffered BYTES per client as well; oldest
+// frames are dropped first once either cap is exceeded.
+const MAX_PENDING_BYTES_PER_CLIENT = 1 * 1024 * 1024;
 const MAX_FAILED_AUTH_PER_SERVER_ID = 8;
 const FAILED_AUTH_WINDOW_MS = 60 * 1000;
 // Failure-count buckets for serverIds that have no bound session yet. Without
@@ -255,6 +259,7 @@ export class SessionHub {
 
         if (client && client.readyState === 1) {
           // Rewire client -> this data socket (raw payload, no client_frame wrap).
+          clientState.dataWs = ws;
           client.removeAllListeners('message');
           client.on('message', (data, isBinary) => {
             if (isBinary) {
@@ -268,6 +273,7 @@ export class SessionHub {
           if (clientState.pending.length) {
             for (const pending of clientState.pending) this.#safeSend(ws, pending, false);
             clientState.pending = [];
+            clientState.pendingBytes = 0;
           }
         }
 
@@ -298,6 +304,22 @@ export class SessionHub {
 
         ws.on('close', () => {
           this.log('server data offline', serverId, connectionId);
+          // R9: while this data socket was live, the client's frames were wired
+          // straight to it. Without re-attaching the buffering listener, every
+          // client frame sent after this close would hit a dead socket and be
+          // silently dropped. Re-buffer for the next data socket the host opens
+          // (host reopens data sockets on reconnect). Only revert if THIS socket
+          // is still the client's current data socket (a replacement may already
+          // have rewired the client).
+          const s = this.sessions.get(serverId);
+          const c = s?.clients.get(connectionId);
+          if (c && c.dataWs === ws) {
+            c.dataWs = null;
+            if (c.ws && c.ws.readyState === 1) {
+              c.ws.removeAllListeners('message');
+              this.#attachClientBuffering(serverId, connectionId, c);
+            }
+          }
         });
         return;
       }
@@ -358,8 +380,8 @@ export class SessionHub {
     // UUID. A predictable, client-chosen connectionId let an attacker evict a live
     // client (duplicate key → 4000 'replaced') and squat the host's data routing.
     const connectionId = randomUUID();
-    /** @type {{ ws: WebSocket, pending: string[] }} */
-    const clientState = { ws, pending: [] };
+    /** @type {{ ws: WebSocket, pending: string[], pendingBytes: number, dataWs: WebSocket | null }} */
+    const clientState = { ws, pending: [], pendingBytes: 0, dataWs: null };
     session.clients.set(connectionId, clientState);
     ws._mr = { serverId, role, connectionId };
     this.log('client connected', serverId, connectionId);
@@ -370,24 +392,7 @@ export class SessionHub {
       JSON.stringify({ type: 'connected', connectionId }),
     );
 
-    ws.on('message', (data, isBinary) => {
-      const s = this.sessions.get(serverId);
-      if (!s?.server || s.server.readyState !== 1) return;
-      const text = typeof data === 'string' ? data : data.toString('utf8');
-      // H10: bound the pending buffer so a pre-data-socket client cannot grow it
-      // without limit (frames are dropped oldest-first past the cap).
-      if (clientState.pending.length >= MAX_PENDING_FRAMES_PER_CLIENT) {
-        clientState.pending.shift();
-        this.log('pending overflow', serverId, connectionId);
-      }
-      clientState.pending.push(text);
-      // S4: do NOT forward client frames to the control socket. The host's
-      // control socket has a lower/equal maxPayload and a single oversized frame
-      // would drop the control connection — which tears down every client's data
-      // socket (a global disconnect switch for any client's large frame). Frames
-      // only reach the host via the per-client data socket, which the relay
-      // rewires above when it opens.
-    });
+    this.#attachClientBuffering(serverId, connectionId, clientState);
 
     ws.on('close', () => {
       const s = this.sessions.get(serverId);
@@ -400,6 +405,41 @@ export class SessionHub {
         );
       }
       this.log('client disconnected', serverId, connectionId);
+    });
+  }
+
+  /**
+   * Buffer client frames until a host data socket attaches (or re-attaches).
+   * H10/R9: bounded by BOTH a frame-count cap and a byte cap; oldest frames are
+   * dropped first. S4: frames are never forwarded to the control socket — the
+   * host's control socket has a lower/equal maxPayload and a single oversized
+   * frame would drop the control connection, tearing down every client.
+   * @param {string} serverId
+   * @param {string} connectionId
+   * @param {{ ws: WebSocket, pending: string[], pendingBytes: number }} clientState
+   */
+  #attachClientBuffering(serverId, connectionId, clientState) {
+    clientState.ws.on('message', (data) => {
+      const s = this.sessions.get(serverId);
+      if (!s?.server || s.server.readyState !== 1) return;
+      const text = typeof data === 'string' ? data : data.toString('utf8');
+      const bytes = Buffer.byteLength(text, 'utf8');
+      // R9: a single frame larger than the byte budget can never be buffered;
+      // drop it outright instead of evicting the whole queue for nothing.
+      if (bytes > MAX_PENDING_BYTES_PER_CLIENT) {
+        this.log('pending frame too large', serverId, connectionId, bytes);
+        return;
+      }
+      clientState.pending.push(text);
+      clientState.pendingBytes += bytes;
+      while (
+        clientState.pending.length > MAX_PENDING_FRAMES_PER_CLIENT ||
+        clientState.pendingBytes > MAX_PENDING_BYTES_PER_CLIENT
+      ) {
+        const dropped = clientState.pending.shift();
+        clientState.pendingBytes -= Buffer.byteLength(dropped, 'utf8');
+        this.log('pending overflow', serverId, connectionId);
+      }
     });
   }
 

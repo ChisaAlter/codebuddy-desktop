@@ -377,6 +377,11 @@ export class PtySocket {
       let stream = null;
       stream = window.electronAPI.openCodeBuddyStream({
         url: `${getApiBase()}/api/v1/pty/${encodeURIComponent(this.sessionId)}/output`,
+        // timeoutMs: 0 —— PTY 输出流与 ACP 通知流（acp.js）一样是常驻长连接：
+        // 不传时主进程 openStream 默认 30s chunk 空闲超时，安静的终端（无输出）
+        // 会被误判掉线并被 kill，之后的输出全部丢失。空闲超时对 PTY 无意义，
+        // 真正的断线由 onEnd(ok:false)/onError 的重连路径处理。
+        timeoutMs: 0,
         headers: {
           Accept: 'text/event-stream',
           'X-CodeBuddy-Request': '1',

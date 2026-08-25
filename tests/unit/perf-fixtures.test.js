@@ -116,6 +116,9 @@ describe('store bridge whitelist in build output', () => {
   const mainEntry = exists
     ? fs.readdirSync(assetsDir).find((file) => /^index-[^/]+\.js$/.test(file))
     : null;
+  // 无构建产物时默认跳过（npm test 需要在干净 clone / Linux CI 上可跑）；
+  // 发布/构建后的门禁通过 CODEBUDDY_REQUIRE_BUILD=1 强制该断言不可跳过。
+  const requireBuild = process.env.CODEBUDDY_REQUIRE_BUILD === '1';
 
   it.runIf(Boolean(mainEntry))('main entry exposes __CODEBUDDY_STORE__ with the whitelist', () => {
     const source = fs.readFileSync(path.join(assetsDir, mainEntry), 'utf8');
@@ -133,7 +136,7 @@ describe('store bridge whitelist in build output', () => {
     }
   });
 
-  it.runIf(!mainEntry)('build output exists for whitelist assertion', () => {
+  it.runIf(!mainEntry && requireBuild)('build output exists for whitelist assertion', () => {
     expect(exists, 'out/dist/assets missing — run npm run build:dir before this test').toBe(true);
   });
 });

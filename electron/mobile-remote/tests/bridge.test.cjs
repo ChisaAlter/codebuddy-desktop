@@ -250,6 +250,181 @@ describe('bridge.dispatch', () => {
     assert.equal(sent[0].ok, true);
   });
 
+  // ---- R7/R8: prompt payload shape, stopReason completion, idle-window timeout ----
+
+  /** Build a streaming SSE response whose reader yields one data frame per read. */
+  function makeSseStreamResponse(frames, { chunkDelayMs = 0 } = {}) {
+    let i = 0;
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      body: {
+        getReader() {
+          return {
+            async read() {
+              if (i >= frames.length) return { done: true, value: undefined };
+              if (chunkDelayMs) await new Promise((r) => setTimeout(r, chunkDelayMs));
+              const frame = frames[i++];
+              const text = typeof frame === 'string' ? frame : `data: ${JSON.stringify(frame)}\n\n`;
+              return { done: false, value: Buffer.from(text, 'utf8') };
+            },
+            cancel() {},
+          };
+        },
+      },
+    };
+  }
+
+  async function waitFor(predicate, timeoutMs = 5000) {
+    const t0 = Date.now();
+    while (!predicate()) {
+      if (Date.now() - t0 > timeoutMs) throw new Error('waitFor timeout');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  function promptProductState() {
+    return {
+      projectsById: { p1: { workspacePath: '/x' } },
+      threadsById: { t1: { projectId: 'p1', sessionId: 'sess-1' } },
+    };
+  }
+
+  it('prompt posts session/prompt with an ACP content-block array (not a bare string)', async () => {
+    const net = makeFakeNet();
+    const rm = makeFakeRuntimeManager();
+    rm.setRuntime('p1', { projectId: 'p1', cwd: '/x', port: 4444, status: 'running' });
+    let postedBody = null;
+    net.setHandler('POST http://127.0.0.1:4444/api/v1/acp', async (opts) => {
+      postedBody = JSON.parse(opts.body);
+      return makeSseStreamResponse([
+        { jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk' } } },
+        { jsonrpc: '2.0', id: postedBody.id, result: { stopReason: 'end_turn' } },
+      ]);
+    });
+    const bridge = createBridge({ net, runtimeManager: rm, getProductState: promptProductState });
+    const { ctx, sent } = authCtx();
+    await bridge.dispatch(ctx, { type: 'prompt', id: 'pr1', projectId: 'p1', threadId: 't1', text: 'hello world' });
+    await waitFor(() => sent.some((m) => m.type === 'prompt_done'));
+
+    assert.equal(postedBody.method, 'session/prompt');
+    assert.equal(postedBody.params.sessionId, 'sess-1');
+    // ACP contract: prompt is an array of content blocks, same as the desktop renderer.
+    assert.ok(Array.isArray(postedBody.params.prompt), 'prompt must be a content-block array');
+    assert.deepEqual(postedBody.params.prompt, [{ type: 'text', text: 'hello world' }]);
+
+    const done = sent.find((m) => m.type === 'prompt_done');
+    assert.equal(done.stopReason, 'end_turn');
+    assert.equal(done.error, null);
+    // stream_event frames were forwarded before completion
+    assert.ok(sent.some((m) => m.type === 'stream_event'));
+  });
+
+  it('prompt completes exactly once on the JSON-RPC response even without stopReason', async () => {
+    const net = makeFakeNet();
+    const rm = makeFakeRuntimeManager();
+    rm.setRuntime('p1', { projectId: 'p1', cwd: '/x', port: 4445, status: 'running' });
+    net.setHandler('POST http://127.0.0.1:4445/api/v1/acp', async (opts) => {
+      const body = JSON.parse(opts.body);
+      return makeSseStreamResponse([{ jsonrpc: '2.0', id: body.id, result: {} }]);
+    });
+    const bridge = createBridge({ net, runtimeManager: rm, getProductState: promptProductState });
+    const { ctx, sent } = authCtx();
+    await bridge.dispatch(ctx, { type: 'prompt', id: 'pr2', projectId: 'p1', threadId: 't1', text: 'hi' });
+    await waitFor(() => sent.some((m) => m.type === 'prompt_done'));
+    // give the .then() stream-end path a beat to (incorrectly) double-send
+    await new Promise((r) => setTimeout(r, 50));
+    const dones = sent.filter((m) => m.type === 'prompt_done');
+    assert.equal(dones.length, 1);
+    assert.equal(dones[0].error, null);
+  });
+
+  it('prompt still completes on legacy result.done frames', async () => {
+    const net = makeFakeNet();
+    const rm = makeFakeRuntimeManager();
+    rm.setRuntime('p1', { projectId: 'p1', cwd: '/x', port: 4446, status: 'running' });
+    net.setHandler('POST http://127.0.0.1:4446/api/v1/acp', async () =>
+      makeSseStreamResponse([{ jsonrpc: '2.0', result: { done: true } }]));
+    const bridge = createBridge({ net, runtimeManager: rm, getProductState: promptProductState });
+    const { ctx, sent } = authCtx();
+    await bridge.dispatch(ctx, { type: 'prompt', id: 'pr3', projectId: 'p1', threadId: 't1', text: 'hi' });
+    await waitFor(() => sent.some((m) => m.type === 'prompt_done'));
+    assert.equal(sent.find((m) => m.type === 'prompt_done').error, null);
+  });
+
+  // R8: a stream whose chunks each arrive within the idle window must survive
+  // PAST the old wall-clock deadline (total duration > idle window).
+  it('prompt stream survives long total duration when chunks keep arriving (idle window, not wall clock)', async () => {
+    const net = makeFakeNet();
+    const rm = makeFakeRuntimeManager();
+    rm.setRuntime('p1', { projectId: 'p1', cwd: '/x', port: 4447, status: 'running' });
+    net.setHandler('POST http://127.0.0.1:4447/api/v1/acp', async (opts) => {
+      const body = JSON.parse(opts.body);
+      // 6 chunks x 60ms = 360ms total, far beyond the 150ms idle window a
+      // wall-clock deadline would enforce.
+      const frames = [];
+      for (let n = 0; n < 5; n += 1) {
+        frames.push({ jsonrpc: '2.0', method: 'session/update', params: { n } });
+      }
+      frames.push({ jsonrpc: '2.0', id: body.id, result: { stopReason: 'end_turn' } });
+      return makeSseStreamResponse(frames, { chunkDelayMs: 60 });
+    });
+    const bridge = createBridge({
+      net,
+      runtimeManager: rm,
+      getProductState: promptProductState,
+      promptIdleTimeoutMs: 150,
+    });
+    const { ctx, sent } = authCtx();
+    await bridge.dispatch(ctx, { type: 'prompt', id: 'pr4', projectId: 'p1', threadId: 't1', text: 'long tool run' });
+    await waitFor(() => sent.some((m) => m.type === 'prompt_done'), 5000);
+    const done = sent.find((m) => m.type === 'prompt_done');
+    assert.equal(done.error, null, `expected no error, got ${JSON.stringify(done.error)}`);
+    assert.equal(done.stopReason, 'end_turn');
+  });
+
+  // R8: a stream that goes silent past the idle window is aborted with an error.
+  it('prompt stream aborts with an error when idle past the window', async () => {
+    const net = makeFakeNet();
+    const rm = makeFakeRuntimeManager();
+    rm.setRuntime('p1', { projectId: 'p1', cwd: '/x', port: 4448, status: 'running' });
+    net.setHandler('POST http://127.0.0.1:4448/api/v1/acp', async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '',
+      body: {
+        getReader() {
+          let first = true;
+          return {
+            async read() {
+              if (first) {
+                first = false;
+                return { done: false, value: Buffer.from('data: {"jsonrpc":"2.0","method":"session/update"}\n\n', 'utf8') };
+              }
+              // stall far past the idle window
+              await new Promise((r) => setTimeout(r, 1500));
+              return { done: true, value: undefined };
+            },
+            cancel() {},
+          };
+        },
+      },
+    }));
+    const bridge = createBridge({
+      net,
+      runtimeManager: rm,
+      getProductState: promptProductState,
+      promptIdleTimeoutMs: 100,
+    });
+    const { ctx, sent } = authCtx();
+    await bridge.dispatch(ctx, { type: 'prompt', id: 'pr5', projectId: 'p1', threadId: 't1', text: 'stalls' });
+    await waitFor(() => sent.some((m) => m.type === 'prompt_done'), 5000);
+    const done = sent.find((m) => m.type === 'prompt_done');
+    assert.ok(done.error, 'idle stream must surface an error');
+    assert.match(String(done.error.body || done.error.message || ''), /idle|deadline|HTTP 0/i);
+  });
+
   it('device_pair surfaces the host rejection (e.g. missing token) as auth_required', async () => {
     const bridge = createBridge({
       net: makeFakeNet(),

@@ -40,6 +40,18 @@
 - **mobile-remote 设备管理加固**：设备存储支持 admin 设备，配对手牌加 TTL 与一次性 token，吊销仅限 admin 或设备自身。
 - **工作流面板 git 分支菜单**：面板内可查看当前分支、打开变更、切换/新建分支，复用单源的 normalized 工作流状态。
 
+### 1.1.x 修复迭代（R1–R10，PR #1）
+
+- **应用内更新断链修复（P0）**：更新下载白名单接受仓库更名后的 `codebuddy-desktop`（保留 `codebuddy-gui` 兼容历史资产），并修复原白名单正则不匹配时放行任意 github.com 地址的缺陷（`electron/update-urls.cjs`）。
+- **PTY 静默终端不再丢输出（P0）**：PTY SSE 输出流补 `timeoutMs: 0`，不再被主进程默认 30s chunk 空闲超时误杀。
+- **mobile-remote prompt 对齐 ACP 契约**：`session/prompt` 改发内容块数组（与桌面端同形）；完成判定改为 JSON-RPC 响应 + `stopReason`（`result.done` 仅旧版兜底）；`prompt_done` 携带 `stopReason` 且保证只发一次。
+- **mobile-remote 长任务不再被 120s 截断**：prompt 流超时从 wall-clock 改为 per-chunk 空闲窗口（与主进程 openStream 同款 armTimeout 模式）。
+- **relay 内存与丢帧修复**：pending 帧补 1 MiB 字节上限（条数上限之外）；host data-socket 断开期间 client 帧改回缓冲并在重连后 flush，不再静默丢弃。
+- **跨平台测试门禁**：Windows 形状用例 `runIf` 化、构建产物断言默认跳过（`CODEBUDDY_REQUIRE_BUILD=1` 强制），`test:gate` 在 Linux 无构建产物可全绿。
+- **IPC 信任边界统一**：全部 `ipcMain.handle` 通道要求可信主窗口 sender；`codebuddy:request` renderer 销毁改为真实 abort。
+- **Lint 收紧**：`no-undef` 打开、warn → error，全量零告警（顺手修复 1 处测试缺 `vi` import）。
+- **发版自动化**：新增 GitHub Actions `release` workflow（v* tag → windows-latest → 测试门禁 → 构建 → draft Release 附安装包/blockmap/latest.yml/SHA256SUMS；无签名证书 secrets 时明确出未签名预览）；维护者手册 `docs/release-checklist.md`。
+
 ## 本版本重点
 
 ### 输入、终端与切换性能

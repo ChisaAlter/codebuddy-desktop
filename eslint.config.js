@@ -23,16 +23,16 @@ export default [
     },
     files: ['electron/**/*.{js,cjs}', 'src/**/*.{js,jsx}', 'tests/**/*.{js,jsx}'],
     rules: {
-      // 只抓明显 bug 与未使用导入，不强风格
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'all', caughtErrorsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
-      'no-empty': ['warn', { allowEmptyCatch: true }],
+      // R10（2026-08-25 收紧）：全量 lint 已零告警，warn → error 并打开 no-undef，
+      // 防止新增未定义全局/未使用变量悄悄溜进主干。
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrors: 'all', caughtErrorsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
       'no-dupe-keys': 'error',
       'no-dupe-args': 'error',
       'no-redeclare': 'error',
       'no-unreachable': 'error',
-      'no-irregular-whitespace': 'warn',
-      // CJS/ESM 全局定义多，no-依赖 env 已覆盖，显式关
-      'no-undef': 'off',
+      'no-irregular-whitespace': 'error',
+      'no-undef': 'error',
     },
   },
   {

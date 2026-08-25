@@ -1838,7 +1838,7 @@ export default function ReplicaSettingsView() {
                 t={t}
                 label={t('about.terms')}
                 control={
-                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-gui/releases')}>
+                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-desktop/releases')}>
                     {t('about.openExternal')}
                   </button>
                 }
@@ -1847,7 +1847,7 @@ export default function ReplicaSettingsView() {
                 t={t}
                 label={t('about.privacy')}
                 control={
-                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-gui/releases')}>
+                  <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={() => openAboutLink('https://github.com/ChisaAlter/codebuddy-desktop/releases')}>
                     {t('about.openExternal')}
                   </button>
                 }

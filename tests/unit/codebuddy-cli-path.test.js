@@ -19,6 +19,11 @@ function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// findOnPath / spawn-spec 解析针对 Windows（.cmd shim、PATHEXT、注册表 Path），
+// 在 Linux/macOS CI 上跳过而不是失败，保证 npm test / test:gate 跨平台可跑。
+const isWindows = process.platform === 'win32';
+const itWindows = it.runIf(isWindows);
+
 describe('codebuddy-cli-path', () => {
   const cleanup = [];
 
@@ -34,7 +39,7 @@ describe('codebuddy-cli-path', () => {
     expect(quoteForCmd('plain')).toBe('plain');
   });
 
-  it('finds codebuddy.cmd on PATH and resolves the npm JS entry', () => {
+  itWindows('finds codebuddy.cmd on PATH and resolves the npm JS entry', () => {
     const root = makeTempDir('codebuddy-cli-path-');
     cleanup.push(root);
     const binDir = path.join(root, 'npm');
@@ -68,8 +73,7 @@ describe('codebuddy-cli-path', () => {
     expect(spec.source).toBe(cmdPath);
   });
 
-  it('augments PATH with npm global dirs when missing', () => {
-    if (process.platform !== 'win32') return;
+  itWindows('augments PATH with npm global dirs when missing', () => {
     const root = makeTempDir('codebuddy-cli-augment-');
     cleanup.push(root);
     const npmDir = path.join(root, 'AppData', 'Roaming', 'npm');
@@ -86,8 +90,7 @@ describe('codebuddy-cli-path', () => {
     expect(String(next.Path).toLowerCase()).toContain(npmDir.toLowerCase());
   });
 
-  it('parses Windows registry Path entries from reg query output', () => {
-    if (process.platform !== 'win32') return;
+  itWindows('parses Windows registry Path entries from reg query output', () => {
     const output = [
       '',
       'HKEY_CURRENT_USER\\Environment',
@@ -103,8 +106,7 @@ describe('codebuddy-cli-path', () => {
     expect(entries).toEqual(['C:\\Users\\demo\\AppData\\Roaming\\npm', 'C:\\Tools\\bin']);
   });
 
-  it('resolves npm.cmd on Windows via cmd shim', () => {
-    if (process.platform !== 'win32') return;
+  itWindows('resolves npm.cmd on Windows via cmd shim', () => {
     const root = makeTempDir('codebuddy-npm-path-');
     cleanup.push(root);
     const binDir = path.join(root, 'npm');
@@ -127,8 +129,7 @@ describe('codebuddy-cli-path', () => {
     expect(String(spec.command).toLowerCase()).toContain('cmd');
   });
 
-  it('merges registry Path so post-launch installs are discoverable', () => {
-    if (process.platform !== 'win32') return;
+  itWindows('merges registry Path so post-launch installs are discoverable', () => {
     const root = makeTempDir('codebuddy-cli-registry-');
     cleanup.push(root);
     const npmDir = path.join(root, 'npm-global');

@@ -372,55 +372,15 @@ function beginFinalApplicationExit(reason) {
   return finalExitController.start(reason);
 }
 
-const GUI_RELEASES_URL = 'https://github.com/ChisaAlter/codebuddy-gui/releases';
-const GUI_LATEST_RELEASE_API = 'https://api.github.com/repos/ChisaAlter/codebuddy-gui/releases/latest';
-
-function compareVersions(left, right) {
-  const parts = (value) =>
-    String(value || '')
-      .trim()
-      .replace(/^v/i, '')
-      .split('-')[0]
-      .split('.')
-      .map((item) => Number.parseInt(item, 10) || 0);
-  const leftParts = parts(left);
-  const rightParts = parts(right);
-  const length = Math.max(leftParts.length, rightParts.length, 3);
-  for (let index = 0; index < length; index += 1) {
-    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
-    if (difference !== 0) return difference > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-function trustedGuiReleaseUrl(value) {
-  try {
-    const parsed = new URL(String(value || GUI_RELEASES_URL));
-    if (parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/ChisaAlter/codebuddy-gui/releases'))
-      return parsed.toString();
-  } catch (_) {}
-  return GUI_RELEASES_URL;
-}
-
-function trustedGuiDownloadUrl(value) {
-  try {
-    const parsed = new URL(String(value || ''));
-    const match = decodeURIComponent(parsed.pathname).match(
-      /^\/ChisaAlter\/codebuddy-gui\/releases\/download\/v(\d+(?:\.\d+){1,3})\/CodeBuddy-GUI-Setup-(\d+(?:\.\d+){1,3})\.exe$/i,
-    );
-    if (
-      parsed.origin === 'https://github.com' &&
-      !parsed.username &&
-      !parsed.password &&
-      !parsed.search &&
-      !parsed.hash &&
-      match?.[1] === match?.[2]
-    ) {
-      return parsed.toString();
-    }
-  } catch (_) {}
-  return null;
-}
+// 更新地址白名单与版本比较：抽到独立模块以便单测（仓库更名 codebuddy-desktop 后
+// 白名单同时接受新旧 slug，见 update-urls.cjs）。
+const {
+  GUI_RELEASES_URL,
+  GUI_LATEST_RELEASE_API,
+  compareVersions,
+  trustedGuiReleaseUrl,
+  trustedGuiDownloadUrl,
+} = require('./update-urls.cjs');
 
 function firstExistingPath(candidates) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
@@ -1510,14 +1470,18 @@ ipcMain.handle('runtime:ensure', async (event, request = {}) => {
     accountLoginSite: request.accountLoginSite,
   });
 });
-ipcMain.handle('runtime:list', () => runtimeManager.list());
-ipcMain.handle('workflow:readProgress', (_event, request = {}) =>
-  readProjectWorkflowProgress({
+ipcMain.handle('runtime:list', (event) => {
+  requireTrustedMainSender(event);
+  return runtimeManager.list();
+});
+ipcMain.handle('workflow:readProgress', (event, request = {}) => {
+  requireTrustedMainSender(event);
+  return readProjectWorkflowProgress({
     runtimeManager,
     configRoot: String(process.env.CODEBUDDY_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.codebuddy'),
     request,
-  }),
-);
+  });
+});
 ipcMain.handle('runtime:stop', (event, projectId) => {
   requireTrustedMainSender(event);
   return runtimeManager.stop(projectId);
@@ -1551,13 +1515,15 @@ ipcMain.handle('cliAuth:getDiskAuth', (event) => {
     };
   }
 });
-ipcMain.handle('notification:consumeOpenThread', () => {
+ipcMain.handle('notification:consumeOpenThread', (event) => {
+  requireTrustedMainSender(event);
   const target = pendingNotificationTarget;
   pendingNotificationTarget = null;
   return target;
 });
 
-ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
+ipcMain.handle('notification:showTaskResult', async (event, payload = {}) => {
+  requireTrustedMainSender(event);
   if (reallyQuitting || !Notification.isSupported()) return { shown: false, reason: 'unsupported' };
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()) {
     return { shown: false, reason: 'window-focused' };
@@ -1613,7 +1579,8 @@ ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
   }
 });
 
-ipcMain.handle('app:checkForUpdates', async () => {
+ipcMain.handle('app:checkForUpdates', async (event) => {
+  requireTrustedMainSender(event);
   const currentVersion = app.getVersion();
   const timeout = createTimeoutSignal(15000);
   try {
@@ -1673,13 +1640,15 @@ ipcMain.handle('app:checkForUpdates', async () => {
   }
 });
 
-ipcMain.handle('app:openReleasePage', async (_event, releaseUrl) => {
+ipcMain.handle('app:openReleasePage', async (event, releaseUrl) => {
+  requireTrustedMainSender(event);
   const target = trustedGuiReleaseUrl(releaseUrl);
   await shell.openExternal(target);
   return { url: target };
 });
 
-ipcMain.handle('app:openUpdateDownload', async (_event, downloadUrl) => {
+ipcMain.handle('app:openUpdateDownload', async (event, downloadUrl) => {
+  requireTrustedMainSender(event);
   const target = trustedGuiDownloadUrl(downloadUrl);
   if (!target) throw new Error('Windows 安装包下载地址无效，请改用发布页下载');
   await shell.openExternal(target);
@@ -1689,19 +1658,23 @@ ipcMain.handle('app:openUpdateDownload', async (_event, downloadUrl) => {
 // 登录链接兜底：CLI 推送 _codebuddy.ai/authUrl 时由 GUI 打开默认浏览器
 // （Windows 上 CLI 的 rundll32 url,OpenURL 静默失败，不能依赖它）。
 // 校验与渲染进程外链一致：仅 http/https、无内嵌凭据。
-ipcMain.handle('app:openExternal', async (_event, rawUrl) => {
+ipcMain.handle('app:openExternal', async (event, rawUrl) => {
+  requireTrustedMainSender(event);
   const target = normalizeExternalHttpUrl(rawUrl);
   if (!target) throw new Error('只允许打开 http/https 地址');
   await shell.openExternal(target);
   return { url: target };
 });
 
-ipcMain.handle('app:getInfo', () => ({
-  name: app.getName(),
-  version: app.getVersion(),
-  packaged: app.isPackaged,
-  userDataPath: app.getPath('userData'),
-}));
+ipcMain.handle('app:getInfo', (event) => {
+  requireTrustedMainSender(event);
+  return {
+    name: app.getName(),
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    userDataPath: app.getPath('userData'),
+  };
+});
 
 function requireTrustedMainSender(event) {
   if (!isTrustedMainSender(event.sender, mainWindow)) {
@@ -1771,13 +1744,17 @@ ipcMain.handle('mobileRemote:revokeDevice', async (event, deviceId) => {
   return getMobileRemoteHost().revokeDevice(deviceId);
 });
 
-ipcMain.handle('mcp:listConfigs', (_event, cwd) => {
+ipcMain.handle('mcp:listConfigs', (event, cwd) => {
+  requireTrustedMainSender(event);
   if (!workspaceTrust.isTrustedCwd(cwd)) {
     throw new Error('mcp cwd is not a trusted workspace');
   }
   return listConfiguredMcpServers(cwd);
 });
-ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
+ipcMain.handle('sandbox:list', (event) => {
+  requireTrustedMainSender(event);
+  return readSandboxSnapshot();
+});
 ipcMain.handle('sandbox:kill', (event, sandboxId) => {
   requireTrustedMainSender(event);
   return runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]);
@@ -1786,7 +1763,10 @@ ipcMain.handle('sandbox:clean', (event) => {
   requireTrustedMainSender(event);
   return runExclusiveSandboxOperation(['clean']);
 });
-ipcMain.handle('backgroundSession:list', () => listBackgroundSessions());
+ipcMain.handle('backgroundSession:list', (event) => {
+  requireTrustedMainSender(event);
+  return listBackgroundSessions();
+});
 ipcMain.handle('backgroundSession:start', (event, payload) => {
   requireTrustedMainSender(event);
   return runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload));
@@ -1807,7 +1787,10 @@ ipcMain.handle('backgroundSession:attach', (event, pid) => {
   requireTrustedMainSender(event);
   return attachBackgroundSession(pid);
 });
-ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
+ipcMain.handle('daemonService:status', (event) => {
+  requireTrustedMainSender(event);
+  return readDaemonServiceStatus();
+});
 ipcMain.handle('daemonService:install', (event, payload) => {
   requireTrustedMainSender(event);
   return runExclusiveDaemonServiceOperation(() => installDaemonService(payload));
@@ -1816,7 +1799,10 @@ ipcMain.handle('daemonService:uninstall', (event) => {
   requireTrustedMainSender(event);
   return runExclusiveDaemonServiceOperation(() => uninstallDaemonService());
 });
-ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
+ipcMain.handle('cliMaintenance:getInfo', (event) => {
+  requireTrustedMainSender(event);
+  return getCodeBuddyCliInfo();
+});
 ipcMain.handle('cliMaintenance:doctor', (event) => {
   requireTrustedMainSender(event);
   return runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor());
@@ -1845,7 +1831,10 @@ ipcMain.handle('pluginMaintenance:prune', (event, payload) => {
   requireTrustedMainSender(event);
   return runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload));
 });
-ipcMain.handle('modelConfig:list', () => listModelConfig());
+ipcMain.handle('modelConfig:list', (event) => {
+  requireTrustedMainSender(event);
+  return listModelConfig();
+});
 ipcMain.handle('modelConfig:save', (event, payload) => {
   requireTrustedMainSender(event);
   return saveModelConfig(payload);
@@ -1861,7 +1850,8 @@ ipcMain.handle('modelConfig:open', async (event) => {
   return { filePath };
 });
 
-ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
+ipcMain.handle('app:reportRendererError', (event, payload = {}) => {
+  requireTrustedMainSender(event);
   const kind =
     String(payload.kind || 'reactErrorBoundary')
       .replace(/[^a-zA-Z0-9_-]/g, '')
@@ -1878,7 +1868,8 @@ ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   return { reported: true };
 });
 
-ipcMain.handle('app:exportDiagnostics', async () => {
+ipcMain.handle('app:exportDiagnostics', async (event) => {
+  requireTrustedMainSender(event);
   const timestamp = new Date().toISOString();
   const fileTimestamp = timestamp.replace(/[:.]/g, '-');
   const saveOptions = {
@@ -1952,7 +1943,8 @@ ipcMain.handle('app:exportDiagnostics', async () => {
   return { canceled: false, path: result.filePath };
 });
 
-ipcMain.handle('app:openUserData', async () => {
+ipcMain.handle('app:openUserData', async (event) => {
+  requireTrustedMainSender(event);
   const userDataPath = app.getPath('userData');
   await fs.promises.mkdir(userDataPath, { recursive: true });
   const openError = await shell.openPath(userDataPath);
@@ -2323,7 +2315,8 @@ function createRightBrowserView() {
   return rightBrowserView;
 }
 
-ipcMain.handle('rightBrowser:open', async (_event, rawUrl) => {
+ipcMain.handle('rightBrowser:open', async (event, rawUrl) => {
+  requireTrustedMainSender(event);
   const target = normalizeExternalHttpUrl(rawUrl);
   if (!target) throw new Error('只允许打开无凭据的 http/https 地址');
   const view = createRightBrowserView();
@@ -2338,7 +2331,10 @@ ipcMain.on('rightBrowser:setBounds', (_event, rawBounds) => {
   rightBrowserView.setBounds(bounds);
 });
 
-ipcMain.handle('rightBrowser:close', () => closeRightBrowserView());
+ipcMain.handle('rightBrowser:close', (event) => {
+  requireTrustedMainSender(event);
+  return closeRightBrowserView();
+});
 
 function showOrCreateMainWindow() {
   if (!app.isReady() || (!isDev && !prodServerPort)) return null;
@@ -2469,6 +2465,10 @@ function createTimeoutSignal(timeoutMs) {
   const timeoutId = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   return {
     signal: controller.signal,
+    // codebuddy:request 的 sender-destroyed 中断依赖拿到 controller 本体
+    //（registerSenderAbort(sender, timeout.controller)）；此前未暴露导致
+    // 渲染进程销毁后 SSE 读循环只能等超时，白耗主进程内存与 CPU。
+    controller,
     cleanup() {
       if (timeoutId) clearTimeout(timeoutId);
     },
@@ -3049,7 +3049,8 @@ ipcMain.on('window:reload', () => {
 });
 
 // 工作区选择：弹原生目录选择对话框，返回所选绝对路径或 null（用户取消）
-ipcMain.handle('workspace:choose', async () => {
+ipcMain.handle('workspace:choose', async (event) => {
+  requireTrustedMainSender(event);
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   // e2e 注入桩：「新对话」改版后要选工作区目录，而原生目录对话框 CDP 驱动不了，
   // 旧 e2e 断言因此静默卡死 90s。桩只认宿主进程环境变量（渲染层无法伪造）、
