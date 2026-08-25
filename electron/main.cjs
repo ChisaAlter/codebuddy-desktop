@@ -2429,6 +2429,10 @@ function createTimeoutSignal(timeoutMs) {
   const timeoutId = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   return {
     signal: controller.signal,
+    // codebuddy:request 的 sender-destroyed 中断依赖拿到 controller 本体
+    //（registerSenderAbort(sender, timeout.controller)）；此前未暴露导致
+    // 渲染进程销毁后 SSE 读循环只能等超时，白耗主进程内存与 CPU。
+    controller,
     cleanup() {
       if (timeoutId) clearTimeout(timeoutId);
     },

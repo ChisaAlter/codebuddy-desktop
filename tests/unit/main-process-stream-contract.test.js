@@ -31,6 +31,17 @@ describe('main-process SSE stream contract', () => {
     expect(mainSource).toMatch(/Buffer\.byteLength\(buffer, 'utf8'\) > MAX_SSE_BUFFER_BYTES/);
   });
 
+  it('createTimeoutSignal exposes the controller for sender-destroyed aborts', () => {
+    const fn = functionSource('createTimeoutSignal');
+    // codebuddy:request wires registerSenderAbort(sender, timeout.controller);
+    // if the factory stops returning the controller the abort silently becomes
+    // a no-op again (the regression this test pins).
+    expect(fn).toMatch(/\bcontroller,/);
+    const start = mainSource.indexOf("ipcMain.handle('codebuddy:request'");
+    const requestHandler = mainSource.slice(start, start + 8000);
+    expect(requestHandler).toContain('registerSenderAbort(sender, timeout.controller)');
+  });
+
   it('bounds non-SSE codebuddy:request bodies (text 8MB, image 16MB)', () => {
     const start = mainSource.indexOf("ipcMain.handle('codebuddy:request'");
     const requestHandler = mainSource.slice(start, start + 8000);
