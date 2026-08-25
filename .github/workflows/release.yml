@@ -91,6 +91,10 @@ jobs:
         run: |
           if ([string]::IsNullOrEmpty($env:CSC_LINK)) {
             Write-Host 'CSC_LINK secret not configured -> building UNSIGNED preview installer (-AllowUnsigned).'
+            # electron-builder treats an EMPTY CSC_LINK env var as "certificate
+            # provided" and fails resolving it; drop the empty vars entirely.
+            Remove-Item Env:\CSC_LINK -ErrorAction SilentlyContinue
+            Remove-Item Env:\CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
             node scripts/run-release.cjs -AllowUnsigned
           } else {
             node scripts/run-release.cjs
