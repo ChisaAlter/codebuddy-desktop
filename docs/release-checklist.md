@@ -4,8 +4,9 @@
 
 ## 当前状态提示（2026-08-25）
 
+- **已发版**：[v1.1.2](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.2) 已通过本管线发布（含 R1–R10，未签名预览安装包），是当前 latest Release。
 - tag `v1.1.1` **已存在**于 origin，指向 master 上 `4e5443c`（1.1.1 版本号提交，**不含**本轮 R1–R10 修复）。
-- 最新已发布 Release 仍是 `v1.0.5`；`v1.1.0` / `v1.1.1` 有 tag 无 Release。
+- 此前最新已发布 Release 是 `v1.0.5`；`v1.1.0` / `v1.1.1` 有 tag 无 Release（保持现状，不删不动）。
 - 因此二选一：
   - **路线 A（推荐）**：合并 PR #1 后，在 master 上把 `package.json` 提升到 `1.1.2`（连带 README/lockfile/RELEASE_NOTES，`tests/unit/version-consistency.test.js` 会强制一致），打 tag `v1.1.2` 推送 → Actions 自动出 draft，内容包含全部修复。
   - **路线 B（补历史账）**：workflow 合入 master 后，用 `workflow_dispatch` 输入 `v1.1.1`，从旧 tag 构建并给 `v1.1.1` 补一个 draft Release（内容是当时的 1.1.1，不含本轮修复）。注意旧提交未含 R4 跨平台测试修复，`test:gate` 在 CI 是否全绿未经验证。

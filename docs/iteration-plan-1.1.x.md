@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | R11 (P3) | 巨型模块拆分：`ReplicaChatView.jsx`（约 3.6k 行）、`sessions-chat.js`（约 3.4k 行）先抽纯函数（composer 高度、prompt 载荷构造等）+ 特性目录化 | 只做安全小步抽取，每步跑 `test:gate`；本轮明确跳过（发版优先于重构） |
 | — | CLI 推荐版本 2.135.0 → 2.138.0 评估：需真机跑 `test:gate` + packaged E2E 验证后再 bump `electron/cli-compat.cjs` | 见下方对齐调研 |
-| — | ~~发版收尾：合并 PR #1 后按 `docs/release-checklist.md` 走 tag → Actions draft → 人工 publish~~ **已完成（2026-08-25）**：PR #1 已 merge 进 master（merge commit `e80c3f2`），版本 bump 至 1.1.2，tag `v1.1.2` 已推送并触发 `release` workflow。`v1.1.0`/`v1.1.1` 旧 tag 保留不动（指向不含 R1–R10 的旧提交，未发布 Release） | `docs/release-checklist.md` |
+| — | ~~发版收尾：合并 PR #1 后按 `docs/release-checklist.md` 走 tag → Actions draft → 人工 publish~~ **已发布（2026-08-25）**：PR #1 merge 进 master（merge commit `e80c3f2`）→ bump 1.1.2 → tag `v1.1.2`（commit `cdbec27`）→ `release` workflow 全绿 → [Release v1.1.2 已 publish](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.2)（未签名预览安装包，SHA256SUMS 与 Release 资产 digest 一致）。`v1.1.0`/`v1.1.1` 旧 tag 保留不动（指向不含 R1–R10 的旧提交，未发布 Release）。发版途中修复两个 CI 问题：e2e-harness 测试对 8.3 短路径的断言、release workflow 空 `CSC_LINK` env 导致 electron-builder 误判有证书 | `docs/release-checklist.md` |
 
 ### 明确不做（Out of scope）
 
