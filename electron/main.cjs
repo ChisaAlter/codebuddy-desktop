@@ -372,55 +372,15 @@ function beginFinalApplicationExit(reason) {
   return finalExitController.start(reason);
 }
 
-const GUI_RELEASES_URL = 'https://github.com/ChisaAlter/codebuddy-gui/releases';
-const GUI_LATEST_RELEASE_API = 'https://api.github.com/repos/ChisaAlter/codebuddy-gui/releases/latest';
-
-function compareVersions(left, right) {
-  const parts = (value) =>
-    String(value || '')
-      .trim()
-      .replace(/^v/i, '')
-      .split('-')[0]
-      .split('.')
-      .map((item) => Number.parseInt(item, 10) || 0);
-  const leftParts = parts(left);
-  const rightParts = parts(right);
-  const length = Math.max(leftParts.length, rightParts.length, 3);
-  for (let index = 0; index < length; index += 1) {
-    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
-    if (difference !== 0) return difference > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-function trustedGuiReleaseUrl(value) {
-  try {
-    const parsed = new URL(String(value || GUI_RELEASES_URL));
-    if (parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/ChisaAlter/codebuddy-gui/releases'))
-      return parsed.toString();
-  } catch (_) {}
-  return GUI_RELEASES_URL;
-}
-
-function trustedGuiDownloadUrl(value) {
-  try {
-    const parsed = new URL(String(value || ''));
-    const match = decodeURIComponent(parsed.pathname).match(
-      /^\/ChisaAlter\/codebuddy-gui\/releases\/download\/v(\d+(?:\.\d+){1,3})\/CodeBuddy-GUI-Setup-(\d+(?:\.\d+){1,3})\.exe$/i,
-    );
-    if (
-      parsed.origin === 'https://github.com' &&
-      !parsed.username &&
-      !parsed.password &&
-      !parsed.search &&
-      !parsed.hash &&
-      match?.[1] === match?.[2]
-    ) {
-      return parsed.toString();
-    }
-  } catch (_) {}
-  return null;
-}
+// 更新地址白名单与版本比较：抽到独立模块以便单测（仓库更名 codebuddy-desktop 后
+// 白名单同时接受新旧 slug，见 update-urls.cjs）。
+const {
+  GUI_RELEASES_URL,
+  GUI_LATEST_RELEASE_API,
+  compareVersions,
+  trustedGuiReleaseUrl,
+  trustedGuiDownloadUrl,
+} = require('./update-urls.cjs');
 
 function firstExistingPath(candidates) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
