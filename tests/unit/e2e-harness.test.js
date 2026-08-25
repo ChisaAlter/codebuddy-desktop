@@ -3104,7 +3104,12 @@ describe('desktop E2E harness public contract', () => {
       });
 
       expect(path.resolve(layout.projectRoot)).toBe(path.resolve(linkedProjectRoot));
-      expect(path.resolve(layout.projectRealRoot).toLowerCase()).toBe(path.resolve(realProjectRoot).toLowerCase());
+      // realProjectRoot 需走与 driver 相同的 canonical 化（realpathSync.native）：
+      // CI runner 的 %TEMP% 含 8.3 短路径（RUNNER~1），driver 会展开为长路径。
+      const canonicalRealProjectRoot = (fs.realpathSync.native || fs.realpathSync)(realProjectRoot);
+      expect(path.resolve(layout.projectRealRoot).toLowerCase()).toBe(
+        path.resolve(canonicalRealProjectRoot).toLowerCase(),
+      );
       await driver.cleanupRuntimeDir(layout);
       expect(fs.existsSync(layout.runtimeDir)).toBe(false);
     },
