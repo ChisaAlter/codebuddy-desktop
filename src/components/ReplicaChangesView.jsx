@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useViewActive } from '../lib/use-view-active';
 import {
   commit,
   createBranch,
@@ -281,6 +282,22 @@ export default function ReplicaChangesView() {
     loadAll(false);
     loadCheckpoints();
   }, [workspacePath, fileCheckpointingEnabled]);
+
+  // M-perf (keep-alive)：视图常驻挂载，重新进入本页时刷新 git 状态与检查点，
+  // 避免展示离开期间的过期数据。首挂载由上面的工作区 effect 覆盖（避免双请求）。
+  const viewActive = useViewActive('changes');
+  const activatedOnceRef = useRef(false);
+  const latestLoadersRef = useRef(null);
+  latestLoadersRef.current = { loadAll, loadCheckpoints };
+  useEffect(() => {
+    if (!viewActive) return;
+    if (activatedOnceRef.current) {
+      latestLoadersRef.current.loadAll(false);
+      latestLoadersRef.current.loadCheckpoints();
+    } else {
+      activatedOnceRef.current = true;
+    }
+  }, [viewActive]);
 
   useEffect(() => {
     async function loadDiff() {

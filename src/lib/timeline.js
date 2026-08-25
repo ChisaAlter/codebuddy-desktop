@@ -106,6 +106,15 @@ function findLastByMessageId(timeline, type, messageId) {
   return null;
 }
 
+function findLastIndexByMessageId(timeline, type, messageId) {
+  if (!messageId) return -1;
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.type === type && item.messageId === messageId) return i;
+  }
+  return -1;
+}
+
 function findLocalUserHistoryTarget(timeline, content) {
   if (!content) return null;
   for (let i = timeline.length - 1; i >= 0; i -= 1) {
@@ -151,6 +160,18 @@ function closeThinkingStream(timeline) {
   return timeline.map((item) =>
     item.type === 'thinking' && item.streaming ? finalizeThinkingEntry(item, completedAt) : item,
   );
+}
+
+// M-perf: mergeAssistantChunk 在每个 assistant chunk 上执行；无进行中的 thinking
+// 条目时跳过带回调的全量 map，退化为一次浅拷贝（后续逻辑会原地写入 next，必须
+// 与输入解除别名）。向后扫描在最末 thinking 条目处早停——同一时刻只有一条
+// thinking 流（新 thinking chunk 到来会关闭上一条）。
+function hasStreamingThinking(timeline) {
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item?.type === 'thinking') return Boolean(item.streaming);
+  }
+  return false;
 }
 
 export function pushUserMessage(timeline, content, createdAt = Date.now(), attachments = null) {
@@ -414,20 +435,24 @@ function mergeUserChunk(timeline, payload, dedupeScope) {
 }
 
 function mergeAssistantChunk(timeline, payload, dedupeScope) {
-  const next = closeThinkingStream(timeline);
+  const next = hasStreamingThinking(timeline) ? closeThinkingStream(timeline) : timeline.slice();
   const messageId = payload?.messageId || null;
-  const target = findLastByMessageId(next, 'message', messageId);
-  if (target && target.role === 'assistant') {
+  // M-perf: 单次反向扫描同时定位目标条目与索引，替代旧的
+  // findLastByMessageId + lastIndexOf + slice().some() 三次 O(n) 遍历。
+  const targetIndex = findLastIndexByMessageId(next, 'message', messageId);
+  if (targetIndex >= 0 && next[targetIndex].role === 'assistant') {
+    const target = next[targetIndex];
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
     if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
-    const index = next.lastIndexOf(target);
-    const executionFollowedTarget = next
-      .slice(index + 1)
-      .some(
-        (item) =>
-          isExecutionEvent(item) || item?.type === 'interruption' || item?.type === 'question',
-      );
+    let executionFollowedTarget = false;
+    for (let i = targetIndex + 1; i < next.length; i += 1) {
+      const item = next[i];
+      if (isExecutionEvent(item) || item?.type === 'interruption' || item?.type === 'question') {
+        executionFollowedTarget = true;
+        break;
+      }
+    }
     if (executionFollowedTarget && content) {
       next.push(
         createTimelineEntry({
@@ -442,7 +467,7 @@ function mergeAssistantChunk(timeline, payload, dedupeScope) {
       );
       return next;
     }
-    next[index] = {
+    next[targetIndex] = {
       ...target,
       content: target.content + content,
       streaming: true,

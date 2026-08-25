@@ -1748,6 +1748,10 @@ export const useStore = create((set, get) => {
             : {}),
         };
       });
+      // 丢弃旧会话遗留的隐藏窗口 coalesce 缓冲：resetRuntime 携带 timeline:[]（清空
+      // 语义），不先消费掉条目的话 patchThreadRuntime 的折叠会把旧会话的 chunk
+      // 重新写进"新对话"的 runtime。flush 先落地随后即被 [] 覆盖，语义正确。
+      get().flushThreadTimelineCoalesce?.(threadId);
       get().patchThreadRuntime(threadId, resetRuntime);
       await get().persistProductState();
 

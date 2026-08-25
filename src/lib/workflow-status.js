@@ -559,3 +559,106 @@ export function shouldWorkflowAutoOpen(status, { dismissed = null, runId = null 
 export function shouldShowWorkflowTopbarHighlight(runtime = {}, threadStatus = 'idle', timeline) {
   return deriveWorkflowView({ runtime, threadStatus, timeline }).highlightTopbar;
 }
+
+// ===== M-perf: 流式热路径的指纹化记忆化 =====
+// patchThreadRuntime 每个流式 chunk 都生成新的 runtime 引用，使上面按引用记忆化
+// 的 normalizeViewCache 必然失效。以下工具把 deriveWorkflowView 的全部输入收敛
+// 成稳定的基本类型指纹：纯 token 追加（不改变任何编排字段、不改 timeline 结构
+// 指纹）时指纹不变，调用方（聊天视图/顶栏/悬浮面板）即可跳过 O(回合条目) 派生。
+const workflowFieldIdCache = new WeakMap();
+let workflowFieldIdSeq = 0;
+
+/** 对象按引用分配递增 id；基本类型按值字符串化；null/undefined 定长标记。 */
+export function workflowFieldId(value) {
+  if (value === null) return 'n';
+  if (value === undefined) return 'u';
+  if (typeof value !== 'object') return `${typeof value}:${String(value)}`;
+  let id = workflowFieldIdCache.get(value);
+  if (id === undefined) {
+    workflowFieldIdSeq += 1;
+    id = workflowFieldIdSeq;
+    workflowFieldIdCache.set(value, id);
+  }
+  return `@${id}`;
+}
+
+/**
+ * memberHistoriesByName 是 chunk 粒度字段（成员内容 chunk 都换引用），但
+ * deriveWorkflowView 只读它派生 historyAvailable 布尔值——按成员名数量汇总即可，
+ * 内容增长不改变指纹。
+ */
+export function memberHistoriesFingerprint(value) {
+  if (!value || typeof value !== 'object') return workflowFieldId(value);
+  return `h${Object.keys(value).length}`;
+}
+
+/**
+ * timeline 尾部结构指纹：长度 + 末条 id/type/status + 尾部 20 条中工具/任务/目标
+ * 条目的状态签名。mergeAssistantChunk 保持条目 id 不变，纯 token 追加不改变指纹；
+ * 工具/任务/目标状态翻转（含完成形态）必然命中。
+ */
+export function timelineTailFingerprint(timeline) {
+  const list = Array.isArray(timeline) ? timeline : [];
+  const last = list[list.length - 1];
+  let tailSig = 0;
+  const from = Math.max(0, list.length - 20);
+  for (let i = list.length - 1; i >= from; i -= 1) {
+    const item = list[i];
+    if (
+      item?.type === 'tool_call' ||
+      item?.type === 'taskCreated' ||
+      item?.type === 'taskStatus' ||
+      item?.type === 'goal-progress' ||
+      item?.type === 'goal-status'
+    ) {
+      tailSig = (tailSig * 31 + String(item.status || '').length) | 0;
+      tailSig = (tailSig * 31 + (item.id ? item.id.length : 0)) | 0;
+    }
+  }
+  return `${list.length}:${last?.id || ''}:${last?.type || ''}:${last?.status || ''}:${tailSig}`;
+}
+
+/** deriveWorkflowView 的全部输入指纹（runtime 编排字段 + 线程状态 + timeline 指纹）。 */
+export function workflowViewFingerprint({ runtime = {}, threadStatus = 'idle', timelineFingerprint = '' } = {}) {
+  return [
+    String(threadStatus),
+    timelineFingerprint,
+    workflowFieldId(runtime.workflowState),
+    workflowFieldId(runtime.lastWorkflowState),
+    workflowFieldId(runtime.teamState),
+    workflowFieldId(runtime.lastTeamState),
+    workflowFieldId(runtime.goalState),
+    workflowFieldId(runtime.lastGoalState),
+    memberHistoriesFingerprint(runtime.memberHistoriesByName),
+    workflowFieldId(runtime.subagentToolCalls),
+    workflowFieldId(runtime.subagentReports),
+    workflowFieldId(runtime.lastSubagentReports),
+    workflowFieldId(runtime.permissionRequests),
+    workflowFieldId(runtime.questions),
+    workflowFieldId(runtime.agentPhase),
+    workflowFieldId(runtime.progress),
+    workflowFieldId(runtime.promptStartedAt),
+    workflowFieldId(runtime.activePromptRunId),
+    workflowFieldId(runtime.isAwaitingResponse),
+    workflowFieldId(runtime.historyReplayActive),
+  ].join('|');
+}
+
+const VIEW_BY_FINGERPRINT_LIMIT = 100;
+const viewByFingerprintCache = new Map();
+
+/**
+ * 指纹键控的 deriveWorkflowView 缓存。与 normalizeViewCache 的引用键控互补：
+ * 这里专门服务「runtime 引用每 chunk 都换、但编排输入未变」的流式场景。
+ * durationMs 等时间派生量与 normalizeViewCache 行为一致（冻结在首次计算时刻）。
+ */
+export function deriveWorkflowViewCached({ runtime = {}, threadStatus = 'idle', timeline }, fingerprint) {
+  const cached = viewByFingerprintCache.get(fingerprint);
+  if (cached) return cached;
+  const view = deriveWorkflowView({ runtime, threadStatus, timeline });
+  if (viewByFingerprintCache.size >= VIEW_BY_FINGERPRINT_LIMIT) {
+    viewByFingerprintCache.delete(viewByFingerprintCache.keys().next().value);
+  }
+  viewByFingerprintCache.set(fingerprint, view);
+  return view;
+}

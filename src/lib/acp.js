@@ -379,6 +379,8 @@ export class AcpClient {
     this.reconnectDelay = 1000;
     this.reconnecting = false;
     this._reconnectTimer = null;
+    // 每个重试 attempt 只发一次 'reconnecting'（断连路径已发过的话定时器不再补发）。
+    this._reconnectEmittedForAttempt = null;
     this._connecting = false;
     // 共享在飞 connect promise，供 reconnect()/并发调用真等待，而不是 setTimeout(0) 假等待。
     this._connectPromise = null;
@@ -1073,6 +1075,7 @@ export class AcpClient {
         sessionId: this._lastSessionId,
       });
       this.emit('reconnecting', { attempt: this.reconnectAttempts, max: this.maxReconnectAttempts, reason });
+      this._reconnectEmittedForAttempt = this.reconnectAttempts;
       this._scheduleReconnect(nextDelay);
       return wasConnected;
     }
@@ -1086,6 +1089,7 @@ export class AcpClient {
       sessionId: this._lastSessionId,
     });
     this.emit('reconnecting', { attempt: 0, max: this.maxReconnectAttempts, reason });
+    this._reconnectEmittedForAttempt = 0;
     this._scheduleReconnect(this.reconnectDelay);
     return wasConnected;
   }
@@ -1095,7 +1099,12 @@ export class AcpClient {
       this._reconnectTimer = null;
       if (!this.reconnecting) return;
 
-      this.emit('reconnecting', { attempt: this.reconnectAttempts, max: this.maxReconnectAttempts });
+      // 同一 attempt 只发一次：断连路径（markConnectionBroken/心跳兜底）已经发过
+      // 带 reason 的事件，这里不再补发，监听方不会把一次重试计成两次。
+      if (this._reconnectEmittedForAttempt !== this.reconnectAttempts) {
+        this._reconnectEmittedForAttempt = this.reconnectAttempts;
+        this.emit('reconnecting', { attempt: this.reconnectAttempts, max: this.maxReconnectAttempts });
+      }
 
       const generation = this._restoreGeneration;
       try {
@@ -1454,9 +1463,13 @@ export class AcpClient {
     this.authMethods = [];
     this.reconnecting = false;
     this._connecting = false;
+    // 主动断开不是错误：不清会让 connectionState 在此后的干净断开状态下
+    // 一直误报 'error'（getter 只要 _connectionError 真值就返回 error）。
+    this._connectionError = null;
     this.connectionId = null;
     this.sessionToken = null;
     this.reconnectAttempts = 0;
+    this._reconnectEmittedForAttempt = null;
     this._restoreGeneration += 1;
     this._lastSessionId = null;
     this.sessionBound = false;
@@ -1715,8 +1728,13 @@ export class AcpClient {
           }
         }
       };
+      // M-perf: text 只服务「未匹配响应 id」的兜底错误提取（单个小 JSON body），
+      // 正常流式响应的事件解析走 eventBuffer。无上限累积会让多 MB 流的峰值内存翻倍。
+      const MAX_RESPONSE_TEXT_CAPTURE = 1024 * 1024;
       const consumeChunk = (chunk, flush = false) => {
-        text += chunk;
+        if (text.length < MAX_RESPONSE_TEXT_CAPTURE) {
+          text = (text + chunk).slice(0, MAX_RESPONSE_TEXT_CAPTURE);
+        }
         const consumed = consumeEventStreamChunk(eventBuffer, chunk, flush);
         eventBuffer = consumed.buffer;
         processMessages(consumed.messages);

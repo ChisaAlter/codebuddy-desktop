@@ -1,27 +1,27 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-05T05:17:58.078Z",
+  "generatedAt": "2026-08-20T15:54:13.430Z",
   "toolchain": {
     "vite": "5.4.21",
     "node": "v24.15.0",
     "electron": "packaged"
   },
-  "commit": "d1f6dbe7eeb0ee52420cbc2d3ad98920f91a0c5e",
+  "commit": "4e5443cab96bda392afb35787f8121fac26cb893",
   "entries": {
     "main entry": {
       "pattern": "^index-[^/]+\\.js$",
-      "rawBytes": 1512781,
-      "gzipBytes": 472545
+      "rawBytes": 1552803,
+      "gzipBytes": 485030
     },
     "workspace route": {
       "pattern": "^ReplicaWorkspaceView-[^/]+\\.js$",
-      "rawBytes": 3754869,
-      "gzipBytes": 970115
+      "rawBytes": 3754798,
+      "gzipBytes": 970086
     },
     "terminal route": {
       "pattern": "^ReplicaTerminalView-[^/]+\\.js$",
-      "rawBytes": 310904,
-      "gzipBytes": 78169
+      "rawBytes": 312821,
+      "gzipBytes": 78641
     }
   }
 }

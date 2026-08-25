@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -6,7 +6,10 @@ import { useStore } from '../store';
 import { useViewActive } from '../lib/use-view-active';
 import { PtySocket } from '../lib/pty';
 
-function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBusy, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
+// M-perf: PTY 输出以 50ms 节流刷进 store，每次 flush 都换 pane 对象引用。TerminalPane
+// 只在初始化 effect 里读 pane.output（命令式写入 xterm），因此 memo 比较器忽略
+// output 增长、只比较结构字段 —— 非输出变化（状态/会话/标题/cwd）不再触发子树重渲染。
+function TerminalPaneImpl({ projectId, pane, active, canSplit, canClose, operationBusy, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -238,6 +241,24 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
   );
 }
 
+const TerminalPane = memo(TerminalPaneImpl, (prev, next) =>
+  prev.projectId === next.projectId &&
+  prev.active === next.active &&
+  prev.canSplit === next.canSplit &&
+  prev.canClose === next.canClose &&
+  prev.operationBusy === next.operationBusy &&
+  prev.onFocus === next.onFocus &&
+  prev.onSplitRight === next.onSplitRight &&
+  prev.onSplitDown === next.onSplitDown &&
+  prev.onClose === next.onClose &&
+  prev.onReconnect === next.onReconnect &&
+  prev.pane.id === next.pane.id &&
+  prev.pane.sessionId === next.pane.sessionId &&
+  prev.pane.status === next.pane.status &&
+  prev.pane.title === next.pane.title &&
+  prev.pane.cwd === next.pane.cwd
+);
+
 export default function ReplicaTerminalView() {
   // M-perf (keep-alive): the terminal view stays mounted while hidden; pane
   // shortcuts must not fire when the route is not visible.
@@ -393,6 +414,34 @@ export default function ReplicaTerminalView() {
     }
   };
 
+  // M-perf: 面板回调稳定化。PTY 输出每次 flush 都让本组件重渲染；内联箭头函数
+  // 会击穿 TerminalPane 的 memo。ref 持有最新闭包 + 按 paneId 缓存回调，保证
+  // 引用稳定的同时语义始终是当前渲染的版本。
+  const latestPaneActionsRef = useRef({ closeTerminalPane, reconnectPane });
+  latestPaneActionsRef.current = { closeTerminalPane, reconnectPane };
+  const paneCallbacksRef = useRef(new Map());
+  useEffect(() => {
+    // 清理已关闭面板的回调缓存，防跨项目累积。
+    const alive = new Set(panes.map((pane) => pane.id));
+    for (const key of paneCallbacksRef.current.keys()) {
+      if (!alive.has(key)) paneCallbacksRef.current.delete(key);
+    }
+  }, [panes]);
+  const paneCallbacks = (paneId) => {
+    let cbs = paneCallbacksRef.current.get(paneId);
+    if (!cbs) {
+      cbs = {
+        onFocus: () => setActivePane(paneId),
+        onSplitRight: () => splitPane(paneId, 'right'),
+        onSplitDown: () => splitPane(paneId, 'down'),
+        onClose: () => latestPaneActionsRef.current.closeTerminalPane(paneId),
+        onReconnect: () => latestPaneActionsRef.current.reconnectPane(paneId),
+      };
+      paneCallbacksRef.current.set(paneId, cbs);
+    }
+    return cbs;
+  };
+
   // M-perf: keep the window keydown listener bound ONCE. panes/activePaneId
   // change on every 50ms output flush; re-binding the listener on each change
   // was pure churn with a (tiny) gap where a keystroke could be missed.
@@ -489,22 +538,25 @@ export default function ReplicaTerminalView() {
         </div>
       ) : (
         <div className={`grid min-h-0 flex-1 gap-2 p-2 ${gridClass}`}>
-          {panes.map((pane) => (
-            <TerminalPane
-              key={`${activeProjectId}-${pane.id}`}
-              projectId={activeProjectId}
-              pane={pane}
-              active={pane.id === activePaneId}
-              canSplit={panes.length < 2 && !terminalOperationPaneId}
-              operationBusy={terminalOperationPaneId === pane.id}
-              onFocus={() => setActivePane(pane.id)}
-              canClose={panes.length > 1 && !terminalOperationPaneId}
-              onSplitRight={() => splitPane(pane.id, 'right')}
-              onSplitDown={() => splitPane(pane.id, 'down')}
-              onClose={() => closeTerminalPane(pane.id)}
-              onReconnect={() => reconnectPane(pane.id)}
-            />
-          ))}
+          {panes.map((pane) => {
+            const cbs = paneCallbacks(pane.id);
+            return (
+              <TerminalPane
+                key={`${activeProjectId}-${pane.id}`}
+                projectId={activeProjectId}
+                pane={pane}
+                active={pane.id === activePaneId}
+                canSplit={panes.length < 2 && !terminalOperationPaneId}
+                operationBusy={terminalOperationPaneId === pane.id}
+                onFocus={cbs.onFocus}
+                canClose={panes.length > 1 && !terminalOperationPaneId}
+                onSplitRight={cbs.onSplitRight}
+                onSplitDown={cbs.onSplitDown}
+                onClose={cbs.onClose}
+                onReconnect={cbs.onReconnect}
+              />
+            );
+          })}
         </div>
       )}
     </div>

@@ -457,6 +457,10 @@ async function main(signal) {
   throwIfAborted(signal, 'renderer profile creation aborted');
   fs.mkdirSync(userDataDir, { recursive: true });
   seedProductState({ userDataDir, projectRoot });
+  // 与 e2e-launch 相同：「新对话」原生目录对话框由环境变量桩接管，
+  // 让断言能够在无头环境里走到真正的新会话。
+  const e2eWorkspaceDir = path.join(runtimeDir, 'workspace-second');
+  fs.mkdirSync(e2eWorkspaceDir, { recursive: true });
   launched = await launchDesktop({
     executable: electronExe,
     appArgs: ['.'],
@@ -466,6 +470,7 @@ async function main(signal) {
     runtimeDir,
     runtimeOwnership,
     debugPort: requestedDebugPort(),
+    env: { CODEBUDDY_E2E_WORKSPACE_CHOICE: e2eWorkspaceDir },
     signal,
     onOwnershipController(controller) {
       ownershipController = controller;

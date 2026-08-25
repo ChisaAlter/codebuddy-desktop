@@ -280,6 +280,19 @@ function detectLanguage(path = '') {
   return map[ext] || 'plaintext';
 }
 
+// M-perf: 静态编辑器配置提升到模块级——内联对象每次渲染都换引用，@monaco-editor/react
+// 会据此在每次 EditorPane 渲染（每次按键/预览变更）调用 editor.updateOptions。
+const EDITOR_PANE_OPTIONS = {
+  minimap: { enabled: false },
+  fontSize: 13,
+  fontFamily: "Menlo, Monaco, Consolas, 'Courier New', monospace",
+  wordWrap: 'on',
+  automaticLayout: true,
+  smoothScrolling: true,
+  padding: { top: 12, bottom: 12 },
+  scrollBeyondLastLine: false,
+};
+
 export function EditorPane() {
   const selectedFile = useStore((s) => s.selectedFile);
   const filePreview = useStore((s) => s.filePreview);
@@ -408,16 +421,7 @@ export function EditorPane() {
               onMount={(editor, monaco) => {
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, handleSave);
               }}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 13,
-                fontFamily: "Menlo, Monaco, Consolas, 'Courier New', monospace",
-                wordWrap: 'on',
-                automaticLayout: true,
-                smoothScrolling: true,
-                padding: { top: 12, bottom: 12 },
-                scrollBeyondLastLine: false,
-              }}
+              options={EDITOR_PANE_OPTIONS}
             />
           )
         ) : (

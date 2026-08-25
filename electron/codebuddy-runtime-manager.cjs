@@ -157,6 +157,13 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         clearTimeout(timeoutId);
         try {
           await authenticate(entry);
+          // authenticate 期间 stop() 可能插入：它会 bump runId、杀进程并把 entry
+          // 从 map 移除。不复查就会向渲染进程广播假的 running 状态，并把一个
+          // 端口已被清空的连接 resolve 给等待中的 ensure 调用方。
+          if (entry.runId !== runId) {
+            reject(new Error('CodeBuddy start cancelled'));
+            return;
+          }
           logger(`CodeBuddy runtime authenticated project=${entry.projectId} port=${entry.port}`);
           entry.status = 'running';
           entry.error = null;

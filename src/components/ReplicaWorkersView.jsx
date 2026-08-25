@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { fetchDaemonStatus, restartDaemon, startDaemon, stopDaemon, stopWorker } from '../lib/ops';
 import { getDaemonServiceStatus, installDaemonService, uninstallDaemonService } from '../lib/daemon-service';
+import { useViewActive } from '../lib/use-view-active';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 const STATUS_CONFIG = {
@@ -194,6 +195,17 @@ export default function ReplicaWorkersView() {
     setWorkerActionError('');
     handleRefresh();
   }, [activeProjectId, handleRefresh]);
+
+  // M-perf (keep-alive)：视图常驻挂载，仅按 activeProjectId 触发的加载在重新进入
+  // 本页时会展示过期的 worker/daemon 数据——重激活时静默刷新（首挂载由上面的
+  // 项目 effect 覆盖，避免双请求）。
+  const viewActive = useViewActive('workers');
+  const activatedOnceRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!viewActive) return;
+    if (activatedOnceRef.current) handleRefresh();
+    else activatedOnceRef.current = true;
+  }, [viewActive, handleRefresh]);
 
   const runDaemonAction = async (action, fallbackMessage) => {
     const projectId = activeProjectId;

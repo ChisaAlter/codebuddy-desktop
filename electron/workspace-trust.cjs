@@ -84,13 +84,20 @@ function createWorkspaceTrust({ loadProductState, ttlMs = DEFAULT_CHOSEN_TTL_MS 
       incoming.projectsById && typeof incoming.projectsById === 'object' && !Array.isArray(incoming.projectsById)
         ? incoming.projectsById
         : {};
+    // M-perf: 信任集只算一次。旧实现对每个项目/每个额外目录各调一次 isTrustedCwd，
+    // 每次都会经 listTrustedDirs → loadProductState 全量重读磁盘状态文件。
+    const trustedDirs = listTrustedDirs();
+    const isTrustedPath = (value) => {
+      const normalized = normalizeAbs(value);
+      return Boolean(normalized) && trustedDirs.has(normalized);
+    };
     const nextProjects = {};
     for (const [id, project] of Object.entries(incomingProjects)) {
       if (!project || typeof project !== 'object') continue;
       const prev = prevProjects[id];
       let workspacePath = typeof project.workspacePath === 'string' ? project.workspacePath : null;
       if (workspacePath && workspacePath.trim()) {
-        if (!isTrustedCwd(workspacePath)) {
+        if (!isTrustedPath(workspacePath)) {
           workspacePath = typeof prev?.workspacePath === 'string' ? prev.workspacePath : null;
         }
       } else {
@@ -103,7 +110,7 @@ function createWorkspaceTrust({ loadProductState, ttlMs = DEFAULT_CHOSEN_TTL_MS 
           ? { ...project.preferences }
           : {};
       const extraDirs = Array.isArray(prefs.workspaceExtraDirs) ? prefs.workspaceExtraDirs : [];
-      prefs.workspaceExtraDirs = extraDirs.filter((dir) => isTrustedCwd(dir));
+      prefs.workspaceExtraDirs = extraDirs.filter((dir) => isTrustedPath(dir));
       nextProjects[id] = {
         ...project,
         workspacePath,

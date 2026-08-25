@@ -136,7 +136,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         status: typeof payload?.status === 'number' ? payload.status : null,
         kind: payload?.kind || (payload?.status ? 'http' : null),
       });
-      if (String(request.method || 'GET').toUpperCase() !== 'GET') cleanup();
+      // GET 流也要清理：streamError（含 kind:'closed'）是该流的终态；旧实现只清理
+      // 非 GET 流，三个 ipcRenderer 监听在消费者忘了 close() 时会挂到页面卸载。
+      cleanup();
     };
     const onEnd = (_event, payload) => {
       if (payload?.streamId !== streamId) return;

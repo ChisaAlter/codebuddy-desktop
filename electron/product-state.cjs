@@ -117,10 +117,30 @@ function normalizeProductState(value) {
 function createProductStateStore(userDataPath, logger = () => {}) {
   const stateFile = path.join(userDataPath, 'product-state.json');
   let saveGeneration = 0;
+  // M-perf: load() 结果缓存。每次 productState:save 的 trust 校验会调 load()
+  // 1 + 项目数×(1+额外目录) 次（workspace-trust 逐目录回查磁盘态），旧实现每次
+  // 都整文件 read+parse+normalize —— 流式期间主线程被同一份多 MB 文件反复解析。
+  // 以 mtime+size 校验失效；自家 save/saveSync 提交后直接写入缓存（normalized
+  // 与 load 的 read+parse+normalize 输出同构）。返回值视为只读，调用方不得原地修改。
+  let loadCache = null; // { mtimeMs, size, state }
 
   function nextSaveGeneration() {
     saveGeneration += 1;
     return saveGeneration;
+  }
+
+  function statStamp() {
+    try {
+      const st = fs.statSync(stateFile);
+      return { mtimeMs: st.mtimeMs, size: st.size };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function refreshLoadCache(state) {
+    const stamp = statStamp();
+    loadCache = stamp ? { mtimeMs: stamp.mtimeMs, size: stamp.size, state } : null;
   }
 
   function tempFileForGeneration(generation) {
@@ -139,7 +159,7 @@ function createProductStateStore(userDataPath, logger = () => {}) {
     return invalidFile;
   }
 
-  function load() {
+  function loadFromDisk() {
     const backupFile = `${stateFile}.bak`;
     if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
       try {
@@ -178,6 +198,21 @@ function createProductStateStore(userDataPath, logger = () => {}) {
       }
       return emptyProductState();
     }
+  }
+
+  function load() {
+    const stamp = statStamp();
+    if (!stamp) {
+      loadCache = null;
+      return loadFromDisk();
+    }
+    if (loadCache && loadCache.mtimeMs === stamp.mtimeMs && loadCache.size === stamp.size) {
+      return loadCache.state;
+    }
+    const state = loadFromDisk();
+    // loadFromDisk 可能触达 .bak 恢复/隔离改名，重新 stat 而不是复用进循环前的快照。
+    refreshLoadCache(state);
+    return state;
   }
 
   /** M-perf: compact serialization. No pretty-print — roughly halves both the
@@ -233,6 +268,7 @@ function createProductStateStore(userDataPath, logger = () => {}) {
     // Keep the primary/backup rename sequence synchronous and short. No await can
     // let saveSync interleave after primary is moved but before the new file lands.
     commitStateFileSync(tempFile, backupFile);
+    refreshLoadCache(normalized);
     return { ok: true, generation, disposition: 'committed' };
   }
 
@@ -254,6 +290,7 @@ function createProductStateStore(userDataPath, logger = () => {}) {
     fs.mkdirSync(userDataPath, { recursive: true });
     fs.writeFileSync(tempFile, serialize(normalized), { encoding: 'utf8', mode: 0o600 });
     commitStateFileSync(tempFile, backupFile);
+    refreshLoadCache(normalized);
     return { ok: true, generation, disposition: 'committed' };
   }
 

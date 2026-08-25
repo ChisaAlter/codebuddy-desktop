@@ -10,7 +10,12 @@ import {
   executeCommitTransaction,
   retryPushAfterCommitted,
 } from '../lib/git-commit-flow';
-import { normalizeWorkflowStatus, STATUS_LABELS } from '../lib/workflow-status';
+import {
+  deriveWorkflowViewCached,
+  STATUS_LABELS,
+  timelineTailFingerprint,
+  workflowViewFingerprint,
+} from '../lib/workflow-status';
 import { usePanelT } from '../lib/use-panel-t';
 import { emptyThreadRuntime } from '../store/helpers/thread-runtime';
 import { getPanelGoals, getPanelReports, isWorkflowHistory } from '../lib/workflow-panel-data';
@@ -632,6 +637,8 @@ export const SubagentsSection = memo(function SubagentsSection({ reports, histor
 // 注意：memberHistoriesByName 是 chunk 粒度字段（每次流式 chunk 都更新），
 // 其消费方只有已废弃的 WorkflowStatusPanel（detailsAvailable/historyAvailable），
 // 悬浮面板不使用——因此不订阅，避免每次 chunk 触发面板重渲染。
+// M-perf 追加：timeline 同样不按引用订阅（每 chunk 换引用），改为尾部结构指纹；
+// 派生走指纹键控缓存，纯 token 追加面板零重算。
 export function WorkflowFloatingPanelBody({ threadId }) {
   const runtimeFields = useStore(
     useShallow((state) => {
@@ -652,8 +659,9 @@ export function WorkflowFloatingPanelBody({ threadId }) {
         promptStartedAt: runtime?.promptStartedAt ?? null,
         questions: runtime?.questions ?? null,
         subagentReports: runtime?.subagentReports ?? null,
+        subagentToolCalls: runtime?.subagentToolCalls ?? null,
         teamState: runtime?.teamState ?? null,
-        timeline: runtime?.timeline ?? null,
+        timelineFingerprint: timelineTailFingerprint(runtime?.timeline),
         workflowState: runtime?.workflowState ?? null,
       };
     }),
@@ -662,13 +670,20 @@ export function WorkflowFloatingPanelBody({ threadId }) {
   const history = isWorkflowHistory(runtimeFields);
   const goals = useMemo(() => getPanelGoals(runtimeFields), [runtimeFields.goalState, runtimeFields.lastGoalState]);
   const workflow = useMemo(() => {
-    const runtime = { ...emptyThreadRuntime(), ...runtimeFields };
-    return normalizeWorkflowStatus({
-      runtime,
+    const fingerprint = workflowViewFingerprint({
+      runtime: runtimeFields,
       threadStatus,
-      timeline: runtimeFields.timeline || [],
+      timelineFingerprint: runtimeFields.timelineFingerprint,
     });
-  }, [runtimeFields, threadStatus]);
+    return deriveWorkflowViewCached(
+      {
+        runtime: { ...emptyThreadRuntime(), ...runtimeFields },
+        threadStatus,
+        timeline: useStore.getState().threadRuntimeById[threadId]?.timeline || [],
+      },
+      fingerprint,
+    );
+  }, [runtimeFields, threadStatus, threadId]);
   const reports = useMemo(
     () => getPanelReports(runtimeFields),
     [

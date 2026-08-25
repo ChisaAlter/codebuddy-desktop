@@ -191,6 +191,11 @@ async function main(signal) {
   throwIfAborted(signal, 'unpackaged launch profile creation aborted');
   fs.mkdirSync(userDataDir, { recursive: true });
   seedProductState({ userDataDir, projectRoot });
+  // 「新对话」改版后会弹原生目录对话框，CDP 无法驱动——经
+  // CODEBUDDY_E2E_WORKSPACE_CHOICE 环境变量注入一个与种子项目不同的真实目录，
+  // 让主进程 workspace:choose 桩返回它（set_workspace 路径不同才会真正新建会话）。
+  const e2eWorkspaceDir = path.join(runtimeDir, 'workspace-second');
+  fs.mkdirSync(e2eWorkspaceDir, { recursive: true });
   launched = await launchDesktop({
     executable: electronExe,
     appArgs: ['.'],
@@ -200,6 +205,7 @@ async function main(signal) {
     runtimeDir,
     runtimeOwnership,
     debugPort: requestedDebugPort(),
+    env: { CODEBUDDY_E2E_WORKSPACE_CHOICE: e2eWorkspaceDir },
     signal,
     onOwnershipController(controller) {
       ownershipController = controller;

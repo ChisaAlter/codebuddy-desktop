@@ -47,6 +47,17 @@ const { MobileRemoteHost, defaultConfig: defaultMobileRemoteConfig } = require('
 
 const isDev = !app.isPackaged;
 
+// 单实例锁（P0-2）：模块头部判定——拿不到锁的第二个实例立即退出，不再执行
+// 后续全部 ipcMain 注册与 whenReady。旧实现在文件尾才判定，app.exit(0) 之后
+// 这个垂死实例仍会注册完所有 handler 并被退出流程再清一遍。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  logStartup('single instance lock acquired=false, exiting before any registration');
+  app.exit(0);
+  // Node 的 CJS 包装器允许顶层 return：此处用于阻断模块后续全部注册副作用。
+  return;
+}
+
 /** @type {import('./mobile-remote/host.cjs').MobileRemoteHost | null} */
 let mobileRemoteHost = null;
 
@@ -1491,7 +1502,8 @@ const runtimeManager = createCodeBuddyRuntimeManager({
   },
 });
 
-ipcMain.handle('runtime:ensure', async (_event, request = {}) => {
+ipcMain.handle('runtime:ensure', async (event, request = {}) => {
+  requireTrustedMainSender(event);
   await ensureCodeBuddyCliCompatibleForRuntime();
   assertTrustedRuntimeCwd(request.projectId, request.cwd);
   return runtimeManager.ensure(request.projectId, request.cwd, {
@@ -1506,15 +1518,20 @@ ipcMain.handle('workflow:readProgress', (_event, request = {}) =>
     request,
   }),
 );
-ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
-ipcMain.handle('runtime:restart', async (_event, request = {}) => {
+ipcMain.handle('runtime:stop', (event, projectId) => {
+  requireTrustedMainSender(event);
+  return runtimeManager.stop(projectId);
+});
+ipcMain.handle('runtime:restart', async (event, request = {}) => {
+  requireTrustedMainSender(event);
   await ensureCodeBuddyCliCompatibleForRuntime();
   assertTrustedRuntimeCwd(request.projectId, request.cwd);
   return runtimeManager.restart(request.projectId, request.cwd, {
     accountLoginSite: request.accountLoginSite,
   });
 });
-ipcMain.handle('cliAuth:getDiskAuth', () => {
+ipcMain.handle('cliAuth:getDiskAuth', (event) => {
+  requireTrustedMainSender(event);
   try {
     const { readCodeBuddyDiskAuth, resolveAccountLoginSiteForRuntime } = require('./codebuddy-auth-site.cjs');
     const disk = readCodeBuddyDiskAuth(process.env);
@@ -1761,47 +1778,84 @@ ipcMain.handle('mcp:listConfigs', (_event, cwd) => {
   return listConfiguredMcpServers(cwd);
 });
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
-ipcMain.handle('sandbox:kill', (_event, sandboxId) =>
-  runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]),
-);
-ipcMain.handle('sandbox:clean', () => runExclusiveSandboxOperation(['clean']));
+ipcMain.handle('sandbox:kill', (event, sandboxId) => {
+  requireTrustedMainSender(event);
+  return runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]);
+});
+ipcMain.handle('sandbox:clean', (event) => {
+  requireTrustedMainSender(event);
+  return runExclusiveSandboxOperation(['clean']);
+});
 ipcMain.handle('backgroundSession:list', () => listBackgroundSessions());
-ipcMain.handle('backgroundSession:start', (_event, payload) =>
-  runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload)),
-);
-ipcMain.handle('backgroundSession:logs', (_event, pid) => readBackgroundSessionLogs(pid));
-ipcMain.handle('backgroundSession:kill', (_event, pid) =>
-  runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)),
-);
-ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackgroundSessionEndpoint(endpoint));
-ipcMain.handle('backgroundSession:attach', (_event, pid) => attachBackgroundSession(pid));
+ipcMain.handle('backgroundSession:start', (event, payload) => {
+  requireTrustedMainSender(event);
+  return runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload));
+});
+ipcMain.handle('backgroundSession:logs', (event, pid) => {
+  requireTrustedMainSender(event);
+  return readBackgroundSessionLogs(pid);
+});
+ipcMain.handle('backgroundSession:kill', (event, pid) => {
+  requireTrustedMainSender(event);
+  return runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid));
+});
+ipcMain.handle('backgroundSession:openEndpoint', (event, endpoint) => {
+  requireTrustedMainSender(event);
+  return openBackgroundSessionEndpoint(endpoint);
+});
+ipcMain.handle('backgroundSession:attach', (event, pid) => {
+  requireTrustedMainSender(event);
+  return attachBackgroundSession(pid);
+});
 ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
-ipcMain.handle('daemonService:install', (_event, payload) =>
-  runExclusiveDaemonServiceOperation(() => installDaemonService(payload)),
-);
-ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperation(() => uninstallDaemonService()));
+ipcMain.handle('daemonService:install', (event, payload) => {
+  requireTrustedMainSender(event);
+  return runExclusiveDaemonServiceOperation(() => installDaemonService(payload));
+});
+ipcMain.handle('daemonService:uninstall', (event) => {
+  requireTrustedMainSender(event);
+  return runExclusiveDaemonServiceOperation(() => uninstallDaemonService());
+});
 ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
-ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor()));
-ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
-ipcMain.handle('cliMaintenance:install', (_event, target) =>
-  runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target)),
-);
-ipcMain.handle('cliMaintenance:ensureRecommended', () =>
-  runExclusiveCliMaintenanceOperation(() => ensureRecommendedCodeBuddyCli()),
-);
-ipcMain.handle('pluginMaintenance:update', (_event, payload) =>
-  runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)),
-);
-ipcMain.handle('pluginMaintenance:previewPrune', (_event, payload) =>
-  runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload)),
-);
-ipcMain.handle('pluginMaintenance:prune', (_event, payload) =>
-  runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload)),
-);
+ipcMain.handle('cliMaintenance:doctor', (event) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor());
+});
+ipcMain.handle('cliMaintenance:update', (event) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli());
+});
+ipcMain.handle('cliMaintenance:install', (event, target) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target));
+});
+ipcMain.handle('cliMaintenance:ensureRecommended', (event) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => ensureRecommendedCodeBuddyCli());
+});
+ipcMain.handle('pluginMaintenance:update', (event, payload) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload));
+});
+ipcMain.handle('pluginMaintenance:previewPrune', (event, payload) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload));
+});
+ipcMain.handle('pluginMaintenance:prune', (event, payload) => {
+  requireTrustedMainSender(event);
+  return runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload));
+});
 ipcMain.handle('modelConfig:list', () => listModelConfig());
-ipcMain.handle('modelConfig:save', (_event, payload) => saveModelConfig(payload));
-ipcMain.handle('modelConfig:delete', (_event, modelId) => deleteModelConfig(modelId));
-ipcMain.handle('modelConfig:open', async () => {
+ipcMain.handle('modelConfig:save', (event, payload) => {
+  requireTrustedMainSender(event);
+  return saveModelConfig(payload);
+});
+ipcMain.handle('modelConfig:delete', (event, modelId) => {
+  requireTrustedMainSender(event);
+  return deleteModelConfig(modelId);
+});
+ipcMain.handle('modelConfig:open', async (event) => {
+  requireTrustedMainSender(event);
   const filePath = ensureModelConfigFile();
   shell.showItemInFolder(filePath);
   return { filePath };
@@ -2104,14 +2158,36 @@ async function createWindow() {
     writeWindowState({ ...b, isMaximized: isMax, closeToTrayHintShown });
   };
   let lastNormalBounds = null;
-  mainWindow.on('resize', saveWindowState);
-  mainWindow.on('move', saveWindowState);
+  // 拖拽/缩放期间 move/resize 每秒触发几十次；直接落盘意味着每次 3 个同步 fs
+  // 系统调用跑在主进程事件循环上（正是 productStateSaveController 要避免的模式）。
+  // 尾沿防抖 500ms；maximize/unmaximize/close 等关键节点仍然立即落盘。
+  let windowStateSaveTimer = null;
+  const cancelScheduledWindowStateSave = () => {
+    if (windowStateSaveTimer) {
+      clearTimeout(windowStateSaveTimer);
+      windowStateSaveTimer = null;
+    }
+  };
+  const scheduleWindowStateSave = () => {
+    cancelScheduledWindowStateSave();
+    windowStateSaveTimer = setTimeout(() => {
+      windowStateSaveTimer = null;
+      saveWindowState();
+    }, 500);
+  };
+  mainWindow.on('resize', scheduleWindowStateSave);
+  mainWindow.on('move', scheduleWindowStateSave);
   mainWindow.on('maximize', () => {
     lastNormalBounds = mainWindow.getNormalBounds();
+    cancelScheduledWindowStateSave();
     saveWindowState();
   });
-  mainWindow.on('unmaximize', saveWindowState);
+  mainWindow.on('unmaximize', () => {
+    cancelScheduledWindowStateSave();
+    saveWindowState();
+  });
   mainWindow.on('close', (event) => {
+    cancelScheduledWindowStateSave();
     if (!reallyQuitting && tray) {
       event.preventDefault();
       const shouldShowHint = !closeToTrayHintShown;
@@ -2493,6 +2569,7 @@ function parseSseMessagesFromBuffer(buffer) {
 }
 
 ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
+  requireTrustedMainSender(event);
   const streamId = String(request.streamId || '');
   const url = String(request.url || '');
   const method = String(request.method || 'GET').toUpperCase();
@@ -2530,12 +2607,14 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     if (!response.ok) {
       if (timeoutId) clearTimeout(timeoutId);
       codebuddyStreams.delete(streamId);
-      event.sender.send('codebuddy:streamError', {
-        streamId,
-        error: `ACP stream failed: ${response.status}`,
-        status: response.status,
-        kind: 'http',
-      });
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('codebuddy:streamError', {
+          streamId,
+          error: `ACP stream failed: ${response.status}`,
+          status: response.status,
+          kind: 'http',
+        });
+      }
       return { ok: false, status: response.status };
     }
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();
@@ -2556,12 +2635,14 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         }
         return { ok: true };
       } catch (error) {
-        event.sender.send('codebuddy:streamError', {
-          streamId,
-          error: `ACP JSON response parse failed: ${error.message}`,
-          status: null,
-          kind: 'parse',
-        });
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('codebuddy:streamError', {
+            streamId,
+            error: `ACP JSON response parse failed: ${error.message}`,
+            status: null,
+            kind: 'parse',
+          });
+        }
         return { ok: false, error: error.message };
       }
     }
@@ -2587,12 +2668,14 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         });
         return { ok: true };
       }
-      event.sender.send('codebuddy:streamError', {
-        streamId,
-        error: 'ACP stream body unavailable',
-        status: null,
-        kind: 'network',
-      });
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('codebuddy:streamError', {
+          streamId,
+          error: 'ACP stream body unavailable',
+          status: null,
+          kind: 'network',
+        });
+      }
       return { ok: false, error: 'stream body unavailable' };
     }
 
@@ -2644,7 +2727,18 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
       let parseErrorCount = 0;
       try {
         while (!controller.signal.aborted) {
-          const { done, value } = await reader.read();
+          armTimeout();
+          let readResult;
+          try {
+            readResult = timeoutMs > 0 ? await readWithDeadline(reader, timeoutMs) : await reader.read();
+          } catch (readError) {
+            if (readError !== STREAM_READ_DEADLINE) throw readError;
+            timedOut = true;
+            streamError = `CodeBuddy stream timed out after ${timeoutMs}ms`;
+            controller.abort();
+            break;
+          }
+          const { done, value } = readResult;
           if (done) {
             buffer += decoder.decode();
             if (buffer.trim()) {
@@ -2656,7 +2750,6 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
             flushBatch();
             break;
           }
-          armTimeout();
           buffer += decoder.decode(value, { stream: true });
           if (Buffer.byteLength(buffer, 'utf8') > MAX_SSE_BUFFER_BYTES) {
             streamError = 'ACP stream exceeded the 8MB partial-event buffer';
@@ -2718,18 +2811,22 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   } catch (error) {
     if (timeoutId) clearTimeout(timeoutId);
     codebuddyStreams.delete(streamId);
-    event.sender.send('codebuddy:streamError', {
-      streamId,
-      error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message,
-      status: null,
-      // openStream 的 timeout 用于 chunk 空闲窗口；长任务应归 idle，不拆连接。
-      kind: timedOut ? 'idle-timeout' : 'network',
-    });
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('codebuddy:streamError', {
+        streamId,
+        error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message,
+        status: null,
+        // openStream 的 timeout 用于 chunk 空闲窗口；长任务应归 idle，不拆连接。
+        kind: timedOut ? 'idle-timeout' : 'network',
+      });
+    }
     return { ok: false, error: error.message };
   }
 });
 
-ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
+ipcMain.on('codebuddy:closeStream', (event, streamId) => {
+  // 只允许主窗口 renderer 关闭自己的流；不可信 sender 静默忽略。
+  if (!isTrustedMainSender(event.sender, mainWindow)) return;
   const controller = codebuddyStreams.get(String(streamId || ''));
   if (controller) {
     controller.abort();
@@ -2784,7 +2881,30 @@ async function readBoundedBodyText(response, maxBytes) {
   return readBoundedBody(response, maxBytes, 'text');
 }
 
+// M-hang: net.fetch 的 AbortSignal 对已挂起的 reader.read() 不一定生效（超时
+// abort 后读循环仍可能停在 await 上）。给每次 read 一个硬截止：死流（连接建立后
+// 长期不发字节）不再永久挂住读循环 / IPC handler / activePrompts 清理。
+const STREAM_READ_DEADLINE = new Error('stream read deadline exceeded');
+
+async function readWithDeadline(reader, ms) {
+  const pending = reader.read();
+  // 输给截止时间的读 Promise 之后被 abort/cancel 拒绝时，不能再变成 unhandledRejection。
+  pending.catch(() => {});
+  let timer = null;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(STREAM_READ_DEADLINE), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 ipcMain.handle('codebuddy:request', async (event, request = {}) => {
+  requireTrustedMainSender(event);
   // timeoutMs 由前端透传：session/prompt 等长请求使用 idle 窗口（默认 10min，有 chunk 会重置），普通 REST 使用 30000ms。
   const timeoutMs = Number.isFinite(Number(request.timeoutMs))
     ? Number(request.timeoutMs)
@@ -2839,7 +2959,18 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
           } catch (_) {}
           break;
         }
-        const { done, value } = await reader.read();
+        let readResult;
+        try {
+          readResult = await readWithDeadline(reader, Math.max(1, tMax - Date.now()));
+        } catch (readError) {
+          if (readError !== STREAM_READ_DEADLINE) throw readError;
+          truncated = true;
+          try {
+            reader.cancel();
+          } catch (_) {}
+          break;
+        }
+        const { done, value } = readResult;
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         body += chunk;
@@ -2920,6 +3051,17 @@ ipcMain.on('window:reload', () => {
 // 工作区选择：弹原生目录选择对话框，返回所选绝对路径或 null（用户取消）
 ipcMain.handle('workspace:choose', async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
+  // e2e 注入桩：「新对话」改版后要选工作区目录，而原生目录对话框 CDP 驱动不了，
+  // 旧 e2e 断言因此静默卡死 90s。桩只认宿主进程环境变量（渲染层无法伪造）、
+  // 仅在未打包运行时生效，且路径必须真实存在才注册进信任集。
+  const stubbedChoice = String(process.env.CODEBUDDY_E2E_WORKSPACE_CHOICE || '').trim();
+  if (stubbedChoice && !app.isPackaged) {
+    if (fs.existsSync(stubbedChoice)) {
+      workspaceTrust.registerChosen(stubbedChoice);
+      return stubbedChoice;
+    }
+    return null;
+  }
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory', 'createDirectory'],
     title: '选择工作区目录',
@@ -3102,7 +3244,8 @@ async function readAttachmentFiles(filePaths) {
   return attachments;
 }
 
-ipcMain.handle('attachment:choose', async (_event, options = {}) => {
+ipcMain.handle('attachment:choose', async (event, options = {}) => {
+  requireTrustedMainSender(event);
   if (!mainWindow || mainWindow.isDestroyed()) return [];
   const dialogOptions = buildAttachmentChooseDialogOptions(options);
   const result = await dialog.showOpenDialog(mainWindow, dialogOptions);
@@ -3110,19 +3253,22 @@ ipcMain.handle('attachment:choose', async (_event, options = {}) => {
   registerChosenAttachmentPaths(result.filePaths);
   return readAttachmentFiles(result.filePaths);
 });
-ipcMain.handle('attachment:read', (_event, filePaths) => {
+ipcMain.handle('attachment:read', (event, filePaths) => {
+  requireTrustedMainSender(event);
   // H7: readAttachments (explicit renderer call) is scoped to chosen/workspace
   // paths only. Drag-drop uses the dedicated attachment:readDropped channel so
   // the main process can register the resolved paths as chosen before reading.
   return readAttachmentFiles(filePaths);
 });
-ipcMain.handle('attachment:readDropped', (_event, filePaths) => {
+ipcMain.handle('attachment:readDropped', (event, filePaths) => {
+  requireTrustedMainSender(event);
   // H7: drag-drop paths are resolved in the preload via webUtils.getPathForFile
   // (which the renderer cannot forge), so register them as chosen before reading.
   registerChosenAttachmentPaths(filePaths);
   return readAttachmentFiles(filePaths);
 });
-ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => {
+ipcMain.handle('attachment:saveClipboardImage', async (event, payload = {}) => {
+  requireTrustedMainSender(event);
   const mimeType = String(payload.mimeType || '').toLowerCase();
   const extension = ATTACHMENT_IMAGE_EXTENSIONS[mimeType];
   if (!extension) throw new Error('剪贴板图片格式不受支持');
@@ -3145,7 +3291,10 @@ ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => 
   return attachment;
 });
 
-ipcMain.handle('productState:load', () => productStateStore.load());
+ipcMain.handle('productState:load', (event) => {
+  requireTrustedMainSender(event);
+  return productStateStore.load();
+});
 
 // M-perf: coalesce product-state saves in an 800ms window. Bursts of persist
 // triggers (typing pauses, stream pauses, terminal output) produce one disk
@@ -3153,11 +3302,17 @@ ipcMain.handle('productState:load', () => productStateStore.load());
 // blocked by a synchronous writeFileSync while other IPC (keystrokes, route
 // switches) is queued. Only the freshest snapshot of a window is kept; the
 // returned promise resolves when the batch containing this snapshot has landed.
-ipcMain.handle('productState:save', (_event, state) =>
-  productStateSaveController.request(sanitizeProductStateSnapshot(state)),
-);
+ipcMain.handle('productState:save', (event, state) => {
+  requireTrustedMainSender(event);
+  return productStateSaveController.request(sanitizeProductStateSnapshot(state));
+});
 
 ipcMain.on('productState:saveSync', (event, state) => {
+  // sendSync 必须回填 returnValue；不可信 sender 拒绝保存而不是抛错。
+  if (!isTrustedMainSender(event.sender, mainWindow)) {
+    event.returnValue = { ok: false, code: 'FORBIDDEN', error: 'forbidden: untrusted sender' };
+    return;
+  }
   event.returnValue = productStateSaveController.saveSync(sanitizeProductStateSnapshot(state));
 });
 ipcMain.on('window:openDevTools', () => {
@@ -3206,27 +3361,22 @@ process.on('unhandledRejection', (reason) => {
   writeCrashLog('unhandledRejection', reason);
 });
 
-// 单实例锁（P0-2）：避免多开实例 spawn 多个 codebuddy --serve 抢端口/资源
-const gotLock = app.requestSingleInstanceLock();
-logStartup(`single instance lock acquired=${gotLock}`);
-if (!gotLock) {
-  app.exit(0);
-} else {
-  app.on('second-instance', (_event, commandLine = []) => {
-    if (commandLine.includes('--request-quit')) {
-      requestApplicationQuit().catch((error) => logStartup(`Command-line quit request failed: ${error.message}`));
-      return;
-    }
-    // 二次启动可能发生在首个实例仍初始化静态服务器时（双击两次是常见行为）。
-    // showOrCreateMainWindow 此时返回 null 会吞掉请求——记下并在就绪后补显示。
-    if (!app.isReady() || (!isDev && !prodServerPort)) {
-      pendingShowRequested = true;
-      logStartup('Second instance arrived before window readiness; deferring show');
-      return;
-    }
-    showOrCreateMainWindow();
-  });
-}
+// 单实例锁已在模块头部判定（到达这里必然是锁持有者）。
+logStartup('single instance lock acquired=true');
+app.on('second-instance', (_event, commandLine = []) => {
+  if (commandLine.includes('--request-quit')) {
+    requestApplicationQuit().catch((error) => logStartup(`Command-line quit request failed: ${error.message}`));
+    return;
+  }
+  // 二次启动可能发生在首个实例仍初始化静态服务器时（双击两次是常见行为）。
+  // showOrCreateMainWindow 此时返回 null 会吞掉请求——记下并在就绪后补显示。
+  if (!app.isReady() || (!isDev && !prodServerPort)) {
+    pendingShowRequested = true;
+    logStartup('Second instance arrived before window readiness; deferring show');
+    return;
+  }
+  showOrCreateMainWindow();
+});
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('com.codebuddy.gui.cathead');
@@ -3274,8 +3424,11 @@ app.whenReady().then(async () => {
       },
     }),
   );
-  const staticServerInstance = await new Promise((resolve) => {
+  const staticServerInstance = await new Promise((resolve, reject) => {
     const s = staticApp.listen(0, '127.0.0.1', () => resolve(s));
+    // listen 失败（端口/权限）会让 promise 永久挂起并只留 unhandledRejection 崩溃日志；
+    // 显式拒绝使外层 whenReady 的 catch 进入启动失败路径。
+    s.once('error', (listenError) => reject(listenError));
   });
   staticServer = staticServerInstance;
   prodServerPort = staticServer.address().port;
@@ -3313,6 +3466,24 @@ app.whenReady().then(async () => {
   // cookie 跨 session 校验：主进程 net.fetch 认证后写 default session cookie，
   // 渲染进程 fetch 也走 default session —— 理论上共享。加日志给后续诊断真证据。
   // 真发 session/prompt 时若认证失效，渲染进程 store.bootstrap 会自己 fetch 认证兜底
+}).catch((error) => {
+  // 任何启动失败（静态服务器 listen、窗口创建等）此前只落 unhandledRejection 然后
+  // 应用挂死（窗口无内容、无端口）；现在有明确的崩溃日志 + 提示 + 干净退出链。
+  writeCrashLog('startupFailure', error);
+  logStartup(`Startup failed: ${error?.message || error}`);
+  try {
+    dialog.showErrorBox(
+      'CodeBuddy Desktop 启动失败',
+      `初始化失败：\n\n${error?.message || error}\n\n崩溃日志已写入 userData/crash.log，重启应用后若仍然失败请反馈给开发者。`,
+    );
+  } catch (_) {}
+  setTimeout(() => {
+    try {
+      beginFinalApplicationExit('startup-failure');
+    } catch (_) {
+      app.exit(1);
+    }
+  }, 100);
 });
 
 // 真退出前树杀 codebuddy 子进程：shell:true spawn 出来的 node.exe 不会随 Electron 退

@@ -32,7 +32,9 @@ const projectRoot = path.resolve(__dirname, '..', '..');
 const distRoot = path.join(projectRoot, 'out', 'dist', 'assets');
 const baselinePath = path.join(__dirname, 'bundle-baseline.json');
 const budgets = [
-  { label: 'main entry', pattern: /^index-[^/]+\.js$/, maxBytes: 1_550_000 },
+  // 2026-08-20: main entry 1.55M → 1.56M —— 流式热路径指纹化缓存工具
+  // （workflow-status.js 新增 ~2.8KB）换取逐 token 派生消除，属审慎上调。
+  { label: 'main entry', pattern: /^index-[^/]+\.js$/, maxBytes: 1_560_000 },
   { label: 'workspace route', pattern: /^ReplicaWorkspaceView-[^/]+\.js$/, maxBytes: 3_800_000 },
   { label: 'terminal route', pattern: /^ReplicaTerminalView-[^/]+\.js$/, maxBytes: 330_000 },
 ];

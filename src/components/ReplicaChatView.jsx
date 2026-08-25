@@ -27,7 +27,15 @@ import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
-import { deriveWorkflowView, presentWorkflowActivity, workflowHasActivity } from '../lib/workflow-status';
+import {
+  deriveWorkflowViewCached,
+  memberHistoriesFingerprint,
+  presentWorkflowActivity,
+  timelineTailFingerprint,
+  workflowFieldId,
+  workflowHasActivity,
+  workflowViewFingerprint,
+} from '../lib/workflow-status';
 import { isBareAgentIdentity } from '../lib/subagent-report';
 import { collectSubagentReports } from '../lib/subagent-report';
 import {
@@ -35,6 +43,8 @@ import {
   formatToolExpandedView,
   shortenPath,
 } from '../lib/tool-output-format';
+import { useViewActive } from '../lib/use-view-active';
+import { useShallow } from 'zustand/react/shallow';
 
 /** Survives route unmount so returning from settings restores transcript position. */
 const chatScrollMemoryByThreadId = new Map();
@@ -492,11 +502,14 @@ const MARKDOWN_COMPONENTS = {
 function getDayLabel(ts, t) {
   const d = new Date(typeof ts === 'number' ? ts : Date.now());
   const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diff = (today - target) / 86400000;
-  if (diff === 0) return t ? t('chat.date.today') : '今天';
-  if (diff === 1) return t ? t('chat.date.yesterday') : '昨天';
+  // 直接比较年月日：DST 时区里本地日可能是 23/25 小时，86400000 除法的严格相等
+  // 会在夏令时切换日恰好失效（diff 为 0.958/1.042），标签退回数字日期。
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return t ? t('chat.date.today') : '今天';
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const sameYesterday =
+    d.getFullYear() === yesterday.getFullYear() && d.getMonth() === yesterday.getMonth() && d.getDate() === yesterday.getDate();
+  if (sameYesterday) return t ? t('chat.date.yesterday') : '昨天';
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
@@ -673,13 +686,15 @@ export function getResponseActivityLabel({
 
 function ResponseActivityIndicator({ label, startedAt }) {
   const [now, setNow] = useState(() => Date.now());
+  // keep-alive：聊天视图在后台流式时保持挂载，路由隐藏期间秒针不必走动。
+  const viewActive = useViewActive('chat');
 
   useEffect(() => {
-    if (!label) return undefined;
+    if (!label || !viewActive) return undefined;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [label, startedAt]);
+  }, [label, startedAt, viewActive]);
 
   if (!label) return null;
   const normalizedStartedAt = Number(startedAt);
@@ -735,16 +750,18 @@ function ThinkingCard({ item }) {
   const [now, setNow] = useState(() => Date.now());
   const contentRef = useRef(null);
   const streaming = Boolean(item.streaming);
+  // keep-alive：后台流式期间视图隐藏，秒针停走；重新可见时 setNow 校准。
+  const viewActive = useViewActive('chat');
   const expanded = expandedOverride !== null ? expandedOverride : streaming;
   const content = typeof item.content === 'string' ? item.content : '';
   const hasContent = content.trim().length > 0;
 
   useEffect(() => {
-    if (!streaming) return undefined;
+    if (!streaming || !viewActive) return undefined;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [streaming, item.createdAt]);
+  }, [streaming, item.createdAt, viewActive]);
 
   useEffect(() => {
     if (streaming && expanded && contentRef.current) {
@@ -2263,13 +2280,18 @@ export default function ReplicaChatView() {
   // Prefer live runtime timeline, but heal missing user bubbles from disk history.
   // Root `timeline`, per-thread runtime, and persisted thread.timeline can diverge after
   // reconnect; always resolve across all three so user bubbles never disappear.
-  const timeline = useStore((s) => {
-    const threadId = s.activeThreadId;
-    const thread = s.threadsById[threadId];
-    const runtimeTimeline = s.threadRuntimeById?.[threadId]?.timeline;
-    const live = resolveThreadTimeline(s.timeline, runtimeTimeline);
-    return resolveThreadTimeline(live, thread?.timeline);
-  });
+  // M-perf: 合并路径在「live 缺盘内用户气泡」状态下每次 selector 求值都返回新数组。
+  // useShallow 按元素引用比较 —— 无关的 store 写入（终端 50ms 输出、其他线程
+  // chunk）不再重渲染隐藏的聊天视图；流式切换条目引用时照常触发。
+  const timeline = useStore(
+    useShallow((s) => {
+      const threadId = s.activeThreadId;
+      const thread = s.threadsById[threadId];
+      const runtimeTimeline = s.threadRuntimeById?.[threadId]?.timeline;
+      const live = resolveThreadTimeline(s.timeline, runtimeTimeline);
+      return resolveThreadTimeline(live, thread?.timeline);
+    }),
+  );
   const connectionState = useStore((s) => s.connectionState);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const activeProject = useStore((s) => s.projectsById[s.activeProjectId] || null);
@@ -2309,7 +2331,30 @@ export default function ReplicaChatView() {
   const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
   const activeThreadRuntime = useStore((s) => s.threadRuntimeById?.[s.activeThreadId] || null);
   const promptQueue = useStore((s) => s.promptQueue || EMPTY_ARRAY);
+  // M-perf: stream chunks merge into the same message entry (mergeAssistantChunk
+  // keeps the id), so a length+last-entry+tail-signature fingerprint captures
+  // everything the workflow/activity presenters read from the timeline: pure
+  // token appends stop re-deriving the O(timeline) projections on every chunk.
+  // The tail signature covers tool/task/goal status flips in the last 20 entries
+  // (the common completion shape); a change deeper in a 300-entry history is
+  // almost always accompanied by a new appended entry (length change) anyway.
+  const timelineFingerprint = useMemo(() => timelineTailFingerprint(timeline), [timeline]);
   // Prefer the runtime snapshot, then rebuild from timeline for restored threads.
+  // M-perf: 旧依赖 [activeThreadRuntime, timeline] 双双逐 chunk 换引用，让
+  // collectSubagentReports（O(timeline) 扫描）在每个 token 上为空结果重跑。
+  // 改为结构指纹：无子代理的普通会话流式期间指纹不变。
+  const subagentInputsFingerprint = useMemo(
+    () =>
+      [
+        workflowFieldId(activeThreadRuntime?.teamState),
+        workflowFieldId(activeThreadRuntime?.lastTeamState),
+        memberHistoriesFingerprint(activeThreadRuntime?.memberHistoriesByName),
+        workflowFieldId(activeThreadRuntime?.subagentToolCalls),
+        workflowFieldId(activeThreadRuntime?.subagentReports),
+        workflowFieldId(activeThreadRuntime?.lastSubagentReports),
+      ].join('|'),
+    [activeThreadRuntime],
+  );
   const subagentReports = useMemo(() => {
     if (Array.isArray(activeThreadRuntime?.subagentReports) && activeThreadRuntime.subagentReports.length) {
       return activeThreadRuntime.subagentReports;
@@ -2324,7 +2369,9 @@ export default function ReplicaChatView() {
       memberHistoriesByName: activeThreadRuntime?.memberHistoriesByName,
       subagentToolCalls: activeThreadRuntime?.subagentToolCalls,
     });
-  }, [activeThreadRuntime, timeline]);
+    // 结构指纹驱动（timelineFingerprint + subagentInputsFingerprint）：
+    // 纯 token 追加两者都不变，与 store 侧 collectSubagentReports 的结构事件节奏对齐。
+  }, [timelineFingerprint, subagentInputsFingerprint]);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
@@ -2742,29 +2789,27 @@ export default function ReplicaChatView() {
   // The tail signature covers tool/task/goal status flips in the last 20 entries
   // (the common completion shape); a change deeper in a 300-entry history is
   // almost always accompanied by a new appended entry (length change) anyway.
-  const timelineFingerprint = useMemo(() => {
-    const last = timeline[timeline.length - 1];
-    let tailSig = 0;
-    const from = Math.max(0, timeline.length - 20);
-    for (let i = timeline.length - 1; i >= from; i -= 1) {
-      const item = timeline[i];
-      if (
-        item?.type === 'tool_call' ||
-        item?.type === 'taskCreated' ||
-        item?.type === 'taskStatus' ||
-        item?.type === 'goal-progress' ||
-        item?.type === 'goal-status'
-      ) {
-        tailSig = (tailSig * 31 + String(item.status || '').length) | 0;
-        tailSig = (tailSig * 31 + (item.id ? item.id.length : 0)) | 0;
-      }
-    }
-    return `${timeline.length}:${last?.id || ''}:${last?.type || ''}:${last?.status || ''}:${tailSig}`;
-  }, [timeline]);
-
-  const workflowStatus = useMemo(
-    () => deriveWorkflowView({ runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline }),
+  // M-perf: workflowStatus 不能依赖 activeThreadRuntime 的引用——patchThreadRuntime
+  // 每个流式 chunk 都换引用，会让下面的 O(回合条目) 派生逐 token 重跑并级联进
+  // responseActivityLabel。改为按编排字段指纹记忆化：纯 token 追加指纹不变。
+  const workflowFingerprint = useMemo(
+    () =>
+      activeThreadRuntime
+        ? workflowViewFingerprint({
+            runtime: activeThreadRuntime,
+            threadStatus: activeThreadStatus,
+            timelineFingerprint,
+          })
+        : null,
     [activeThreadRuntime, activeThreadStatus, timelineFingerprint],
+  );
+  const workflowStatus = useMemo(
+    () =>
+      deriveWorkflowViewCached(
+        { runtime: activeThreadRuntime || {}, threadStatus: activeThreadStatus, timeline },
+        workflowFingerprint || 'none',
+      ),
+    [activeThreadRuntime, activeThreadStatus, timeline, workflowFingerprint],
   );
   const responseActivityLabel = useMemo(
     () => {

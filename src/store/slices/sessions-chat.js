@@ -61,6 +61,48 @@ const WORKFLOW_PROGRESS_MAX_MS = 12 * 60 * 60 * 1_000;
 // 清理）后轻量 session/load 一次刷新用量。覆盖终态收尾 + 迟到重放窗口。
 const COMPACT_USAGE_REFRESH_DELAY_MS = 2_000;
 const workflowProgressMonitors = new Map();
+// M-perf: 已识别的 codebuddy.ai/* 私有键。旧实现在 handleThreadSessionUpdate 内
+// 每条 session/update（即每个流式 token）都重建这 35 项 Set，纯 GC churn。
+const KNOWN_PRIVATE_METADATA_KEYS = new Set([
+  'codebuddy.ai/promptSuggestion',
+  'codebuddy.ai/teamUpdate',
+  'codebuddy.ai/agentPhase',
+  'codebuddy.ai/progress',
+  'codebuddy.ai/historyReplay',
+  'codebuddy.ai/goalProgress',
+  'codebuddy.ai/goalStatus',
+  'codebuddy.ai/goalMode',
+  'codebuddy.ai/workflowState',
+  'codebuddy.ai/workflowUpdate',
+  'codebuddy.ai/workflowEventKind',
+  'codebuddy.ai/workflowRunId',
+  'codebuddy.ai/workflowName',
+  'codebuddy.ai/workflowStatus',
+  'codebuddy.ai/workflowAgentCount',
+  'codebuddy.ai/workflowCachedCount',
+  'codebuddy.ai/workflowPhaseCount',
+  'codebuddy.ai/workflowError',
+  'codebuddy.ai/workflowPhase',
+  'codebuddy.ai/workflowAgentKey',
+  'codebuddy.ai/workflowAgentLabel',
+  'codebuddy.ai/workflowAgentPhase',
+  'codebuddy.ai/workflowAgentError',
+  'codebuddy.ai/workflowAgentTokens',
+  'codebuddy.ai/permissionResolved',
+  'codebuddy.ai/toolCallId',
+  'codebuddy.ai/compact-cancelled',
+  'codebuddy.ai/interruptionRequest',
+  'codebuddy.ai/memberEvent',
+  'codebuddy.ai/parentToolCallId',
+  'codebuddy.ai/isSubAgent',
+  'codebuddy.ai/subagentType',
+  'codebuddy.ai/description',
+  'codebuddy.ai/isBackground',
+  'codebuddy.ai/memberName',
+]);
+// agentCheckpointPathsById 只增不减会随会话累积泄漏；键为 checkpoint id 无法反查
+// 线程，改为有界容量（保留最新条目，超出淘汰最旧）。
+const AGENT_CHECKPOINT_PATHS_LIMIT = 400;
 
 /**
  * Session lifecycle, conversation events, permissions, and prompt pipeline.
@@ -145,35 +187,45 @@ export function createSessionsChatSlice(set, get, ctx) {
               updatedAt: Number(snapshot.updatedAt) || Date.now(),
             };
             const now = Date.now();
-            get().patchThreadRuntime(threadId, {
-              workflowState: normalized,
-              ...(terminal
-                ? {
-                    lastWorkflowState: normalized,
-                    backgroundDrainRunId: normalized.runId,
-                    backgroundDrainUntil: now + BACKGROUND_DRAIN_WINDOW_MS,
-                    backgroundDrainMaxUntil: now + BACKGROUND_DRAIN_MAX_MS,
-                  }
-                : {}),
-            });
-
-            if (get().activeThreadId === threadId) {
-              const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-              const latestThread = get().threadsById[threadId];
-              const view = deriveWorkflowView({
-                runtime: latestRuntime,
-                threadStatus: latestThread?.status || 'idle',
-                timeline: latestRuntime.timeline,
+            // M-perf: 进度文件未变化时跳过 patch —— patchThreadRuntime 每次都生成
+            // 新 runtime 引用，会让所有浅比较订阅者（App 状态栏/面板）以 2Hz 空转
+            // 重渲染长达数小时。快照为小对象，签名对比成本可忽略。
+            const prevWorkflow = currentRuntime.workflowState;
+            const workflowUnchanged =
+              prevWorkflow &&
+              typeof prevWorkflow === 'object' &&
+              JSON.stringify(prevWorkflow) === JSON.stringify(normalized);
+            if (!workflowUnchanged) {
+              get().patchThreadRuntime(threadId, {
+                workflowState: normalized,
+                ...(terminal
+                  ? {
+                      lastWorkflowState: normalized,
+                      backgroundDrainRunId: normalized.runId,
+                      backgroundDrainUntil: now + BACKGROUND_DRAIN_WINDOW_MS,
+                      backgroundDrainMaxUntil: now + BACKGROUND_DRAIN_MAX_MS,
+                    }
+                  : {}),
               });
-              const currentPanel = get().workflowFloatingPanel;
-              if (
-                currentPanel?.payload?.runId !== normalized.runId &&
-                shouldWorkflowAutoOpen(view, {
-                  dismissed: get().workflowPanelDismissed,
-                  runId: normalized.runId,
-                })
-              ) {
-                get().openWorkflowPanel({ projectId, threadId, runId: normalized.runId });
+
+              if (get().activeThreadId === threadId) {
+                const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+                const latestThread = get().threadsById[threadId];
+                const view = deriveWorkflowView({
+                  runtime: latestRuntime,
+                  threadStatus: latestThread?.status || 'idle',
+                  timeline: latestRuntime.timeline,
+                });
+                const currentPanel = get().workflowFloatingPanel;
+                if (
+                  currentPanel?.payload?.runId !== normalized.runId &&
+                  shouldWorkflowAutoOpen(view, {
+                    dismissed: get().workflowPanelDismissed,
+                    runId: normalized.runId,
+                  })
+                ) {
+                  get().openWorkflowPanel({ projectId, threadId, runId: normalized.runId });
+                }
               }
             }
             if (terminal) break;
@@ -395,44 +447,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtimePatch.progress = metadata['codebuddy.ai/progress'] || null;
     }
     const privateKeys = Object.keys(metadata).filter((key) => key.startsWith('codebuddy.ai/'));
-    const knownPrivateKeys = new Set([
-      'codebuddy.ai/promptSuggestion',
-      'codebuddy.ai/teamUpdate',
-      'codebuddy.ai/agentPhase',
-      'codebuddy.ai/progress',
-      'codebuddy.ai/historyReplay',
-      'codebuddy.ai/goalProgress',
-      'codebuddy.ai/goalStatus',
-      'codebuddy.ai/goalMode',
-      'codebuddy.ai/workflowState',
-      'codebuddy.ai/workflowUpdate',
-      'codebuddy.ai/workflowEventKind',
-      'codebuddy.ai/workflowRunId',
-      'codebuddy.ai/workflowName',
-      'codebuddy.ai/workflowStatus',
-      'codebuddy.ai/workflowAgentCount',
-      'codebuddy.ai/workflowCachedCount',
-      'codebuddy.ai/workflowPhaseCount',
-      'codebuddy.ai/workflowError',
-      'codebuddy.ai/workflowPhase',
-      'codebuddy.ai/workflowAgentKey',
-      'codebuddy.ai/workflowAgentLabel',
-      'codebuddy.ai/workflowAgentPhase',
-      'codebuddy.ai/workflowAgentError',
-      'codebuddy.ai/workflowAgentTokens',
-      'codebuddy.ai/permissionResolved',
-      'codebuddy.ai/toolCallId',
-      'codebuddy.ai/compact-cancelled',
-      'codebuddy.ai/interruptionRequest',
-      'codebuddy.ai/memberEvent',
-      'codebuddy.ai/parentToolCallId',
-      'codebuddy.ai/isSubAgent',
-      'codebuddy.ai/subagentType',
-      'codebuddy.ai/description',
-      'codebuddy.ai/isBackground',
-      'codebuddy.ai/memberName',
-    ]);
-    const unknownPrivateKey = privateKeys.find((key) => !knownPrivateKeys.has(key));
+    const unknownPrivateKey = privateKeys.find((key) => !KNOWN_PRIVATE_METADATA_KEYS.has(key));
     if (unknownPrivateKey) {
       runtimePatch.rawExtensionEvents = appendRawExtensionEvent(
         runtime.rawExtensionEvents,
@@ -500,23 +515,48 @@ export function createSessionsChatSlice(set, get, ctx) {
     if (get().activeThreadId === threadId) {
       // Auto-open only for real orchestration (team/goal/workflow/explicit subagent), not TaskCreate spam.
       const latestForPanel = get().threadRuntimeById[threadId] || runtime;
-      const view = deriveWorkflowView({
-        runtime: latestForPanel,
-        threadStatus: get().threadsById[threadId]?.status || 'idle',
-        timeline: latestForPanel.timeline,
-      });
-      const runId = view.runId || runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
-      const currentPanel = get().workflowFloatingPanel;
-      if (
-        !view.empty &&
-        shouldWorkflowAutoOpen(view, { dismissed: get().workflowPanelDismissed, runId }) &&
-        currentPanel == null
-      ) {
-        get().openWorkflowPanel({
-          projectId: get().activeProjectId || null,
-          threadId,
-          runId,
+      // M-perf: 纯内容 chunk（消息/思考 token）不会新增编排信号——team/goal/workflow
+      // 状态、member 历史、subagent 工具调用都由结构化事件写入 runtime。无信号时
+      // deriveWorkflowView 的自动打开判定与上一条事件一致；而 normalizeWorkflowStatus
+      // 的缓存按 runtime 引用记忆化，patchThreadRuntime 每 chunk 都换引用导致缓存必
+      // 然失效，因此这里按信号短路，避免每 token 一次 O(当前回合条目) 派生。
+      const pureContentChunk =
+        su === 'agent_message_chunk' || su === 'agent_thought_chunk' || su === 'user_message_chunk';
+      const goalStateHasContent = (state) =>
+        Boolean(state) &&
+        (Number(state.eventCount) > 0 ||
+          Boolean(state.activeGoalId) ||
+          Object.keys(state.goalsById || {}).length > 0);
+      const orchestrationSignal = Boolean(
+        workflowActivity ||
+        runtimePatch.workflowState || runtimePatch.goalState ||
+        runtimePatch.teamState || runtimePatch.lastTeamState ||
+        latestForPanel.workflowState || latestForPanel.lastWorkflowState ||
+        latestForPanel.teamState || latestForPanel.lastTeamState ||
+        goalStateHasContent(latestForPanel.goalState) || goalStateHasContent(latestForPanel.lastGoalState) ||
+        (latestForPanel.subagentReports && latestForPanel.subagentReports.length) ||
+        (latestForPanel.memberHistoriesByName && Object.keys(latestForPanel.memberHistoriesByName).length) ||
+        (latestForPanel.subagentToolCalls && Object.keys(latestForPanel.subagentToolCalls).length)
+      );
+      if (!pureContentChunk || orchestrationSignal) {
+        const view = deriveWorkflowView({
+          runtime: latestForPanel,
+          threadStatus: get().threadsById[threadId]?.status || 'idle',
+          timeline: latestForPanel.timeline,
         });
+        const runId = view.runId || runtimePatch.workflowState?.runId || runtimePatch.goalState?.runId || runtime.activePromptRunId;
+        const currentPanel = get().workflowFloatingPanel;
+        if (
+          !view.empty &&
+          shouldWorkflowAutoOpen(view, { dismissed: get().workflowPanelDismissed, runId }) &&
+          currentPanel == null
+        ) {
+          get().openWorkflowPanel({
+            projectId: get().activeProjectId || null,
+            threadId,
+            runId,
+          });
+        }
       }
     }
     if (compactTimelinePayload) {
@@ -1064,10 +1104,15 @@ export function createSessionsChatSlice(set, get, ctx) {
         .filter(Boolean);
       if (id && paths.length) {
         set((state) => ({
-          agentCheckpointPathsById: {
-            ...(state.agentCheckpointPathsById || {}),
-            [id]: paths,
-          },
+          agentCheckpointPathsById: (() => {
+            const merged = {
+              ...(state.agentCheckpointPathsById || {}),
+              [id]: paths,
+            };
+            const keys = Object.keys(merged);
+            if (keys.length <= AGENT_CHECKPOINT_PATHS_LIMIT) return merged;
+            return Object.fromEntries(keys.slice(keys.length - AGENT_CHECKPOINT_PATHS_LIMIT));
+          })(),
         }));
       }
       return;
@@ -1075,6 +1120,8 @@ export function createSessionsChatSlice(set, get, ctx) {
     if (type === 'interaction_requests_invalidated') {
       const interruptionIds = new Set(detail?.interruptionIds || []);
       const questionToolCallIds = new Set(detail?.questionToolCallIds || []);
+      // 先 flush 再读 runtime：否则 coalesce 折叠会把这里的 expired 标记整个覆盖掉。
+      get().flushThreadTimelineCoalesce?.(threadId);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const invalidatedAt = Date.now();
       // M-st3: avoid re-allocating an array from the id Sets on every timeline
@@ -1492,15 +1539,18 @@ export function createSessionsChatSlice(set, get, ctx) {
         status: 'idle',
         unread: false,
         timeline: completedTimeline.slice(-300),
+        // metadata 展开必须用最新读取（latestThread）：connect/await 期间并发写入的
+        // promptQueue、authRequired、sessionResetAt 等字段会被 session 级
+        // updateThreadRecord 的整字段覆盖，旧快照展开等于丢字段。
         metadata: recoveryError
           ? {
-              ...(thread.metadata || {}),
+              ...(latestThread.metadata || {}),
               previousSessionId: requestedSessionId,
               recoveryError,
               recoveredAt: new Date().toISOString(),
               lastError: null,
             }
-          : { ...(thread.metadata || {}), lastError: null },
+          : { ...(latestThread.metadata || {}), lastError: null },
       });
       if (recoveryError) {
         const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
@@ -2149,6 +2199,8 @@ export function createSessionsChatSlice(set, get, ctx) {
 
   applyInterruptionResolution(threadId, interruptionId, decision, resolvedAt = Date.now()) {
     if (!threadId || !interruptionId) return false;
+    // 先 flush 再读 runtime：否则 coalesce 折叠会把这里的 resolved 标记整个覆盖掉。
+    get().flushThreadTimelineCoalesce?.(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     let timelineChanged = false;
     const timeline = runtime.timeline.map((item) => {
@@ -2256,6 +2308,8 @@ export function createSessionsChatSlice(set, get, ctx) {
   },
 
   applyQuestionResolution(threadId, toolCallId, status, answers = null) {
+    // 先 flush 再读 runtime：否则 coalesce 折叠会把这里的 answered 标记整个覆盖掉。
+    get().flushThreadTimelineCoalesce?.(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     let timelineChanged = false;
     const timeline = runtime.timeline.map((item) => {
@@ -2639,6 +2693,9 @@ export function createSessionsChatSlice(set, get, ctx) {
       set({ error: '当前会话未连接' });
       return false;
     }
+    // 折叠先落地：隐藏窗口下 coalesce 缓冲里的 chunk 不 base 在 stale runtime 上，
+    // 否则 patchThreadRuntime 的折叠会用原始缓冲覆盖掉刚 push 的用户消息气泡。
+    get().flushThreadTimelineCoalesce?.(threadId);
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const requestSessionId =
       thread.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);

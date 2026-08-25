@@ -82,6 +82,27 @@ function createBridge(deps) {
     }
   }
 
+  // M-hang: net.fetch 的 AbortSignal 对已挂起的 reader.read() 不一定生效。没有
+  // 读级截止时，一个"连接后长期不发字节"的死流会让 cliStream 永不 settle，
+  // activePrompts 的 finally 清理永远不跑（runId 终身泄漏）。
+  const STREAM_READ_DEADLINE = new Error('cli stream read deadline exceeded');
+
+  async function readWithDeadline(reader, ms) {
+    const pending = reader.read();
+    pending.catch(() => {});
+    let timer = null;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(STREAM_READ_DEADLINE), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * Stream SSE lines from a project's serve endpoint.
    * @param {{ port: number, password?: string }} runtime
@@ -122,8 +143,18 @@ function createBridge(deps) {
       }
       const decoder = new TextDecoder();
       let buffer = '';
+      const tMax = Date.now() + timeoutMs;
       while (true) {
-        const { done, value } = await reader.read();
+        let readResult;
+        try {
+          readResult = await readWithDeadline(reader, Math.max(1, tMax - Date.now()));
+        } catch (error) {
+          if (error !== STREAM_READ_DEADLINE) throw error;
+          controller.abort();
+          try { reader.cancel(); } catch (_) {}
+          return { ok: false, status: 0, body: 'stream read deadline exceeded' };
+        }
+        const { done, value } = readResult;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let idx;

@@ -259,10 +259,11 @@ export default function ReplicaBackgroundSessionsView() {
   }, []);
 
   React.useEffect(() => {
-    if (!logsAutoRefresh || !logsDialog?.session) return;
+    // keep-alive：视图隐藏时对话框轮询也必须停（否则每 5s 一次 RPC 在后台空转）。
+    if (!logsAutoRefresh || !logsDialog?.session || !active) return;
     const timer = setInterval(() => loadLogs(logsDialog.session), 5000);
     return () => clearInterval(timer);
-  }, [loadLogs, logsAutoRefresh, logsDialog?.session]);
+  }, [loadLogs, logsAutoRefresh, logsDialog?.session, active]);
 
   const copyLogs = async () => {
     if (!logsDialog?.content) return;

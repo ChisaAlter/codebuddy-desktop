@@ -183,13 +183,15 @@ export async function getLog(count = 20) {
  * @returns {Promise<Array<{hash: string, shortHash: string, author: string, date: string, subject: string}>>}
  */
 export async function getLogDetailed(count = 20) {
-  const output = await runGit(['log', `-${count}`, '--format=%H|%h|%an|%ai|%s']);
+  // %x1f（单元分隔符）作字段边界：作者名/提交信息里出现 `|` 会让旧的
+  // split('|') 把 author 之后的所有字段左移（subject 有 rejoin 兜底，author 没有）。
+  const output = await runGit(['log', `-${count}`, '--format=%H%x1f%h%x1f%an%x1f%ai%x1f%s']);
   return output
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
-      const [hash, shortHash, author, date, ...subjectParts] = line.split('|');
-      return { hash, shortHash, author, date, subject: subjectParts.join('|') };
+      const [hash, shortHash, author, date, ...subjectParts] = line.split('\x1f');
+      return { hash, shortHash, author, date, subject: subjectParts.join('\x1f') };
     });
 }
 

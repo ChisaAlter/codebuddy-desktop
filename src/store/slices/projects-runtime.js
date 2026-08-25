@@ -405,7 +405,43 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!persisted) {
         const persistenceError = get().error;
-        set({ ...previousState, error: persistenceError });
+        // 只回滚被删除的项目/线程相关键与移除时 reset 的视图键；整份 previousState
+        // 铺回（旧实现）会把 await 期间其他线程的流式 chunk、toast、terminal
+        // 输出一起撤掉。键集合直接由两个 reset 函数导出，不手工维护镜像清单。
+        // 副作用注意：resetFileWorkspace 顺带推进请求代际计数器，回滚时同样需要
+        // 失效在飞的文件扫描/读取。
+        const restoreFlatKeys = new Set([
+          ...Object.keys(resetProjectRuntimeViews()),
+          ...Object.keys(resetFileWorkspace(previousState.workspacePath || '.')),
+        ]);
+        set((state) => {
+          const threadsById = { ...state.threadsById };
+          const threadRuntimeById = { ...state.threadRuntimeById };
+          for (const tid of threadIds) {
+            if (previousState.threadsById[tid]) threadsById[tid] = previousState.threadsById[tid];
+            if (previousState.threadRuntimeById[tid]) threadRuntimeById[tid] = previousState.threadRuntimeById[tid];
+          }
+          const result = {
+            projectsById: { ...state.projectsById, [projectId]: project },
+            projectOrder: previousState.projectOrder,
+            threadsById,
+            threadRuntimeById,
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: previousState.threadOrderByProject[projectId] || [],
+            },
+            activeProjectId: wasActive ? projectId : state.activeProjectId,
+            activeThreadId: wasActive ? previousState.activeThreadId : state.activeThreadId,
+            workspacePath: wasActive ? previousState.workspacePath : state.workspacePath,
+            error: persistenceError,
+          };
+          if (wasActive) {
+            for (const key of restoreFlatKeys) {
+              if (key in previousState) result[key] = previousState[key];
+            }
+          }
+          return result;
+        });
         if (wasActive || project.runtimeStatus === 'running') {
           const runtime = await get()
             .ensureProjectRuntime(projectId)

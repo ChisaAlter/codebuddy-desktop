@@ -1,6 +1,5 @@
-import React, { lazy, Suspense, useEffect, useMemo } from 'react';
+import React, { lazy, Suspense, useEffect } from 'react';
 import { LayoutPanelLeft, ListTree } from 'lucide-react';
-import { useShallow } from 'zustand/react/shallow';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
@@ -8,7 +7,11 @@ import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon-mark.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 import { applyDocumentLocale, resolveLocaleMode, translate } from './lib/i18n';
-import { shouldShowWorkflowTopbarHighlight } from './lib/workflow-status';
+import {
+  deriveWorkflowViewCached,
+  timelineTailFingerprint,
+  workflowViewFingerprint,
+} from './lib/workflow-status';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
 import RightPanelHost from './components/RightPanelHost';
@@ -500,36 +503,21 @@ function StatusBar() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const localeMode = useStore((s) => s.guiSettings?.locale || 'system');
   const t = (key, vars) => translate(resolveLocaleMode(localeMode), key, vars);
-  // M-perf: subscribe to the workflow-relevant runtime fields only (shallow),
-  // never the whole thread runtime object — patchThreadRuntime creates a new
-  // runtime reference on every streaming chunk / usage_update, which used to
-  // re-render the topbar and re-run deriveWorkflowView on each one.
-  const workflowRuntime = useStore(
-    useShallow((s) => {
-      const runtime = s.threadRuntimeById?.[s.activeThreadId];
-      if (!runtime) return null;
-      return {
-        timeline: runtime.timeline,
-        workflowState: runtime.workflowState,
-        lastWorkflowState: runtime.lastWorkflowState,
-        goalState: runtime.goalState,
-        lastGoalState: runtime.lastGoalState,
-        teamState: runtime.teamState,
-        lastTeamState: runtime.lastTeamState,
-        promptStartedAt: runtime.promptStartedAt,
-        activePromptRunId: runtime.activePromptRunId,
-        isAwaitingResponse: runtime.isAwaitingResponse,
-        memberHistoriesByName: runtime.memberHistoriesByName,
-        subagentReports: runtime.subagentReports,
-        lastSubagentReports: runtime.lastSubagentReports,
-      };
-    }),
-  );
-  const activeThreadStatus = useStore((s) => s.threadsById?.[s.activeThreadId]?.status || 'idle');
-  const workflowVisible = useMemo(() => {
-    const runtime = workflowRuntime || {};
-    return shouldShowWorkflowTopbarHighlight(runtime, activeThreadStatus, runtime.timeline);
-  }, [workflowRuntime, activeThreadStatus]);
+  // M-perf: 顶栏高亮是布尔值，直接在 selector 里派生并用 Object.is 相等性收敛——
+  // 组件只在高亮真正翻转时重渲染。旧实现把 timeline（每 chunk 换引用）放进
+  // useShallow 字段导致顶栏逐 token 重渲染 + O(回合条目) 重算；现在派生走指纹
+  // 键控缓存，纯 token 追加直接命中缓存。
+  const workflowVisible = useStore((s) => {
+    const runtime = s.threadRuntimeById?.[s.activeThreadId];
+    if (!runtime) return false;
+    const threadStatus = s.threadsById?.[s.activeThreadId]?.status || 'idle';
+    const timelineFingerprint = timelineTailFingerprint(runtime.timeline);
+    const fingerprint = workflowViewFingerprint({ runtime, threadStatus, timelineFingerprint });
+    return deriveWorkflowViewCached(
+      { runtime, threadStatus, timeline: runtime.timeline },
+      fingerprint,
+    ).highlightTopbar;
+  });
   const surfaceActive = Boolean(rightPanel);
 
   return (
