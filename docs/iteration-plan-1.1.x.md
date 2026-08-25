@@ -23,21 +23,23 @@
 | R4 (P1) | `codebuddy-cli-path` Windows 形状用例改 `it.runIf(win32)`（原先部分用例在 Linux 直接失败、部分用 early-return 假通过）；`perf-fixtures` 构建产物断言默认跳过、`CODEBUDDY_REQUIRE_BUILD=1` 时强制执行 | `tests/unit/codebuddy-cli-path.test.js`、`tests/unit/perf-fixtures.test.js` |
 | R5 (P2) | `createTimeoutSignal` 暴露 `controller`，`codebuddy:request` 的 renderer 销毁中断由静默 no-op 变为真实 abort；stream contract 测试钉死接线 | `electron/main.cjs`、`tests/unit/main-process-stream-contract.test.js` |
 | R6 (P2) | 所有 `ipcMain.handle` 通道统一 `requireTrustedMainSender`（此前 `runtime:list`、`app:openExternal`、`app:checkForUpdates`、`workspace:choose` 等约 21 个通道未校验 sender）；新增源码契约测试防回归 | `electron/main.cjs`、`tests/unit/ipc-trusted-sender.test.js` |
+| R7 (P2) | bridge `session/prompt` 改发 ACP 内容块数组 `[{ type:'text', text }]`（与桌面端 `sessions-chat.js` 同形）；完成判定改为 JSON-RPC 响应（匹配 `id` 的 `result`/`error`）+ `result.stopReason`，`result.done` 仅作旧版兜底；`prompt_done` 现携带 `stopReason` 且只发一次；流自然结束无响应帧时补发 `stopReason:'stream_end'` 终止事件 | `electron/mobile-remote/bridge.cjs`、`electron/mobile-remote/tests/bridge.test.cjs`（5 个新用例含契约形状） |
+| R8 (P2) | prompt 流 120s wall-clock（`tMax`）改为主进程 openStream 同款 per-chunk 空闲窗口（每次 read 前重新 arm；`timeoutMs: 0` 关闭）；长工具运行只要持续出帧就不再被截断；新增 idle-vs-wall-clock 两个用例（持续出帧超总时长存活 / 静默超窗中止） | `electron/mobile-remote/bridge.cjs`（`PROMPT_IDLE_TIMEOUT_MS`、`armIdleTimeout`、测试钩子 `deps.promptIdleTimeoutMs`） |
+| R9 (P2) | relay pending 帧补字节上限 `MAX_PENDING_BYTES_PER_CLIENT = 1 MiB`（条数上限之外，超限丢最旧；单帧超预算直接丢弃不清空队列）；data-socket 关闭后 client 帧改回缓冲（`#attachClientBuffering`），新 data-socket attach 时 flush，不再静默丢帧；陈旧 data-socket 的 close 不会拆掉替换后的接线（`clientState.dataWs` 归属校验）；4 个新中继用例 | `packages/mobile-remote-relay/src/session-hub.js`、`tests/hub.test.js` |
+| R10 (P2) | Lint 收紧落地：`no-undef` 打开、`no-unused-vars`/`no-empty`/`no-irregular-whitespace` warn → error；`no-undef` 抓到 1 个真实缺陷（`plugins-list.test.js` 用 `vi` 未 import）已修；全量 `npm run lint` 零告警 | `eslint.config.js`、`tests/unit/plugins-list.test.js` |
+| — | 发版自动化：新增 `release` workflow（v* tag push / workflow_dispatch 指定既有 tag → windows-latest → `test:gate` → `prepare-release.ps1` → **draft** Release 附 exe/blockmap/latest.yml/SHA256SUMS）；无 `CSC_LINK` secrets 时自动 `-AllowUnsigned` 出未签名预览；维护者手册见 `docs/release-checklist.md` | `.github/workflows/release.yml`、`docs/release-checklist.md` |
 
 ### Next（下轮优先，按序）
 
 | 审查 ID | 内容 | 备注 / 证据 |
 | --- | --- | --- |
-| R7 (P2) | mobile-remote bridge `session/prompt` 载荷形状：桌面端发内容块数组 `[{ type:'text', text }, …]`（`sessions-chat.js` L2872），bridge 发裸字符串 `prompt: text`（`bridge.cjs` L438）；`prompt_done` 以 `msg?.result?.done` 判定而非 ACP `stopReason` | 需与 CLI ACP 契约核对后统一为内容块 + `stopReason` |
-| R8 (P2) | mobile-remote prompt 120s 硬 wall-clock（`bridge.cjs` `PROMPT_TIMEOUT_MS`、`tMax = Date.now() + timeoutMs`）改为主进程 openStream 同款 per-chunk 空闲窗口 | 长任务（工具执行）会被 120s 截断 |
-| R9 (P2) | relay pending 帧仅按条数上限（`session-hub.js` `MAX_PENDING_FRAMES_PER_CLIENT = 256`）缺字节上限；data-socket 关闭期间 client 帧被静默丢弃 → 补字节上限 + 重新缓冲或主动断开 client | `packages/mobile-remote-relay/src/session-hub.js` |
-| R10 (P2) | Lint 收紧：`no-undef` 打开、warnings → errors；先跑全量确认零告警再切 | 当前 `npm run lint` 零输出，切换风险低 |
-| R11 (P3) | 巨型模块拆分：`ReplicaChatView.jsx`（约 3.6k 行）、`sessions-chat.js`（约 3.4k 行）先抽纯函数（composer 高度、prompt 载荷构造等）+ 特性目录化 | 只做安全小步抽取，每步跑 `test:gate` |
+| R11 (P3) | 巨型模块拆分：`ReplicaChatView.jsx`（约 3.6k 行）、`sessions-chat.js`（约 3.4k 行）先抽纯函数（composer 高度、prompt 载荷构造等）+ 特性目录化 | 只做安全小步抽取，每步跑 `test:gate`；本轮明确跳过（发版优先于重构） |
 | — | CLI 推荐版本 2.135.0 → 2.138.0 评估：需真机跑 `test:gate` + packaged E2E 验证后再 bump `electron/cli-compat.cjs` | 见下方对齐调研 |
+| — | 发版收尾：合并 PR #1 后按 `docs/release-checklist.md` 走 tag → Actions draft → 人工 publish（v1.1.1 tag 已存在但指向不含本轮修复的旧提交，推荐直接出 1.1.2，见清单「当前状态提示」） | `docs/release-checklist.md` |
 
 ### 明确不做（Out of scope）
 
-- 不虚构/发布 GitHub Release（最新 Release 仍是 v1.0.5，安装包发布由维护者手动跑 `scripts/run-release.cjs` Windows 管线）。
+- 不虚构/发布 GitHub Release（最新已发布 Release 仍是 v1.0.5）。发布动作本身留给维护者：本轮已把 Windows 管线搬进 `release` workflow（tag push → windows-latest → draft Release），publish 仍需人工审核点按，见 `docs/release-checklist.md`。
 - 不改 `ipcMain.on` 窗口控制通道（minimize/maximize/close 等）的 sender 校验——无返回值、无敏感数据，收益低；如后续统一再做。
 - 不盲目 bump CLI 最低/推荐版本：`cli-compat.cjs` 的 `newer` 状态本来就只警告不阻断，2.136–2.138 用户不受影响。
 - 不重写 PTY 传输层（WS query-token vs header 等 WebUI 行为差异见下节，当前实现已对照源 bundle）。
@@ -54,9 +56,18 @@
   - 桌面端 PTY 在 Electron 下用 SSE 代理而非 WebUI 的 WS 直连——功能等价，且规避 renderer 直连本地端口；保留。
   - mobile-remote bridge 的 prompt 载荷/终止判定与桌面端、WebUI 不一致（R7/R8，下轮修）。
 
-## 验证记录（本轮）
+## 验证记录
+
+### 第一轮（R1–R6）
 
 - `npx vitest run`：126 files passed，1041 passed / 18 skipped / 0 failed（Linux，无构建产物）。
 - `npm run test:mobile-remote`：全部通过（protocol / crypto / relay / bridge node:test）。
 - `npm run lint`：零告警。
-- 未跑（需 Windows / 构建产物）：`test:e2e*`、`test:packaged`、`test:perf:*`、`CODEBUDDY_REQUIRE_BUILD=1` 构建断言。
+
+### 第二轮（R7–R10 + 发版自动化，2026-08-25）
+
+- `npm run test:gate`（= lint + git diff --check + vitest + mobile-remote）：见 PR 描述的最新运行结果。
+- bridge node:test：17 passed（新增 5：内容块形状 / 响应帧单次完成 / legacy done 兜底 / idle 窗口存活 / idle 超窗中止）。
+- relay node:test：新增 4（字节上限逐旧驱逐 / 超大单帧丢弃 / data-socket 断开重缓冲 / 陈旧 close 不拆新接线）。
+- `npm run lint`：规则收紧（no-undef on、warn→error）后零告警。
+- 未跑（需 Windows / 构建产物）：`test:e2e*`、`test:packaged`、`test:perf:*`、`CODEBUDDY_REQUIRE_BUILD=1` 构建断言 —— 由 `release` workflow 在 windows-latest 上补 `test:gate` + 完整构建。
