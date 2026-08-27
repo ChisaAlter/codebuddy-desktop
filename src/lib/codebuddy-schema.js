@@ -50,9 +50,10 @@ export const NAV_GROUPS = [
 ];
 
 /**
- * Mirrors CodeBuddy WebUI 2.124 settings schema `Mk` exactly (6 groups / 18 keys).
- * Desktop GUI-only prefs live under appearance with scope:'gui' and are not part of Mk.
- * ReplicaSettingsView renders Mk groups directly; this export is the shared key catalog.
+ * Mirrors CodeBuddy WebUI 2.138 settings schema exactly (7 groups / 22 keys; 2.124 Mk 18 键
+ * + 2.136 autoCompactWindow + 2.138 busySendMode + mainAgent 组两键)。
+ * Desktop GUI-only prefs live under appearance with scope:'gui' and are not part of the CLI schema.
+ * ReplicaSettingsView renders these groups directly; this export is the shared key catalog.
  */
 export const SETTINGS_GROUPS = [
   {
@@ -94,9 +95,20 @@ export const SETTINGS_GROUPS = [
     title: '行为',
     items: [
       { key: 'autoCompactEnabled', label: '自动压缩上下文', type: 'boolean' },
+      { key: 'autoCompactWindow', label: '自动压缩窗口 (token)', type: 'number' },
       { key: 'includeCoAuthoredBy', label: '提交包含 Co-authored-by', type: 'boolean' },
       { key: 'fileCheckpointingEnabled', label: '文件检查点', type: 'boolean' },
       { key: 'promptSuggestionEnabled', label: '提示建议', type: 'boolean' },
+      {
+        key: 'codebuddy.composer.busySendMode',
+        label: '忙碌时发送',
+        type: 'select',
+        defaultValue: 'queue',
+        options: [
+          ['queue', '排队发送'],
+          ['immediate', '立即插入当前回合'],
+        ],
+      },
       { key: 'ignoreGitIgnore', label: '忽略 .gitignore', type: 'boolean' },
       { key: 'deferToolLoading', label: '延迟加载工具', type: 'boolean' },
       { key: 'hookOutputCollapsed', label: '折叠 Hook 输出', type: 'boolean' },
@@ -114,6 +126,14 @@ export const SETTINGS_GROUPS = [
     id: 'language',
     title: '语言',
     items: [{ key: 'language', label: '响应语言', type: 'text' }],
+  },
+  {
+    id: 'mainAgent',
+    title: 'Agent 预设',
+    items: [
+      { key: 'codebuddy.mainAgent.enabled', label: '启用 Agent 预设', type: 'boolean', defaultValue: true },
+      { key: 'codebuddy.mainAgent.allowUnopted', label: '允许未声明的 ACP 宿主', type: 'boolean', defaultValue: false },
+    ],
   },
   {
     id: 'advanced',
@@ -134,21 +154,25 @@ export const SETTINGS_GROUPS = [
   },
 ];
 
-/** Exact WebUI Mk key list (order preserved). */
+/** Exact WebUI 2.138 settings key list (order preserved). */
 export const WEBUI_MK_SETTING_KEYS = [
   'model',
   'reasoningEffort',
   'alwaysThinkingEnabled',
   'autoCompactEnabled',
+  'autoCompactWindow',
   'includeCoAuthoredBy',
   'fileCheckpointingEnabled',
   'promptSuggestionEnabled',
+  'codebuddy.composer.busySendMode',
   'ignoreGitIgnore',
   'deferToolLoading',
   'hookOutputCollapsed',
   'memory.enabled',
   'memory.autoMemoryEnabled',
   'language',
+  'codebuddy.mainAgent.enabled',
+  'codebuddy.mainAgent.allowUnopted',
   'cleanupPeriodDays',
   'imageHistoryRetainRounds',
   'env',
