@@ -41,23 +41,33 @@
 | R12-RELAY (P2) | relay 控制 socket 离线反馈：明确并钉死现有行为——客户端的离线信号是控制 socket close 处理器发出的 `close(4001 'server offline')`；半开窗口（控制 socket 已非 OPEN 但 close 未触发）内的 client 帧按设计丢弃，不注入明文通知帧（客户端把收到的文本帧一律当 E2EE 载荷解析，注入即破坏协议——如需通知需协议扩展，见 Next） | `packages/mobile-remote-relay/src/session-hub.js`（注释）、`tests/hub.test.js`（新用例） |
 | — | 仓库卫生：删除已完整 merge 进 master 的陈旧远程分支 `cursor/fix-iteration-1-1-x-d363`（merge commit `e80c3f2`，PR #1） | origin |
 
+### Done（第四轮：R13 发版准备迭代，2026-08-27）
+
+| 条目 | 内容 | 落点 |
+| --- | --- | --- |
+| R13-REL (P1) | 版本 1.1.2 → 1.1.3 四件套齐升（package.json / package-lock 两处 / README 当前版本 / RELEASE_NOTES 章节标题），`version-consistency` 守卫通过 | `package.json`、`package-lock.json`、`README.md`、`RELEASE_NOTES.md` |
+| R13-DEPS (P1) | 构建链安全升级：electron-builder 24.13.3 → 26.15.3、monaco-editor 0.55.1 → 0.56.0（ESM exports 入口迁移）+ 根 `overrides` 钉 dompurify ^3.4.14，npm audit 14 → 4；另做范围内补丁更新（ws 8.21.3、eslint 9.39.5、prettier 3.9.6、autoprefixer 10.5.4），vite 已在 5.x 最新补丁 5.4.21。剩余 4 项 audit 全部需要 Electron / Vite 主版本升级（见 Next） | `package.json`、`package-lock.json`、`src/components/ReplicaWorkspaceView.jsx`（monaco 深路径迁移） |
+| R13-CLI (P2) | CLI 推荐版本 2.135.0 → 2.138.0（npm 稳定版已出到 2.140.0，最低支持 2.125.0 不变）：`cli-compat.cjs` + README / CODEBUDDY 文档 + 设置页/引导对话框 UI 回退值全量同步；`cli-compat.test.js` 新增版本钉住 + 文档同步守卫（防单边改动漂移） | `electron/cli-compat.cjs`、`README.md`、`CODEBUDDY.md`、`src/components/ReplicaSettingsView.jsx`、`src/components/CliSetupDialog.jsx`、`tests/unit/cli-compat.test.js` |
+| R11-STEP1 (P3) | 巨型模块拆分首步：`sessions-chat.js` `runThreadPrompt` 内的 prompt 内容块构造抽出为纯函数 `buildPromptContentBlocks`（`src/lib/prompt-content.js`，行为不变：首块用户文本 / image 透传 / text 附件包装 + 50 万字符截断标记），新增 5 个单测锁定行为 | `src/lib/prompt-content.js`、`src/store/slices/sessions-chat.js`、`tests/unit/prompt-content.test.js` |
+| R13-DOCS (P2) | 代码签名操作指引补全：证书选型（OV 可导 pfx / EV 硬件 token 不适配现管线）、pfx 导出、base64 转换（Windows/Linux 双命令）、secrets 写入与安全纪律、签名构建验证（`Get-AuthenticodeSignature` / `signtool verify`）、证书到期轮换 | `docs/release-checklist.md` |
+
 ### Next（下轮优先，按序）
 
 | 审查 ID | 内容 | 备注 / 证据 |
 | --- | --- | --- |
-| R11 (P3) | 巨型模块拆分：`ReplicaChatView.jsx`（约 3.6k 行）、`sessions-chat.js`（约 3.4k 行）先抽纯函数（composer 高度、prompt 载荷构造等）+ 特性目录化 | 只做安全小步抽取，每步跑 `test:gate`；R12 轮再次明确跳过（加固优先于重构） |
-| — | npm audit 剩余 14 项：electron-builder 24 → 26（app-builder-lib/builder-util-runtime/tar/extract-zip 链，破坏性 major，需 Windows 全量打包验证）；Electron 34 → 修复版（主版本升级，需全量回归）；Vite 5 → 修复版（esbuild dev-server 漏洞仅影响开发期） | 均为 devDependencies / 构建期依赖，不进安装包运行时；升级各自单独开轮验证 |
+| R11 (P3) | 巨型模块拆分继续：`ReplicaChatView.jsx`（约 3.6k 行）、`sessions-chat.js`（约 3.4k 行）继续抽纯函数（composer 高度等）+ 特性目录化 | R13 已完成首步（prompt 内容块构造 → `src/lib/prompt-content.js`）；后续仍只做安全小步抽取，每步跑 `test:gate` |
+| — | npm audit 剩余 4 项：Electron 34 → 44（主版本升级，需全量回归；覆盖 3 项 high 与 extract-zip 链）；Vite 5 → 6+（esbuild dev-server moderate，仅影响开发期） | 均为 devDependencies / 构建期依赖，不进安装包运行时；升级各自单独开轮验证 |
 | — | mobile-remote E2EE host 临时密钥（host ephemeral keys）：目前仅客户端每连接生成临时 Curve25519，host 侧密钥长期持有；改为双向 ephemeral 是协议变更（配对载荷 + 握手帧格式都要动），需版本协商 | 协议变更，单独设计后再做 |
 | — | relay 控制 socket 离线时向客户端发结构化通知帧：需要协议扩展（客户端当前把文本帧一律当 E2EE 载荷）；R12 已用 `close(4001)` + 测试钉死现状 | 与上一条 E2EE 协议演进合并考虑 |
-| — | CLI 推荐版本 2.135.0 → 2.138.0 评估：需真机跑 `test:gate` + packaged E2E 验证后再 bump `electron/cli-compat.cjs` | 见下方对齐调研 |
-| — | 代码签名：配置 `CSC_LINK` / `CSC_KEY_PASSWORD` repository secrets 后重跑 release workflow 即出签名版（只能由维护者在 GitHub Settings 配置，见 `docs/release-checklist.md`） | 文档已就位，等证书 |
+| — | ~~CLI 推荐版本 2.135.0 → 2.138.0 评估~~ **R13 已完成 bump**；下轮评估 2.139/2.140（npm 已发布），继续按「真机 `test:gate` + packaged E2E 验证后再 bump」纪律 | 见下方对齐调研 |
+| — | 代码签名：配置 `CSC_LINK` / `CSC_KEY_PASSWORD` repository secrets 后重跑 release workflow 即出签名版（只能由维护者在 GitHub Settings 配置，见 `docs/release-checklist.md`，R13 已补逐步操作指引） | 文档已就位，等证书 |
 | — | ~~发版收尾：合并 PR #1 后按 `docs/release-checklist.md` 走 tag → Actions draft → 人工 publish~~ **已发布（2026-08-25）**：PR #1 merge 进 master（merge commit `e80c3f2`）→ bump 1.1.2 → tag `v1.1.2`（commit `cdbec27`）→ `release` workflow 全绿 → [Release v1.1.2 已 publish](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.2)（未签名预览安装包，SHA256SUMS 与 Release 资产 digest 一致）。`v1.1.0`/`v1.1.1` 旧 tag 保留不动（指向不含 R1–R10 的旧提交，未发布 Release）。发版途中修复两个 CI 问题：e2e-harness 测试对 8.3 短路径的断言、release workflow 空 `CSC_LINK` env 导致 electron-builder 误判有证书 | `docs/release-checklist.md` |
 
 ### 明确不做（Out of scope）
 
 - 不虚构/发布 GitHub Release。发布动作本身留给维护者：Windows 管线在 `release` workflow（tag push → windows-latest → draft Release），publish 仍需人工审核点按，见 `docs/release-checklist.md`。
 - ~~不改 `ipcMain.on` 窗口控制通道（minimize/maximize/close 等）的 sender 校验——无返回值、无敏感数据，收益低；如后续统一再做~~ **R12 已统一**：全部 `ipcMain.on` 通道走 `requireTrustedMainSenderOn`，契约测试防回归。
-- 不盲目 bump CLI 最低/推荐版本：`cli-compat.cjs` 的 `newer` 状态本来就只警告不阻断，2.136–2.138 用户不受影响。
+- 不盲目 bump CLI 最低/推荐版本：`cli-compat.cjs` 的 `newer` 状态本来就只警告不阻断（R13 按此纪律在门禁 + 真机冒烟通过后才把推荐版本提到 2.138.0；2.139/2.140 留待下轮验证）。
 - 不重写 PTY 传输层（WS query-token vs header 等 WebUI 行为差异见下节，当前实现已对照源 bundle）。
 
 ## CLI / WebUI 对齐调研（2026-08-25）
@@ -94,3 +104,12 @@
 - 新增/收紧测试：git-security senderFrame 7 个新用例；ipc-trusted-sender 契约扩展到 `ipcMain.on`（4 个新断言组）；version-consistency RELEASE_NOTES 标题行匹配；relay hub 控制 socket 离线用例。
 - `npm audit`：42（1 low/7 moderate/33 high/1 critical）→ 14（3 moderate/10 high/1 critical）；剩余全部需破坏性 major 升级（见 Next）。
 - 未跑（需 Windows / 构建产物）：同第二轮 —— windows-latest 侧由本轮新增的 `ci` workflow 在每次 PR/push 上补跑 `test:gate`。
+
+### 第四轮（R13 发版准备，2026-08-27）
+
+- `npm run test:gate`（Linux）：lint 零告警；vitest 127 files / 1059 passed / 18 skipped / 0 failed；mobile-remote 全部通过（protocol / crypto / relay + bridge node:test 26 pass）。
+- 新增测试：`cli-compat.test.js` 版本钉住 + README/CODEBUDDY 文档同步守卫（2 个）；`prompt-content.test.js` R11 抽取行为锁定（5 个）。
+- `npm run build:dir`（Linux，electron-builder 26.15.3 + Electron 34.5.8）：vite build + linux-unpacked 打包成功。
+- `npm audit`：14 → 4（3 high 属 Electron 34 → 44 链 + extract-zip；1 moderate 属 vite/esbuild 仅开发期），均需 major 升级，见 Next。
+- 真机 QA（Linux VNC 1920×1200，`dist/linux-unpacked` 打包产物）：应用启动 → CLI 首启检测对话框正确展示「推荐版本 v2.138.0」与「Install v2.138.0 in one click」→ 设置页 CodeBuddy CLI Maintenance 卡片显示 Minimum v2.125.0 / Recommended v2.138.0 → Desktop App 区块与 About 均显示 v1.1.3（App Mode: Packaged）→ 正常退出。录屏与截图已存档。
+- 未跑（需 Windows）：Windows 全量打包/签名由 `release` workflow 验证；windows-latest `test:gate` 由 `ci` workflow 在 PR 上补跑。

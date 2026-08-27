@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const {
@@ -11,6 +13,21 @@ const {
 } = require('../../electron/cli-compat.cjs');
 
 describe('cli-compat', () => {
+  it('pins R13 min/recommended versions', () => {
+    expect(MIN_VERSION).toBe('2.125.0');
+    expect(RECOMMENDED_VERSION).toBe('2.138.0');
+  });
+
+  it('keeps README/CODEBUDDY docs in sync with the recommended version', () => {
+    // 防止只改 cli-compat.cjs 不改文档（或反之）导致的版本漂移。
+    const root = process.cwd();
+    for (const doc of ['README.md', 'CODEBUDDY.md']) {
+      const text = fs.readFileSync(path.join(root, doc), 'utf8');
+      expect(text, `${doc} 应提及推荐版本 ${RECOMMENDED_VERSION}`).toContain(RECOMMENDED_VERSION);
+      expect(text, `${doc} 不应残留旧推荐版本 2.135.0`).not.toContain('2.135.0');
+    }
+  });
+
   it('compares semver-ish versions', () => {
     expect(compareVersions('2.122.0', '2.121.9')).toBe(1);
     expect(compareVersions('2.122.0', '2.122.0')).toBe(0);

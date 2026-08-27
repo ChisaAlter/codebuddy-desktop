@@ -48,6 +48,7 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
+import { buildPromptContentBlocks } from '../../lib/prompt-content';
 import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
 
@@ -2869,16 +2870,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) {
         return { ok: false, reason: 'cancelled' };
       }
-      const prompt = [{ type: 'text', text: content }];
-      for (const attachment of attachments) {
-        if (attachment.kind === 'image') {
-          prompt.push({ type: 'image', data: attachment.data, mimeType: attachment.mimeType });
-        } else if (attachment.kind === 'text') {
-          const text = String(attachment.text || '');
-          const clipped = text.length > 500000 ? `${text.slice(0, 500000)}\n\n[文件内容已截断]` : text;
-          prompt.push({ type: 'text', text: `文件: ${attachment.name}\n路径: ${attachment.path}\n\n${clipped}` });
-        }
-      }
+      const prompt = buildPromptContentBlocks(content, attachments);
       get().patchThreadRuntime(threadId, { promptDispatched: true });
       get().startWorkflowProgressMonitor?.({
         threadId,
