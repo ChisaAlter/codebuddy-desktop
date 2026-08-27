@@ -158,6 +158,19 @@ export async function fsRead(path) {
 }
 
 /**
+ * G11: 读取文件为 Blob（图片 / PDF / SVG 预览用，同 fs/read 权限模型）。
+ * @param {string} path - 文件路径
+ * @returns {Promise<Blob>}
+ */
+export async function fsReadBlob(path) {
+  const response = await requestCodeBuddy(`/api/v1/fs/read?path=${encodeURIComponent(path)}`, {
+    method: 'GET',
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.blob();
+}
+
+/**
  * 上传文件（base64 编码内容）
  * @param {string} path - 目标路径
  * @param {string} content - base64 编码的文件内容
