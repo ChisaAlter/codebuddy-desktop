@@ -26,6 +26,7 @@ import {
 import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
+import { busySendModeFromSettings } from '../lib/busy-send';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -2374,6 +2375,7 @@ export default function ReplicaChatView() {
   }, [timelineFingerprint, subagentInputsFingerprint]);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
+  const sendQueuedPromptNow = useStore((s) => s.sendQueuedPromptNow);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || EMPTY_ARRAY);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
@@ -3219,6 +3221,38 @@ export default function ReplicaChatView() {
     [activeProjectId, activeThreadId, removeQueuedPrompt, t],
   );
 
+  // G3: 队列条目「立即发送」——活跃回合时 steer 注入，空闲时提前派发。
+  const sendPromptFromQueueNow = useCallback(
+    async (promptId) => {
+      if (queueActionInFlightRef.current || !activeThreadId) return;
+      const operation = {};
+      queueActionInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const requestId = ++queueActionRequestRef.current;
+      const isCurrent = () =>
+        requestId === queueActionRequestRef.current &&
+        projectId === useStore.getState().activeProjectId &&
+        threadId === useStore.getState().activeThreadId;
+      setQueueActionBusy(true);
+      setChatError(null);
+      try {
+        const result = await sendQueuedPromptNow(threadId, promptId);
+        if (isCurrent() && !result?.steered && !result?.queued) {
+          setChatError(consumeStoreError(t('error.queueSendNowFailed')));
+        }
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || t('error.queueSendNowFailed'));
+      } finally {
+        if (queueActionInFlightRef.current === operation) {
+          queueActionInFlightRef.current = null;
+          if (isCurrent()) setQueueActionBusy(false);
+        }
+      }
+    },
+    [activeProjectId, activeThreadId, sendQueuedPromptNow, t],
+  );
+
   const handlePaste = useCallback(
     async (event) => {
       if (!pasteImageEnabled) return;
@@ -3584,6 +3618,7 @@ export default function ReplicaChatView() {
         resumePromptQueue={resumePromptQueue}
         movePromptInQueue={movePromptInQueue}
         removePromptFromQueue={removePromptFromQueue}
+        sendPromptFromQueueNow={sendPromptFromQueueNow}
         draggingAttachments={draggingAttachments}
         droppingAttachments={droppingAttachments}
         handleDragEnter={handleDragEnter}
@@ -3668,6 +3703,7 @@ const ChatComposer = React.memo(function ChatComposer({
   resumePromptQueue,
   movePromptInQueue,
   removePromptFromQueue,
+  sendPromptFromQueueNow,
   draggingAttachments,
   droppingAttachments,
   handleDragEnter,
@@ -3717,6 +3753,8 @@ const ChatComposer = React.memo(function ChatComposer({
   const [showWorkspaceDirsMenu, setShowWorkspaceDirsMenu] = useState(false);
   // P1-6: overlays must start after the actual (possibly collapsed) sidebar.
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  // G3: busySendMode=immediate 时占位符提示「立即插入当前回合」。
+  const busySendImmediate = useStore((s) => busySendModeFromSettings(s.settings) === 'immediate');
   const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || EMPTY_ARRAY);
   const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
   const workspaceDirsError = useStore((s) => s.workspaceDirsError);
@@ -3906,6 +3944,17 @@ const ChatComposer = React.memo(function ChatComposer({
                     {item.text}
                   </span>
                   <button
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-accent-blue)] disabled:cursor-wait disabled:opacity-50"
+                    disabled={queueActionBusy}
+                    onClick={() => sendPromptFromQueueNow(item.id)}
+                    title={t('queue.sendNow')}
+                    aria-label={t('queue.sendNow')}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2 8h11M9 4l4 4-4 4" />
+                    </svg>
+                  </button>
+                  <button
                     className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
                     disabled={queueActionBusy || index === 0}
                     onClick={() => movePromptInQueue(item.id, 'up')}
@@ -4009,7 +4058,7 @@ const ChatComposer = React.memo(function ChatComposer({
             placeholder={
               canSend
                 ? isStreaming
-                  ? t('input.placeholderRunning')
+                  ? t(busySendImmediate ? 'input.placeholderRunningImmediate' : 'input.placeholderRunning')
                   : t('input.placeholder')
                 : t('input.placeholderDisconnected')
             }

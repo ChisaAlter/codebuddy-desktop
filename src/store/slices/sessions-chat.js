@@ -48,6 +48,7 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
+import { busySendModeFromSettings, shouldQueueBusyPrompt } from '../../lib/busy-send';
 import { buildPromptContentBlocks } from '../../lib/prompt-content';
 import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
@@ -2642,6 +2643,17 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtime.promptDispatchInFlight ||
       runtime.promptQueue.length > 0
     ) {
+      // G3: busySendMode=immediate（WebUI Hk）——非斜杠命令直接注入当前回合；
+      // steer 被 CLI 拒绝或失败时回退到原有排队路径。
+      const busyMode = busySendModeFromSettings(get().settings);
+      if (!shouldQueueBusyPrompt(busyMode, content) && runtime.promptQueue.length === 0) {
+        const steerResult = await get().steerPromptIntoCurrentTurn(threadId, content, attachments);
+        if (steerResult.steered) {
+          get().patchThreadRuntime(threadId, { pendingAttachments: [], promptSuggestion: null });
+          await get().updateThreadRecord(threadId, { draft: '' });
+          return { steered: true };
+        }
+      }
       return queuePromptQueueOperation(threadId, async () => {
         const latestThread = get().threadsById[threadId];
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -3443,6 +3455,72 @@ export function createSessionsChatSlice(set, get, ctx) {
         get().setThreadPromptQueue(threadId, runtime.promptQueue);
       }
       return persisted;
+    });
+  },
+
+  // G3: WebUI session/steer — 忙碌时把消息注入当前回合而非排队。
+  // 只有存在活跃 prompt run 时才尝试；CLI 拒绝（steered!==true）由调用方回退排队。
+  async steerPromptIntoCurrentTurn(threadId, content, attachments = []) {
+    const thread = get().threadsById[threadId];
+    const client = get().getThreadClient(threadId);
+    if (!thread || !client) return { steered: false, reason: 'no-client' };
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const sessionId =
+      thread.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    const liveTurn =
+      Boolean(runtime.activePromptRunId) &&
+      (Boolean(runtime.isAwaitingResponse) || Boolean(sessionId && client.hasActivePrompt?.(sessionId)));
+    if (!sessionId || !liveTurn) return { steered: false, reason: 'no-live-turn' };
+    let result;
+    try {
+      result = await client.request('session/steer', {
+        sessionId,
+        contentBlocks: buildPromptContentBlocks(content, attachments),
+      });
+    } catch (error) {
+      return { steered: false, reason: error?.message || 'steer-failed' };
+    }
+    if (result?.steered !== true) return { steered: false, reason: result?.reason || 'rejected' };
+    // 展示与 WebUI addQueuedUserMessage 一致：注入的消息以用户气泡追加到当前时间线。
+    get().flushThreadTimelineCoalesce?.(threadId);
+    const latest = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const timelineAttachments = (attachments || []).map((attachment) => ({
+      name: attachment.name || attachment.path,
+      path: attachment.path || null,
+      kind: attachment.kind === 'image' ? 'image' : 'text',
+      mimeType: attachment.mimeType || null,
+      data: attachment.data || null,
+    }));
+    const timeline = pushUserMessage(latest.timeline, content, Date.now(), timelineAttachments);
+    get().patchThreadRuntime(threadId, { timeline });
+    await get().updateThreadRecord(threadId, { timeline: timeline.slice(-300) });
+    return { steered: true };
+  },
+
+  // G3: 队列条目「立即发送」。有活跃回合 → steer 注入并移出队列；
+  // 空闲（no-live-turn）→ 提到队首并触发正常派发。
+  async sendQueuedPromptNow(threadId, promptId) {
+    if (!threadId || !promptId) return { steered: false, reason: 'invalid' };
+    return queuePromptQueueOperation(threadId, async () => {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const item = runtime.promptQueue.find((entry) => entry.id === promptId);
+      if (!item) return { steered: false, reason: 'not-found' };
+      const steerResult = await get().steerPromptIntoCurrentTurn(threadId, item.text, item.attachments || []);
+      if (steerResult.steered) {
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const promptQueue = latestRuntime.promptQueue.filter((entry) => entry.id !== promptId);
+        get().patchThreadRuntime(threadId, { promptQueue });
+        await get().persistThreadPromptQueue(threadId, promptQueue);
+        return { steered: true };
+      }
+      if (steerResult.reason === 'no-live-turn') {
+        const promptQueue = [item, ...runtime.promptQueue.filter((entry) => entry.id !== promptId)];
+        get().patchThreadRuntime(threadId, { promptQueue });
+        await get().persistThreadPromptQueue(threadId, promptQueue);
+        setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+        return { steered: false, queued: true, reason: 'no-live-turn' };
+      }
+      return steerResult;
     });
   },
 
