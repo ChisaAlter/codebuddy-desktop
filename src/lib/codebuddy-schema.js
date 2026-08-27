@@ -33,6 +33,7 @@ export const NAV_GROUPS = [
       { id: 'instances', label: '实例列表' },
       { id: 'skills', label: '技能' },
       { id: 'agents', label: 'Agents' },
+      { id: 'agent-home', label: 'Agent Home' },
       { id: 'mcp', label: 'MCP' },
       { id: 'sandboxes', label: 'Sandboxes' },
       { id: 'workers', label: 'Agent 实例管理' },

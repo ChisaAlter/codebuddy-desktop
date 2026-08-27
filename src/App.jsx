@@ -29,6 +29,7 @@ const ReplicaMetricsView = lazy(() => import('./components/ReplicaMetricsView'))
 const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'));
 const ReplicaSkillsView = lazy(() => import('./components/ReplicaSkillsView'));
 const ReplicaAgentsView = lazy(() => import('./components/ReplicaAgentsView'));
+const ReplicaAgentHomeView = lazy(() => import('./components/ReplicaAgentHomeView'));
 const ReplicaMcpView = lazy(() => import('./components/ReplicaMcpView'));
 const ReplicaSandboxesView = lazy(() => import('./components/ReplicaSandboxesView'));
 const ReplicaStatsView = lazy(() => import('./components/ReplicaStatsView'));
@@ -61,6 +62,7 @@ const MAIN_VIEW_COMPONENTS = {
   plugins: ReplicaPluginsView,
   skills: ReplicaSkillsView,
   agents: ReplicaAgentsView,
+  'agent-home': ReplicaAgentHomeView,
   mcp: ReplicaMcpView,
   sandboxes: ReplicaSandboxesView,
   tasks: ReplicaTasksView,
