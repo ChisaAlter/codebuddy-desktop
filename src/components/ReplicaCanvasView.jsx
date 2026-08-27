@@ -98,7 +98,6 @@ function CanvasTerminalImpl({ tileId, onSession, onStatus }) {
       term.dispose();
     };
     // tileId 变化才重建（createPty/onSession/onStatus 由调用方保证语义稳定）。
-    // eslint-disable-next-line
   }, [tileId]);
 
   return <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden" />;
