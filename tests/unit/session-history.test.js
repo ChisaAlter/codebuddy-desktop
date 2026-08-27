@@ -1,5 +1,5 @@
 // G9: 会话历史数据归一与相对时间。
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { formatHistoryRelativeTime, normalizeHistoryCandidate } from '../../src/lib/session-history';
 
 describe('normalizeHistoryCandidate', () => {
