@@ -9,7 +9,8 @@
 ### R13 发版准备（本轮新增）
 
 - **构建链依赖安全升级（npm audit 14 → 4）**：electron-builder 24.13.3 → 26.15.3（消除 tar critical 与 app-builder-lib / builder-util / builder-util-runtime / electron-publish 等 8 项 high 告警；Linux `build:dir` + 测试门禁验证通过，Windows 全量打包由 release workflow 验证）；monaco-editor 0.55.1 → 0.56.0（ESM 入口重组，`esm/vs/...` 深路径迁移到新 exports 入口）+ 根 `overrides` 钉 dompurify ^3.4.14（消除 dompurify XSS 系列与 monaco 告警）。剩余 4 项均需 Electron / Vite 主版本升级（运行时/开发期大改，单独开轮，见迭代计划 Next）。
-- **CLI 推荐版本 2.135.0 → 2.138.0**：`electron/cli-compat.cjs` RECOMMENDED_VERSION 提升（最低支持版本维持 2.125.0 不变；高于推荐版本仍仅警告不阻断）。
+- **CLI 推荐版本 2.135.0 → 2.138.0**：`electron/cli-compat.cjs` RECOMMENDED_VERSION 提升（最低支持版本维持 2.125.0 不变；高于推荐版本仍仅警告不阻断）；README / CODEBUDDY 文档与设置页、CLI 引导对话框的 UI 回退值全量同步，`cli-compat.test.js` 新增版本钉住 + 文档同步守卫。
+- **范围内补丁更新**：ws 8.21.0 → 8.21.3、eslint 9.39.4 → 9.39.5、prettier 3.9.4 → 3.9.6、autoprefixer 10.5.2 → 10.5.4（均为 semver 范围内 patch；vite 已在 5.x 最新补丁 5.4.21）。
 - **R11 拆分首步**：`sessions-chat.js` 的 prompt 内容块构造纯函数抽取为 `src/lib/prompt-content.js`（行为保持不变，新增单测覆盖）。
 - **代码签名文档补全**：`docs/release-checklist.md` 新增 Windows 证书导出 → base64 → GitHub secrets → 重跑 release workflow 的逐步操作指引。
 

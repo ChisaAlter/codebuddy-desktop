@@ -933,7 +933,7 @@ export default function ReplicaSettingsView() {
   const installRecommendedCli = async () => {
     // 一键修复：missing 走 npm，outdated/unknown 走 codebuddy install（失败再 npm）
     if (cliOperationRef.current) return;
-    const target = cliInfo?.compat?.recommendedVersion || '2.135.0';
+    const target = cliInfo?.compat?.recommendedVersion || '2.138.0';
     cliOperationRef.current = 'install';
     setCliOperation('install');
     setCliInstallError('');
@@ -1621,7 +1621,7 @@ export default function ReplicaSettingsView() {
                 label={t('cli.compatStatus')}
                 desc={t('cli.compatStatus.desc', {
                   min: cliCompat?.minVersion || '2.125.0',
-                  rec: cliCompat?.recommendedVersion || '2.135.0',
+                  rec: cliCompat?.recommendedVersion || '2.138.0',
                 })}
                 control={<span className={`text-xs font-medium ${cliCompatTone}`}>{cliCompatLabel}</span>}
               />
@@ -1650,7 +1650,7 @@ export default function ReplicaSettingsView() {
                     >
                       {cliOperation === 'install'
                         ? t('cli.installing')
-                        : t('cli.oneClickInstall', { version: cliCompat?.recommendedVersion || '2.135.0' })}
+                        : t('cli.oneClickInstall', { version: cliCompat?.recommendedVersion || '2.138.0' })}
                     </button>
                     {cliCompat?.status === 'missing' ? (
                       <button type="button" className="btn-ghost px-2 py-1 text-[11px]" onClick={copyBootstrapCommand}>
