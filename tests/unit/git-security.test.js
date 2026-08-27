@@ -3,7 +3,14 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { normalizeDir, normalizeDirList, isAllowedGitCwd, isTrustedGitSender, isTrustedMainSender } = require('../../electron/git-security.cjs');
+const {
+  normalizeDir,
+  normalizeDirList,
+  isAllowedGitCwd,
+  isTrustedSenderFrame,
+  isTrustedGitSender,
+  isTrustedMainSender,
+} = require('../../electron/git-security.cjs');
 
 // Windows 下 path.resolve('/a/b') = 'C:\\a\\b'，断言一律用 path.resolve 计算期望
 const P_A = path.resolve('/a/b');
@@ -90,5 +97,59 @@ describe('isTrustedGitSender - sender 信任校验', () => {
     expect(isTrustedGitSender(undefined, mainWindow)).toBe(false);
     expect(isTrustedGitSender(mainWc, null)).toBe(false);
     expect(isTrustedGitSender({}, {})).toBe(false);
+  });
+});
+
+describe('isTrustedSenderFrame - senderFrame 校验（R12：拒绝 iframe 发起特权 IPC）', () => {
+  const makeMainFrame = () => ({ parent: null, url: 'file:///index.html' });
+
+  it('null/undefined senderFrame 放行（Electron 允许 frame 已销毁/跨导航时给 null）', () => {
+    expect(isTrustedSenderFrame(null, { mainFrame: makeMainFrame() })).toBe(true);
+    expect(isTrustedSenderFrame(undefined, { mainFrame: makeMainFrame() })).toBe(true);
+  });
+
+  it('sender 自己的主 frame 放行（含 about:blank 等主 frame 等价 URL）', () => {
+    const mainFrame = makeMainFrame();
+    const sender = { mainFrame };
+    expect(isTrustedSenderFrame(mainFrame, sender)).toBe(true);
+    const blankMainFrame = { parent: null, url: 'about:blank' };
+    expect(isTrustedSenderFrame(blankMainFrame, { mainFrame: blankMainFrame })).toBe(true);
+  });
+
+  it('子 frame（iframe）拒绝，即使与主窗口同 webContents', () => {
+    const mainFrame = makeMainFrame();
+    const subFrame = { parent: mainFrame, url: 'about:blank' };
+    expect(isTrustedSenderFrame(subFrame, { mainFrame })).toBe(false);
+  });
+
+  it('其他 webContents 的顶层 frame 冒充拒绝（frame ≠ sender.mainFrame）', () => {
+    const mainFrame = makeMainFrame();
+    const foreignTopFrame = { parent: null, url: 'file:///other.html' };
+    expect(isTrustedSenderFrame(foreignTopFrame, { mainFrame })).toBe(false);
+  });
+
+  it('sender 无 mainFrame 引用时按主 frame 形状放行（parent === null）', () => {
+    // 单测桩/极老 Electron 无 sender.mainFrame 的兜底：只要不是子 frame 即放行。
+    expect(isTrustedSenderFrame({ parent: null }, {})).toBe(true);
+    expect(isTrustedSenderFrame({ parent: {} }, {})).toBe(false);
+  });
+});
+
+describe('isTrustedGitSender + senderFrame 组合（三参形式）', () => {
+  const mainWc = { id: 'wc-main', isDestroyed: () => false };
+  const mainFrame = { parent: null, url: 'file:///index.html' };
+  mainWc.mainFrame = mainFrame;
+  const mainWindow = { webContents: mainWc, isDestroyed: () => false };
+
+  it('主窗口 webContents + 主 frame 放行；省略 senderFrame 兼容旧两参调用', () => {
+    expect(isTrustedGitSender(mainWc, mainWindow, mainFrame)).toBe(true);
+    expect(isTrustedGitSender(mainWc, mainWindow)).toBe(true);
+    expect(isTrustedGitSender(mainWc, mainWindow, null)).toBe(true);
+  });
+
+  it('主窗口 webContents 但 iframe 发起拒绝', () => {
+    const subFrame = { parent: mainFrame, url: 'about:blank' };
+    expect(isTrustedGitSender(mainWc, mainWindow, subFrame)).toBe(false);
+    expect(isTrustedMainSender(mainWc, mainWindow, subFrame)).toBe(false);
   });
 });

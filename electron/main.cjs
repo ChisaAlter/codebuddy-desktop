@@ -1677,9 +1677,16 @@ ipcMain.handle('app:getInfo', (event) => {
 });
 
 function requireTrustedMainSender(event) {
-  if (!isTrustedMainSender(event.sender, mainWindow)) {
+  if (!isTrustedMainSender(event.sender, mainWindow, event.senderFrame)) {
     throw new Error('forbidden: untrusted sender');
   }
+}
+
+// ipcMain.on 通道无法像 handle 那样向 renderer 抛错（除 sendSync 的 returnValue），
+// 不可信 sender 一律静默忽略：返回 false 由调用方 early-return。与 handle 侧共用
+// isTrustedMainSender（主窗口 webContents + 主 frame，见 git-security.cjs）。
+function requireTrustedMainSenderOn(event) {
+  return isTrustedMainSender(event.sender, mainWindow, event.senderFrame);
 }
 
 // 手机远程（mobile-remote）：与微信/企微「远程控制」channel 分离
@@ -2324,7 +2331,8 @@ ipcMain.handle('rightBrowser:open', async (event, rawUrl) => {
   return { url: target };
 });
 
-ipcMain.on('rightBrowser:setBounds', (_event, rawBounds) => {
+ipcMain.on('rightBrowser:setBounds', (event, rawBounds) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   const bounds = rightBrowserBounds(rawBounds);
   if (!bounds || !rightBrowserView || !mainWindow || mainWindow.isDestroyed()) return;
   if (rightBrowserView instanceof BrowserView) mainWindow.setBrowserView(rightBrowserView);
@@ -2407,11 +2415,13 @@ async function requestApplicationQuit() {
   }
 }
 
-ipcMain.on('window:show', () => {
+ipcMain.on('window:show', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   showOrCreateMainWindow();
 });
 
-ipcMain.on('app:confirmQuit', (_event, requestId) => {
+ipcMain.on('app:confirmQuit', (event, requestId) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (!quitRequestController.confirm(requestId)) {
     logStartup(`Ignored stale quit confirmation request=${String(requestId || '')}`);
     return;
@@ -2420,7 +2430,8 @@ ipcMain.on('app:confirmQuit', (_event, requestId) => {
   beginFinalApplicationExit(`renderer-confirmed:${requestId}`);
 });
 
-ipcMain.on('app:acknowledgeQuit', (_event, requestId) => {
+ipcMain.on('app:acknowledgeQuit', (event, requestId) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (!quitRequestController.acknowledge(requestId)) {
     logStartup(`Ignored stale quit acknowledgement request=${String(requestId || '')}`);
     return;
@@ -2428,7 +2439,8 @@ ipcMain.on('app:acknowledgeQuit', (_event, requestId) => {
   logStartup(`Quit request acknowledged by renderer request=${requestId}`);
 });
 
-ipcMain.on('app:holdQuit', (_event, requestId) => {
+ipcMain.on('app:holdQuit', (event, requestId) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (!quitRequestController.hold(requestId)) {
     logStartup(`Ignored stale quit hold request=${String(requestId || '')}`);
     return;
@@ -2436,7 +2448,8 @@ ipcMain.on('app:holdQuit', (_event, requestId) => {
   logStartup(`Quit request held for user dialog request=${requestId}`);
 });
 
-ipcMain.on('app:resumeQuit', (_event, payload = {}) => {
+ipcMain.on('app:resumeQuit', (event, payload = {}) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   const requestId = String(payload?.requestId || payload || '');
   const resumeMs = Number.isFinite(payload?.resumeMs) ? payload.resumeMs : 2500;
   if (!quitRequestController.resume(requestId, resumeMs)) {
@@ -2446,7 +2459,8 @@ ipcMain.on('app:resumeQuit', (_event, payload = {}) => {
   logStartup(`Quit request hard deadline resumed request=${requestId} resumeMs=${resumeMs}`);
 });
 
-ipcMain.on('app:cancelQuit', (_event, payload = {}) => {
+ipcMain.on('app:cancelQuit', (event, payload = {}) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   const requestId = String(payload?.requestId || '');
   if (!quitRequestController.cancel(requestId)) {
     logStartup(`Ignored stale quit cancellation request=${requestId}`);
@@ -2484,7 +2498,7 @@ function gitTrustAllowlist() {
 }
 
 ipcMain.handle('git:registerWorkspaces', (event, payload = {}) => {
-  if (!isTrustedGitSender(event.sender, mainWindow)) {
+  if (!isTrustedGitSender(event.sender, mainWindow, event.senderFrame)) {
     return { ok: false, error: 'forbidden: untrusted sender' };
   }
   const trusted = gitTrustAllowlist();
@@ -2499,7 +2513,7 @@ ipcMain.handle('git:registerWorkspaces', (event, payload = {}) => {
 });
 
 ipcMain.handle('git:run', async (event, payload = {}) => {
-  if (!isTrustedGitSender(event.sender, mainWindow)) {
+  if (!isTrustedGitSender(event.sender, mainWindow, event.senderFrame)) {
     return { ok: false, error: 'forbidden: untrusted sender' };
   }
   const { args, cwd } = normalizeGitRequest(payload);
@@ -2826,7 +2840,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
 
 ipcMain.on('codebuddy:closeStream', (event, streamId) => {
   // 只允许主窗口 renderer 关闭自己的流；不可信 sender 静默忽略。
-  if (!isTrustedMainSender(event.sender, mainWindow)) return;
+  if (!requireTrustedMainSenderOn(event)) return;
   const controller = codebuddyStreams.get(String(streamId || ''));
   if (controller) {
     controller.abort();
@@ -3033,18 +3047,22 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
     unregisterSenderAbort();
   }
 });
-ipcMain.on('window:minimize', () => {
+ipcMain.on('window:minimize', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (mainWindow) mainWindow.minimize();
 });
-ipcMain.on('window:maximize', () => {
+ipcMain.on('window:maximize', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) mainWindow.unmaximize();
   else mainWindow.maximize();
 });
-ipcMain.on('window:close', () => {
+ipcMain.on('window:close', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (mainWindow) mainWindow.close();
 });
-ipcMain.on('window:reload', () => {
+ipcMain.on('window:reload', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   if (mainWindow) mainWindow.webContents.reload();
 });
 
@@ -3310,13 +3328,14 @@ ipcMain.handle('productState:save', (event, state) => {
 
 ipcMain.on('productState:saveSync', (event, state) => {
   // sendSync 必须回填 returnValue；不可信 sender 拒绝保存而不是抛错。
-  if (!isTrustedMainSender(event.sender, mainWindow)) {
+  if (!requireTrustedMainSenderOn(event)) {
     event.returnValue = { ok: false, code: 'FORBIDDEN', error: 'forbidden: untrusted sender' };
     return;
   }
   event.returnValue = productStateSaveController.saveSync(sanitizeProductStateSnapshot(state));
 });
-ipcMain.on('window:openDevTools', () => {
+ipcMain.on('window:openDevTools', (event) => {
+  if (!requireTrustedMainSenderOn(event)) return;
   // L2: only allow DevTools in development; production builds ignore the IPC.
   if (!isDev) return;
   if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' });
