@@ -30,6 +30,8 @@ import { busySendModeFromSettings } from '../lib/busy-send';
 import { goalElapsedMs, formatGoalElapsed, formatGoalRecapStats } from '../lib/goal-api';
 import { formatTurnDuration } from '../lib/turn-metrics';
 import { consumePendingComposerInsert } from '../lib/command-palette';
+import { extractMcpAppResource } from '../lib/mcp-app';
+import McpAppCard from './McpAppCard';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -991,6 +993,11 @@ function ToolCallBlock({ item, nested = false }) {
     () => (structured && expanded ? formatToolExpandedView(item, { full: showFull }) : null),
     [structured, expanded, showFull, item],
   );
+  // G6: MCP App（ui:// 交互界面）——完成态工具结果里带 profile=mcp-app 资源时显示加载卡。
+  const mcpAppResource = useMemo(
+    () => extractMcpAppResource(item.raw) || extractMcpAppResource(item.meta),
+    [item.raw, item.meta],
+  );
 
   return (
     <div className={`tool-call-row mb-0.5 ${nested ? 'tool-call-row--nested' : ''}`} data-testid={nested ? 'tool-call-nested' : 'tool-call-row'}>
@@ -1038,6 +1045,11 @@ function ToolCallBlock({ item, nested = false }) {
           </svg>
         ) : null}
       </button>
+      {mcpAppResource ? (
+        <div className="pl-5">
+          <McpAppCard appResource={mcpAppResource} t={t} />
+        </div>
+      ) : null}
       {canToggle && expanded ? (
         <div className="tool-call-detail pl-5">
           <div className="mb-1 mt-0.5 space-y-1.5">
