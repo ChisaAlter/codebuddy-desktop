@@ -104,3 +104,12 @@
 - 新增/收紧测试：git-security senderFrame 7 个新用例；ipc-trusted-sender 契约扩展到 `ipcMain.on`（4 个新断言组）；version-consistency RELEASE_NOTES 标题行匹配；relay hub 控制 socket 离线用例。
 - `npm audit`：42（1 low/7 moderate/33 high/1 critical）→ 14（3 moderate/10 high/1 critical）；剩余全部需破坏性 major 升级（见 Next）。
 - 未跑（需 Windows / 构建产物）：同第二轮 —— windows-latest 侧由本轮新增的 `ci` workflow 在每次 PR/push 上补跑 `test:gate`。
+
+### 第四轮（R13 发版准备，2026-08-27）
+
+- `npm run test:gate`（Linux）：lint 零告警；vitest 127 files / 1059 passed / 18 skipped / 0 failed；mobile-remote 全部通过（protocol / crypto / relay + bridge node:test 26 pass）。
+- 新增测试：`cli-compat.test.js` 版本钉住 + README/CODEBUDDY 文档同步守卫（2 个）；`prompt-content.test.js` R11 抽取行为锁定（5 个）。
+- `npm run build:dir`（Linux，electron-builder 26.15.3 + Electron 34.5.8）：vite build + linux-unpacked 打包成功。
+- `npm audit`：14 → 4（3 high 属 Electron 34 → 44 链 + extract-zip；1 moderate 属 vite/esbuild 仅开发期），均需 major 升级，见 Next。
+- 真机 QA（Linux VNC 1920×1200，`dist/linux-unpacked` 打包产物）：应用启动 → CLI 首启检测对话框正确展示「推荐版本 v2.138.0」与「Install v2.138.0 in one click」→ 设置页 CodeBuddy CLI Maintenance 卡片显示 Minimum v2.125.0 / Recommended v2.138.0 → Desktop App 区块与 About 均显示 v1.1.3（App Mode: Packaged）→ 正常退出。录屏与截图已存档。
+- 未跑（需 Windows）：Windows 全量打包/签名由 `release` workflow 验证；windows-latest `test:gate` 由 `ci` workflow 在 PR 上补跑。
