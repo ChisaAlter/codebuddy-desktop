@@ -420,6 +420,13 @@ const ITEM_ICONS = {
       <path d="M2 13c0-2 1.5-3 3-3s3 1 3 3M8 13c0-2 1.5-3 3-3s3 1 3 3" />
     </svg>
   ),
+  canvas: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2" y="2" width="5.5" height="4.5" rx="1" />
+      <rect x="8.5" y="4" width="5.5" height="4.5" rx="1" />
+      <rect x="4" y="9.5" width="5.5" height="4.5" rx="1" />
+    </svg>
+  ),
   'agent-home': (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M2.5 7.5L8 2.5l5.5 5" />

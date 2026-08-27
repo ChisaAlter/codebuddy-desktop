@@ -30,6 +30,7 @@ const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'))
 const ReplicaSkillsView = lazy(() => import('./components/ReplicaSkillsView'));
 const ReplicaAgentsView = lazy(() => import('./components/ReplicaAgentsView'));
 const ReplicaAgentHomeView = lazy(() => import('./components/ReplicaAgentHomeView'));
+const ReplicaCanvasView = lazy(() => import('./components/ReplicaCanvasView'));
 const ReplicaMcpView = lazy(() => import('./components/ReplicaMcpView'));
 const ReplicaSandboxesView = lazy(() => import('./components/ReplicaSandboxesView'));
 const ReplicaStatsView = lazy(() => import('./components/ReplicaStatsView'));
@@ -52,6 +53,7 @@ const MAIN_VIEW_COMPONENTS = {
   instances: ReplicaInstancesView,
   'remote-control': ReplicaRemoteControlView,
   terminal: ReplicaTerminalView,
+  canvas: ReplicaCanvasView,
   docs: ReplicaDocsView,
   models: ReplicaModelsView,
   settings: ReplicaSettingsView,
