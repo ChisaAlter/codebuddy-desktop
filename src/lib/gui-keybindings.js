@@ -8,6 +8,8 @@ export const GUI_KEYBINDING_ACTIONS = [
   { id: 'open-editor', label: '打开编辑器', defaultShortcut: 'ctrl+3' },
   { id: 'open-changes', label: '打开变更', defaultShortcut: 'ctrl+4' },
   { id: 'open-settings', label: '打开设置', defaultShortcut: 'ctrl+,' },
+  // G8: WebUI 2.138 命令面板（⌘/Ctrl+Shift+H）。
+  { id: 'command-palette', label: '命令面板', defaultShortcut: 'ctrl+shift+h' },
 ];
 
 export function normalizeShortcut(value) {

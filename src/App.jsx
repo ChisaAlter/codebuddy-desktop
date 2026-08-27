@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { LayoutPanelLeft, ListTree } from 'lucide-react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
@@ -14,6 +14,7 @@ import {
 } from './lib/workflow-status';
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
+import CommandPalette from './components/CommandPalette';
 import RightPanelHost from './components/RightPanelHost';
 import WorkflowFloatingPanelHost from './components/WorkflowFloatingPanelHost';
 
@@ -810,6 +811,8 @@ export default function App() {
   const settingsTheme = useStore((s) => s.guiSettings?.theme);
   const settingsLocale = useStore((s) => s.guiSettings?.locale);
   const authViewState = useStore((s) => s.authViewState);
+  // G8: 命令面板（⌘/Ctrl+Shift+H）。
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   useEffect(() => {
     bootstrap().catch((error) => console.error(error));
@@ -988,6 +991,10 @@ export default function App() {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
+      if (action === 'command-palette') {
+        setCommandPaletteOpen(true);
+        return;
+      }
       if (action === 'toggle-sidebar') {
         state.setSidebarCollapsed(!state.sidebarCollapsed);
         return;
@@ -1033,6 +1040,7 @@ export default function App() {
           <ToastStack />
           {/* 启动检测 CodeBuddy CLI（对齐 pi-desktop onboarding step1） */}
           <CliSetupDialog />
+          <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
         </>
       )}
       <DirtyFileConfirmDialog />

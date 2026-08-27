@@ -29,6 +29,7 @@ import { requestSettingsSection } from '../lib/settings-nav';
 import { busySendModeFromSettings } from '../lib/busy-send';
 import { goalElapsedMs, formatGoalElapsed, formatGoalRecapStats } from '../lib/goal-api';
 import { formatTurnDuration } from '../lib/turn-metrics';
+import { consumePendingComposerInsert } from '../lib/command-palette';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -2447,6 +2448,18 @@ export default function ReplicaChatView() {
     }
     syncDraftToStore(threadId, inputRef.current);
   }, [syncDraftToStore]);
+  // G8: 命令面板选择斜杠命令 → 预填 composer 并聚焦（挂载时也消费跨视图 pending）。
+  useEffect(() => {
+    const applyInsert = (text) => {
+      if (!text) return;
+      setInput(text);
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+    applyInsert(consumePendingComposerInsert());
+    const onInsert = (event) => applyInsert(consumePendingComposerInsert() ?? event?.detail);
+    window.addEventListener('codebuddy:composer-insert', onInsert);
+    return () => window.removeEventListener('codebuddy:composer-insert', onInsert);
+  }, [setInput]);
   // Thread switch: persist the previous thread's local draft (its debounce may
   // not have fired yet), then restore the incoming thread's persisted draft.
   useEffect(() => {
