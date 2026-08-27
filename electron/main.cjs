@@ -2917,6 +2917,24 @@ async function readBoundedBodyBytes(response, maxBytes) {
   return readBoundedBody(response, maxBytes, 'bytes');
 }
 
+// 二进制响应必须 base64 透传（UTF-8 文本解码会破坏字节流）：
+// 图片 / PDF / 音视频 / 字体 / octet-stream（files/download 的兜底类型）。
+function isBinaryContentType(contentType) {
+  const type = String(contentType || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  return (
+    type.startsWith('image/') ||
+    type.startsWith('audio/') ||
+    type.startsWith('video/') ||
+    type.startsWith('font/') ||
+    type === 'application/pdf' ||
+    type === 'application/octet-stream' ||
+    type === 'application/zip'
+  );
+}
+
 async function readBoundedBodyText(response, maxBytes) {
   return readBoundedBody(response, maxBytes, 'text');
 }
@@ -3025,8 +3043,8 @@ ipcMain.handle('codebuddy:request', async (event, request = {}) => {
         }
       }
       body += decoder.decode();
-    } else if (contentType.startsWith('image/')) {
-      // Bound image responses too (16MB raw): a mislabelled content-type could
+    } else if (isBinaryContentType(contentType)) {
+      // Bound binary responses too (16MB raw): a mislabelled content-type could
       // otherwise stream an unbounded body into main-process memory.
       const bytes = await readBoundedBodyBytes(response, 16 * 1024 * 1024);
       if (bytes.truncated) truncated = true;

@@ -158,12 +158,13 @@ export async function fsRead(path) {
 }
 
 /**
- * G11: 读取文件为 Blob（图片 / PDF / SVG 预览用，同 fs/read 权限模型）。
+ * G11: 读取文件为 Blob（图片 / PDF / SVG 预览用）。
+ * 走 WebUI 同款二进制通道 `/api/v1/files/download`（fs/read 是文本语义，二进制会读取失败）。
  * @param {string} path - 文件路径
  * @returns {Promise<Blob>}
  */
 export async function fsReadBlob(path) {
-  const response = await requestCodeBuddy(`/api/v1/fs/read?path=${encodeURIComponent(path)}`, {
+  const response = await requestCodeBuddy(`/api/v1/files/download?path=${encodeURIComponent(path)}`, {
     method: 'GET',
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
