@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { useViewActive } from '../lib/use-view-active';
 import ReplicaBackgroundSessionsView from './ReplicaBackgroundSessionsView';
+import ReplicaJobsWorkbench from './ReplicaJobsWorkbench';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import { translate, resolveLocaleMode } from '../lib/i18n';
 
@@ -180,6 +181,8 @@ export default function ReplicaInstancesView() {
           <div className="flex items-center rounded-md border border-[var(--color-border-default)] p-0.5" role="tablist" aria-label="实例视图">
             <button type="button" role="tab" aria-selected={view === 'projects'} className={`rounded px-2.5 py-1 text-xs ${view === 'projects' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('projects')}>项目运行时</button>
             <button type="button" role="tab" aria-selected={view === 'background'} className={`rounded px-2.5 py-1 text-xs ${view === 'background' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('background')}>后台会话</button>
+            {/* G4: WebUI /api/v1/jobs 后台智能体工作台（派发 + 管理）。 */}
+            <button type="button" role="tab" aria-selected={view === 'jobs'} className={`rounded px-2.5 py-1 text-xs ${view === 'jobs' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('jobs')}>{t('jobs.tab')}</button>
           </div>
         </div>
         {view === 'projects' ? <div className="flex items-center gap-2">
@@ -188,7 +191,7 @@ export default function ReplicaInstancesView() {
         </div> : null}
       </div>
 
-      {view === 'background' ? <ReplicaBackgroundSessionsView /> : <div className="flex-1 overflow-y-auto"><div className="page-content-wide">
+      {view === 'background' ? <ReplicaBackgroundSessionsView /> : view === 'jobs' ? <ReplicaJobsWorkbench active={active && view === 'jobs'} /> : <div className="flex-1 overflow-y-auto"><div className="page-content-wide">
         {refreshError ? (
           <div className="mb-4 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]">
             <span>{refreshError}</span>
