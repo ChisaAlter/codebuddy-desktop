@@ -29,8 +29,16 @@ describe('version consistency', () => {
     expect(lock.packages['']?.version).toBe(version);
   });
 
-  it('RELEASE_NOTES.md documents the current version', () => {
+  it('RELEASE_NOTES.md has a heading for the current version', () => {
     const notes = fs.readFileSync(path.join(root, 'RELEASE_NOTES.md'), 'utf8');
-    expect(notes.includes(version), `RELEASE_NOTES.md 缺少 ${version} 的条目`).toBe(true);
+    // R12 收紧：不再接受正文任意位置 includes(version)（版本号出现在别的段落
+    // 也能骗过守卫），必须存在以当前版本为标题的章节行，
+    // 如「## 1.1.2（…）」或「# CodeBuddy Desktop 1.1.2」。
+    const escaped = version.replace(/\./g, '\\.');
+    const headingPattern = new RegExp(`^#{1,3} (?:.*\\s)?v?${escaped}(?![\\d.])`, 'm');
+    expect(
+      headingPattern.test(notes),
+      `RELEASE_NOTES.md 缺少 ${version} 的章节标题（如「## ${version}」）`,
+    ).toBe(true);
   });
 });

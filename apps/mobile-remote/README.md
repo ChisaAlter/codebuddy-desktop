@@ -24,11 +24,16 @@ Phase 1–3 完成：配对 + 项目/会话/聊天流式 + 停止 + 模型/思�
 
 ```bash
 cd apps/mobile-remote
-npm install      # 在仓库根 npm install 即已挂 workspaces
+npm install      # App 独立安装（不再挂在仓库根 workspaces 下）
 npx expo start   # 或: npx expo start --android
 ```
 
-workspace 依赖（`@codebuddy/mobile-remote-protocol` / `@codebuddy/mobile-remote-crypto`）经 `metro.config.js` 的 watchFolders 解析。
+本 App 已移出仓库根 npm workspaces（R12）：Expo/React Native 的开发期依赖链
+（`@expo/cli` 等）自带大量 npm audit 告警，与桌面端无关；移出后桌面端
+`npm ci` / CI 不再安装 Expo 依赖树。本地包依赖
+（`@codebuddy/mobile-remote-protocol` / `@codebuddy/mobile-remote-crypto`）改为
+`file:../../packages/...` 协议，需在本目录单独 `npm install`；源码热更新仍经
+`metro.config.js` 的 watchFolders 解析。
 
 ## 与 Desktop 联调（本机）
 

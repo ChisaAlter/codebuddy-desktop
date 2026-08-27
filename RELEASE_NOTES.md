@@ -2,6 +2,16 @@
 
 1.1.0 将工作流、团队/子代理状态和 `/goal` 目标进度从聊天顶部移到可持续查看的右侧面板，并强化流式取消与消息渲染安全边界。
 
+## Unreleased（R12 加固迭代，1.1.3 候选）
+
+本节内容已合入 master、尚未发版；发版时随版本号提升（bump 时同步 package.json / README / lockfile，`tests/unit/version-consistency.test.js` 强制一致）。
+
+- **合并/PR 门禁 CI 上线**：`.github/workflows/ci.yml` 在每次 push 到 master 与每个 PR 上跑 `npm ci` + `npm run test:gate`（ubuntu-latest + windows-latest 矩阵）；第三方 action 钉死 commit SHA（供应链加固）。
+- **IPC 信任边界第二轮加固**：所有 `ipcMain.on` 通道（窗口控制、退出协商、rightBrowser 边界、productState:saveSync 等 15 个）统一 `requireTrustedMainSenderOn` 守卫（此前仅 `ipcMain.handle` 有统一守卫）；sender 校验新增 `senderFrame` 维度——iframe（子 frame）发起的特权 IPC 一律拒绝，frame 必须是主窗口自己的主 frame；契约测试扩展防回归。
+- **npm 供应链治理**：`apps/mobile-remote`（Expo App）移出根 npm workspaces，桌面端 `npm ci` / CI 不再安装 Expo 依赖树；配合非破坏性 `npm audit fix`，audit 告警 42 → 14（剩余均需 electron-builder/Electron/Vite 破坏性 major 升级，已记录到迭代计划 Next）。
+- **版本一致性守卫收紧**：RELEASE_NOTES 检查改为必须存在当前版本的章节标题行（原 `includes()` 可被任意段落中的版本号骗过）。
+- **relay 离线行为钉死**：中继在 host 控制 socket 离线时对客户端的反馈是 `close(4001 'server offline')`；半开窗口内的客户端帧按设计丢弃（注入明文通知帧会破坏 E2EE 帧解析协议），新增注释与测试锁定该行为。
+
 ## 1.1.2（R1–R10 修复迭代发版）
 
 1.1.2 是 1.1.x 系列第一个实际发布安装包的版本。此前 `v1.1.0` / `v1.1.1` 标签指向的提交**不包含** R1–R10 修复迭代（也未发布安装包），`v1.1.2` 标签是首个完整包含以下内容的可发布提交：

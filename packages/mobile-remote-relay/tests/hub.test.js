@@ -413,6 +413,30 @@ describe('SessionHub auth', () => {
     assert.ok(dataWs2.sent.includes('still-live'), 'frames must keep flowing to the replacement data socket');
   });
 
+  // R12: when the host control socket is offline the relay cannot deliver
+  // client frames. The offline feedback to clients is the explicit
+  // close(4001 'server offline') from the control socket's close handler;
+  // frames sent in the transient half-open window (control socket no longer
+  // OPEN but 'close' not yet fired) are dropped by design — no plaintext
+  // notification frame is injected because clients treat incoming text frames
+  // as E2EE payload (see #attachClientBuffering in session-hub.js).
+  it('closes clients with 4001 when the control socket goes offline; half-open frames are dropped silently', () => {
+    const hub = new SessionHub({ allowUnsignedServer: false });
+    const { serverCtrl, clientWs } = setupSignedSession(hub, 'nonce-offline');
+
+    // Half-open window: readyState left OPEN, 'close' not yet fired. Client
+    // frames in this window are dropped (no buffering, no throw, no echo).
+    serverCtrl.readyState = 3;
+    const sentBefore = clientWs.sent.length;
+    clientWs.emit('message', 'sent-while-half-open', false);
+    assert.equal(clientWs.sent.length, sentBefore, 'no notification frame is sent to the client');
+
+    // Close event lands: every client gets the explicit offline signal.
+    serverCtrl.emit('close');
+    assert.equal(clientWs.closed?.code, 4001);
+    assert.equal(clientWs.closed?.reason, 'server offline');
+  });
+
   // H10: per-session client count is capped.
   it('caps concurrent clients per session', () => {
     const hub = new SessionHub({ allowUnsignedServer: true });

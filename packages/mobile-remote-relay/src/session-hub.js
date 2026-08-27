@@ -421,6 +421,15 @@ export class SessionHub {
   #attachClientBuffering(serverId, connectionId, clientState) {
     clientState.ws.on('message', (data) => {
       const s = this.sessions.get(serverId);
+      // R12: control socket offline → drop the frame by design. The client's
+      // offline feedback is the explicit close(4001 'server offline') sent by
+      // the control socket's close handler, which also clears the client map —
+      // so this branch is only reachable in the transient half-open window
+      // between the control socket leaving OPEN and its 'close' event firing.
+      // We deliberately do NOT inject a plaintext notification frame here:
+      // clients treat incoming text frames as E2EE payload, and an unencrypted
+      // control frame would be a protocol-breaking change (documented as a
+      // possible protocol extension in docs/iteration-plan-1.1.x.md).
       if (!s?.server || s.server.readyState !== 1) return;
       const text = typeof data === 'string' ? data : data.toString('utf8');
       const bytes = Buffer.byteLength(text, 'utf8');

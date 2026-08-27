@@ -15,8 +15,7 @@
   "workspaces": [
     "packages/mobile-remote-protocol",
     "packages/mobile-remote-crypto",
-    "packages/mobile-remote-relay",
-    "apps/mobile-remote"
+    "packages/mobile-remote-relay"
   ],
   "scripts": {
     "dev": "vite --port 5173",

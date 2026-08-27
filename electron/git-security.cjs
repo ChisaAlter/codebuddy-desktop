@@ -38,13 +38,30 @@ function isAllowedGitCwd(cwd, allowedDirs) {
 }
 
 /**
- * sender 校验：必须是主窗口的 webContents（对齐 isAllowedLocalRuntimeUrl 的本地信任边界）。
- * 任何已销毁/非主窗口的 sender 一律拒绝。
+ * senderFrame 校验（Electron IPC 溯源，防 iframe 冒充主窗口）：
+ * - null/undefined 放行：Electron 文档允许 frame 已销毁或跨导航时 event.senderFrame
+ *   为 null，此时回退到 sender 级校验（sender === mainWindow.webContents 已足够）。
+ * - 子 frame（iframe，parent 非空）一律拒绝：即使 iframe 与主窗口同 webContents，
+ *   特权 IPC 也只允许主 frame 发起（Electron 安全清单「validate the sender frame」）。
+ * - frame 必须就是 sender 自己的 mainFrame（防其他 webContents 的顶层 frame 冒充）。
  */
-function isTrustedGitSender(sender, mainWindow) {
+function isTrustedSenderFrame(senderFrame, sender) {
+  if (senderFrame == null) return true;
+  if (senderFrame.parent != null) return false;
+  if (sender && sender.mainFrame && senderFrame !== sender.mainFrame) return false;
+  return true;
+}
+
+/**
+ * sender 校验：必须是主窗口的 webContents（对齐 isAllowedLocalRuntimeUrl 的本地信任边界）。
+ * 任何已销毁/非主窗口的 sender 一律拒绝。可选第三参 senderFrame（event.senderFrame）：
+ * 传入时额外要求是主 frame（见 isTrustedSenderFrame）。
+ */
+function isTrustedGitSender(sender, mainWindow, senderFrame) {
   if (!sender || typeof sender.isDestroyed !== 'function' || sender.isDestroyed()) return false;
   if (!mainWindow || typeof mainWindow.isDestroyed !== 'function' || mainWindow.isDestroyed()) return false;
-  return sender === mainWindow.webContents;
+  if (sender !== mainWindow.webContents) return false;
+  return isTrustedSenderFrame(senderFrame, sender);
 }
 
 const isTrustedMainSender = isTrustedGitSender;
@@ -53,6 +70,7 @@ module.exports = {
   normalizeDir,
   normalizeDirList,
   isAllowedGitCwd,
+  isTrustedSenderFrame,
   isTrustedGitSender,
   isTrustedMainSender,
 };
