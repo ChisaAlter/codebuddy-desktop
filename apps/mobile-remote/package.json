@@ -10,8 +10,8 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@codebuddy/mobile-remote-protocol": "0.1.0",
-    "@codebuddy/mobile-remote-crypto": "0.1.0",
+    "@codebuddy/mobile-remote-protocol": "file:../../packages/mobile-remote-protocol",
+    "@codebuddy/mobile-remote-crypto": "file:../../packages/mobile-remote-crypto",
     "@react-native-async-storage/async-storage": "~1.23.0",
     "base64-js": "^1.5.1",
     "expo": "~52.0.0",
