@@ -126,6 +126,15 @@
 - `npm audit`：42（1 low/7 moderate/33 high/1 critical）→ 14（3 moderate/10 high/1 critical）；剩余全部需破坏性 major 升级（见 Next）。
 - 未跑（需 Windows / 构建产物）：同第二轮 —— windows-latest 侧由本轮新增的 `ci` workflow 在每次 PR/push 上补跑 `test:gate`。
 
+### 第五轮（G1–G13 WebUI 对齐，2026-08-27，1.1.4）
+
+- `npm run test:gate`（Linux）：lint 零告警；vitest 140 files / 1136 passed / 17 skipped / 0 failed；mobile-remote 全部通过（protocol / crypto / relay + bridge node:test）。
+- 新增单测 12 个文件：webui-settings-schema 扩展（G1）、goal-api（G2）、busy-send + store-busy-send-steer（G3）、jobs-api（G4）、agent-home-api（G5）、mcp-app（G6）、turn-metrics（G7）、command-palette（G8）、session-history（G9）、canvas-tiles（G10）、editor-tabs（G11）、autocompact（G12）、env-flags（G13）。
+- `npm run build:dir`（Linux）：vite build + linux-unpacked 打包成功。
+- 真机 QA（Linux X11 1920×1200，`dist/linux-unpacked` 打包产物 + 全局安装 CLI 2.138.0）：CLI 检测对话框识别 v2.138.0 兼容 → 设置页逐项确认 G1 四键（Auto-Compact Window、Send while busy 下拉含「排队 / 立即插入当前回合」、Agent 预设组两键）与 G13 REPL 开关 → Ctrl+Shift+H 命令面板（视图过滤、主题亮/暗切换即时生效）→ 打开 /workspace 项目、真实 runtime 启动 → Canvas 添加终端磁贴（真实 PTY 执行命令）、最大化后同一 PTY 会话存活（继续执行命令验证）→ 编辑器多标签（Quick Open 模糊打开、右键固定/关闭其它、markdown 预览、PNG 图片预览、addToChat 插入 composer）。录屏与截图存档 `/opt/cursor/artifacts/`。
+- 真机 QA 逮到并修复 1 个缺陷：二进制预览（图片/PDF）最初走 `fs/read`（文本语义端点，二进制读取失败导致预览卡「加载中」）；修为 WebUI 同款 `/api/v1/files/download`，并把主进程请求代理的 base64 透传从仅 `image/*` 扩展到 pdf / octet-stream / 字体 / 音视频（否则 UTF-8 文本解码破坏字节流）。修复后打包复测：PNG 预览正常渲染。
+- 未覆盖（需 CodeBuddy 账号登录，QA 机不可用）：G2 目标条 / G5 Agent Home / G7 回合耗时的**实数据**链路（代码路径有单测锁定；聊天链路依赖账号会话）。Windows 侧由 `ci` workflow 补跑 `test:gate`。
+
 ### 第四轮（R13 发版准备，2026-08-27）
 
 - `npm run test:gate`（Linux）：lint 零告警；vitest 127 files / 1059 passed / 18 skipped / 0 failed；mobile-remote 全部通过（protocol / crypto / relay + bridge node:test 26 pass）。
