@@ -15,6 +15,7 @@ import {
 import { requestSettingsSection } from './lib/settings-nav';
 import CliSetupDialog from './components/CliSetupDialog';
 import CommandPalette from './components/CommandPalette';
+import SessionHistoryModal from './components/SessionHistoryModal';
 import RightPanelHost from './components/RightPanelHost';
 import WorkflowFloatingPanelHost from './components/WorkflowFloatingPanelHost';
 
@@ -1041,6 +1042,7 @@ export default function App() {
           {/* 启动检测 CodeBuddy CLI（对齐 pi-desktop onboarding step1） */}
           <CliSetupDialog />
           <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} />
+          <SessionHistoryModal />
         </>
       )}
       <DirtyFileConfirmDialog />

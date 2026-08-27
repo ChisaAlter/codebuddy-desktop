@@ -3654,6 +3654,74 @@ export function createSessionsChatSlice(set, get, ctx) {
     get().patchThreadRuntime(threadId, { goalRecap: null });
   },
 
+  // ===== G9: 会话历史浏览器 =====
+
+  setSessionHistoryOpen(open) {
+    set({ sessionHistoryOpen: Boolean(open) });
+  },
+
+  /**
+   * 把一段 CLI 历史会话恢复为当前项目的新线程（session/load 回放历史）。
+   * 已有绑定同 sessionId 的线程时直接切换过去，避免重复线程。
+   */
+  async restoreHistorySession(sessionId, label = '') {
+    const normalized = String(sessionId || '').trim();
+    if (!normalized) return false;
+    const projectId = get().activeProjectId;
+    if (!projectId) return false;
+    const existing = (get().threadOrderByProject[projectId] || [])
+      .map((id) => get().threadsById[id])
+      .find((thread) => thread?.sessionId === normalized && !thread?.archivedAt);
+    if (existing) {
+      return get().activateThread(existing.id);
+    }
+    if (get().newSessionBusy || get().projectNavigationBusy) return false;
+    const previousThreadId = get().activeThreadId;
+    set({ newSessionBusy: true, newSessionProjectId: projectId, newSessionError: null, error: null });
+    try {
+      const thread = createThreadRecord(projectId, {
+        sessionId: normalized,
+        title: String(label || '').trim() || '历史会话',
+      });
+      try {
+        get().closeWorkflowPanel?.();
+      } catch (_) {}
+      set((state) => ({
+        threadsById: { ...state.threadsById, [thread.id]: thread },
+        threadOrderByProject: {
+          ...state.threadOrderByProject,
+          [projectId]: [thread.id, ...(state.threadOrderByProject[projectId] || [])],
+        },
+        activeThreadId: thread.id,
+        workflowFloatingPanel: null,
+        workflowPanelDismissed: null,
+      }));
+      const persisted = await get().persistProductState();
+      if (!persisted) {
+        set((state) => {
+          const threadsById = { ...state.threadsById };
+          delete threadsById[thread.id];
+          return {
+            threadsById,
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: (state.threadOrderByProject[projectId] || []).filter((id) => id !== thread.id),
+            },
+            activeThreadId: state.activeThreadId === thread.id ? previousThreadId : state.activeThreadId,
+          };
+        });
+        return false;
+      }
+      if (get().activeProjectId !== projectId || get().activeThreadId !== thread.id) return true;
+      return await get().initializeActiveThread(normalized);
+    } catch (error) {
+      set({ newSessionError: error?.message || '恢复历史会话失败' });
+      return false;
+    } finally {
+      set({ newSessionBusy: false });
+    }
+  },
+
   // ===== 鉴权 action（对照源 viewState/login/logout）=====
   };
 }

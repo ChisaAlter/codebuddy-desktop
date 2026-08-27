@@ -66,6 +66,8 @@ export default function CommandPalette({ open, onClose }) {
       if (command.kind === 'action') {
         if (command.value === 'toggle-sidebar') {
           setSidebarCollapsed(!state.sidebarCollapsed);
+        } else if (command.value === 'session-history') {
+          state.setSessionHistoryOpen?.(true);
         } else if (command.value === 'new-conversation') {
           if (state.newSessionBusy || state.projectNavigationBusy) return;
           setRoute('chat');

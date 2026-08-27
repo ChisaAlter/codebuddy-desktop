@@ -20,6 +20,7 @@ export function buildPaletteCommands({ t, slashCommands = [], theme = 'dark', lo
   commands.push(
     { id: 'action:new-conversation', kind: 'action', label: tr('palette.action.newConversation'), value: 'new-conversation' },
     { id: 'action:toggle-sidebar', kind: 'action', label: tr('palette.action.toggleSidebar'), value: 'toggle-sidebar' },
+    { id: 'action:session-history', kind: 'action', label: tr('palette.action.sessionHistory'), value: 'session-history' },
   );
   const seen = new Set();
   for (const command of Array.isArray(slashCommands) ? slashCommands : []) {

@@ -665,6 +665,8 @@ export const useStore = create((set, get) => {
   projectNavigationError: null,
   info: null,
   settings: null,
+  // G9: 会话历史浏览器（modal）开关。
+  sessionHistoryOpen: false,
   guiSettings: loadGuiSettings(),
   infoLoaded: false,
   settingsLoaded: false,
