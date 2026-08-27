@@ -28,6 +28,7 @@ import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { busySendModeFromSettings } from '../lib/busy-send';
 import { goalElapsedMs, formatGoalElapsed, formatGoalRecapStats } from '../lib/goal-api';
+import { formatTurnDuration } from '../lib/turn-metrics';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -2130,6 +2131,16 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
 
   if (item.type === 'compact') {
     return <CompactTimelineCard item={item} />;
+  }
+
+  // G7: 回合耗时页脚（CLI TUI `✔ Worked for …` 同款，showTurnDuration 默认开）。
+  if (item.type === 'turn-metrics') {
+    return (
+      <div className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]" data-testid="turn-metrics">
+        <Check size={12} className="text-[var(--color-accent-green)]" />
+        <span>{t('chat.workedFor', { duration: formatTurnDuration(item.durationMs) })}</span>
+      </div>
+    );
   }
 
   if (['checkpoint', 'taskCreated', 'taskStatus', 'question_answered'].includes(item.type)) {

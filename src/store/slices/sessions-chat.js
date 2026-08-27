@@ -57,6 +57,7 @@ import {
   activeGoalFromSnapshot,
   normalizeGoalRecap,
 } from '../../lib/goal-api';
+import { appendTurnMetrics, showTurnDurationFromSettings } from '../../lib/turn-metrics';
 import { buildPromptContentBlocks } from '../../lib/prompt-content';
 import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
@@ -3147,7 +3148,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       // with `idle`/`success`.
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const completedTimeline = cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline));
+      // G7: 回合成功终态补 turn-metrics（CLI showTurnDuration，默认开）。
+      const completedTimeline = showTurnDurationFromSettings(get().settings)
+        ? appendTurnMetrics(
+            cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline)),
+            promptStartedAt,
+          )
+        : cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline));
       const completedReports = collectSubagentReports({
         timeline: completedTimeline,
         teamState: completedRuntime.teamState,
