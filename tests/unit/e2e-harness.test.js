@@ -145,60 +145,43 @@ function makeInteractable(element, rect = { x: 10, y: 20, width: 100, height: 40
 }
 
 describe('desktop E2E harness public contract', () => {
-  it('keeps hosted CI CLI-free and gates real desktop E2E behind manual self-hosted preflight', () => {
+  it('keeps hosted CI CLI-free and on the cross-platform test gate', () => {
+    // R12: ci.yml 上线（push/PR → ubuntu+windows 矩阵 → npm ci + test:gate）。
+    // 原断言描述的是一个从未落地的双 job 设计（hosted build-and-test +
+    // self-hosted real-desktop-e2e），此前仅靠 ci.yml 不存在的回退分支通过。
+    // 核心意图保留：hosted CI 不得安装/依赖 CodeBuddy CLI，也不得跑需要
+    // CLI/构建产物的 e2e 套件；真实桌面 E2E 仍留给带 CLI 的真机（TESTING.md）。
     const workflowPath = path.join(process.cwd(), '.github', 'workflows', 'ci.yml');
-    if (!fs.existsSync(workflowPath)) {
-      const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
-      expect(pkg.scripts.lint).toBeTruthy();
-      expect(pkg.scripts.test).toBeTruthy();
-      expect(pkg.scripts['test:e2e']).toBeTruthy();
-      expect(pkg.scripts['test:packaged']).toBeTruthy();
-      return;
-    }
     const workflow = fs.readFileSync(workflowPath, 'utf8');
     const parsed = yaml.load(workflow);
-    const hosted = parsed.jobs['build-and-test'];
-    const realDesktop = parsed.jobs['real-desktop-e2e'];
-    const hostedCommands = hosted.steps.map((step) => step.run || '').join('\n');
-    const realCommands = realDesktop.steps.map((step) => step.run || '').join('\n');
-    const artifact = realDesktop.steps.find((step) => step.uses === 'actions/upload-artifact@v4');
-    const preflight = realDesktop.steps.find((step) => (step.name || '').includes('CodeBuddy CLI'));
-    const hostedBaseline = hosted.steps.find((step) => (step.run || '').includes('--allow-missing-sources'));
-    const realBaseline = realDesktop.steps.find((step) => (step.run || '').includes('--allow-missing-sources'));
-    const configuredMajor = Number(
-      hosted.steps.find((step) => step.uses === 'actions/setup-node@v4').with['node-version'],
-    );
+    const gate = parsed.jobs['test-gate'];
+    const commands = gate.steps.map((step) => step.run || '').join('\n');
 
-    expect(configuredMajor).toBeGreaterThanOrEqual(24);
+    // CLI-free：不装全局 codebuddy，不固定 CLI 版本。
     expect(workflow).not.toMatch(/npm\s+install[^\n]*(?:--global|-g)[^\n]*codebuddy/i);
     expect(workflow).not.toMatch(/@tencent-ai\/codebuddy-code@\d/);
-    expect(hosted['runs-on']).toBe('windows-latest');
-    expect(hostedCommands).toContain('npm run lint');
-    expect(hostedCommands).toContain('npm test');
-    expect(hostedCommands).toContain('npm run build:dir');
-    expect(hostedCommands).toContain('node scripts/test/e2e-baseline.cjs --allow-missing-sources');
-    expect(hostedBaseline.name).toMatch(/registry[- ]only/i);
-    expect(hostedCommands).not.toMatch(/test:e2e:unpackaged|test:packaged/);
+    // 不跑需要 CLI / 构建产物的套件（真机专属，见 TESTING.md）。
+    expect(commands).not.toMatch(/test:e2e|test:packaged|test:perf/);
 
-    expect(parsed.on.workflow_dispatch.inputs.real_desktop_e2e.type).toBe('boolean');
-    expect(realDesktop.if).toContain("github.event_name == 'workflow_dispatch'");
-    expect(realDesktop.if).toContain('inputs.real_desktop_e2e');
-    expect(realDesktop.name).toMatch(/dedicated authenticated test profile/i);
-    expect(parsed.on.workflow_dispatch.inputs.real_desktop_e2e.description).toMatch(
-      /dedicated authenticated test profile/i,
-    );
-    expect(realDesktop['runs-on']).toEqual(
-      expect.arrayContaining(['self-hosted', 'Windows', 'codebuddy-authenticated']),
-    );
-    expect(realCommands).toContain('codebuddy --version');
-    expect(preflight.name).toMatch(/dedicated authenticated test profile/i);
-    expect(realCommands).toContain('node scripts/test/e2e-baseline.cjs --allow-missing-sources');
-    expect(realBaseline.name).toMatch(/registry[- ]only/i);
-    expect(realCommands).toContain('npm run test:e2e:unpackaged');
-    expect(realCommands).toContain('npm run test:packaged');
-    expect(artifact.with.path).toContain('.omo/evidence/task-1-runs/');
-    expect(artifact.with.path).toContain('.omo/evidence/task-1-baseline/');
-    expect(artifact.with.path).not.toMatch(/screenshots|task-1-runtime|e2e-runtime|user-data/i);
+    // 触发面：push 到 master + PR 指向 master。
+    expect(parsed.on.push.branches).toEqual(['master']);
+    expect(parsed.on.pull_request.branches).toEqual(['master']);
+
+    // 跨平台矩阵 + 与本地一致的门禁命令。
+    expect(gate.strategy.matrix.os).toEqual(['ubuntu-latest', 'windows-latest']);
+    expect(commands).toContain('npm ci');
+    expect(commands).toContain('npm run test:gate');
+
+    // 供应链加固：第三方 action 必须钉死 40 位 commit SHA，不允许浮动 tag。
+    const uses = gate.steps.map((step) => step.uses).filter(Boolean);
+    expect(uses.length).toBeGreaterThan(0);
+    for (const ref of uses) {
+      expect(ref, `action must be SHA-pinned: ${ref}`).toMatch(/@[0-9a-f]{40}$/);
+    }
+
+    // Node 版本与 release workflow 保持一致（22）。
+    const setupNode = gate.steps.find((step) => /actions\/setup-node@/.test(step.uses || ''));
+    expect(Number(setupNode.with['node-version'])).toBe(22);
   });
 
   it('preserves the original launch then renderer sequence and exposes baseline capture', () => {
