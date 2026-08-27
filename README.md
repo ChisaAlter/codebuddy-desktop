@@ -2,7 +2,7 @@
 
 CodeBuddy Desktop 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
 
-**当前版本：[1.1.3](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.3)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-desktop/releases)（已发布的 Windows 安装包可能落后于代码版本，以 Releases 页为准）
+**当前版本：[1.1.4](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.1.4)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-desktop/releases)（已发布的 Windows 安装包可能落后于代码版本，以 Releases 页为准）
 
 仓库：[`ChisaAlter/codebuddy-desktop`](https://github.com/ChisaAlter/codebuddy-desktop)（产品名 **CodeBuddy Desktop**；安装包文件名仍为 `CodeBuddy-GUI-Setup-<version>.exe`）。
 
