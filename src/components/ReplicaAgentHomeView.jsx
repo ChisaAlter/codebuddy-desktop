@@ -9,7 +9,6 @@ import {
   HOME_MAX_MEMBERS,
   fetchAgentHomeSnapshot,
   createHomeAgent,
-  updateHomeAgent,
   deleteHomeAgent,
   createHomeRoom,
   deleteHomeRoom,
