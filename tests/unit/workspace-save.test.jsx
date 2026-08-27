@@ -22,7 +22,7 @@ vi.mock('@monaco-editor/react', () => ({
   default: () => null,
   loader: { config: vi.fn() },
 }));
-vi.mock('monaco-editor/esm/vs/editor/editor.api', () => ({
+vi.mock('monaco-editor/editor/editor.api.js', () => ({
   languages: {
     getLanguages: () => [{ id: 'json' }],
     register: vi.fn(),
@@ -30,16 +30,16 @@ vi.mock('monaco-editor/esm/vs/editor/editor.api', () => ({
     setLanguageConfiguration: vi.fn(),
   },
 }));
-vi.mock('monaco-editor/esm/vs/editor/editor.worker?worker', () => ({ default: class EditorWorker {} }));
-vi.mock('monaco-editor/esm/vs/language/json/tokenization.js', () => ({ createTokenizationSupport: vi.fn() }));
-vi.mock('monaco-editor/esm/vs/basic-languages/css/css.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/html/html.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/python/python.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js', () => ({}));
-vi.mock('monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js', () => ({}));
+vi.mock('monaco-editor/editor/editor.worker.js?worker', () => ({ default: class EditorWorker {} }));
+vi.mock('monaco-editor/languages/features/json/tokenization.js', () => ({ createTokenizationSupport: vi.fn() }));
+vi.mock('monaco-editor/languages/definitions/css/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/html/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/javascript/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/markdown/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/python/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/shell/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/typescript/register.js', () => ({}));
+vi.mock('monaco-editor/languages/definitions/yaml/register.js', () => ({}));
 
 vi.mock('../../src/store', () => ({
   useStore: Object.assign(

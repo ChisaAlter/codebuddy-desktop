@@ -2,9 +2,18 @@
 
 1.1.0 将工作流、团队/子代理状态和 `/goal` 目标进度从聊天顶部移到可持续查看的右侧面板，并强化流式取消与消息渲染安全边界。
 
-## Unreleased（R12 加固迭代，1.1.3 候选）
+## 1.1.3（R12 加固 + R13 发版准备迭代）
 
-本节内容已合入 master、尚未发版；发版时随版本号提升（bump 时同步 package.json / README / lockfile，`tests/unit/version-consistency.test.js` 强制一致）。
+1.1.3 包含 R12 加固迭代（PR #2）与 R13 发版准备迭代的全部内容。
+
+### R13 发版准备（本轮新增）
+
+- **构建链依赖安全升级（npm audit 14 → 4）**：electron-builder 24.13.3 → 26.15.3（消除 tar critical 与 app-builder-lib / builder-util / builder-util-runtime / electron-publish 等 8 项 high 告警；Linux `build:dir` + 测试门禁验证通过，Windows 全量打包由 release workflow 验证）；monaco-editor 0.55.1 → 0.56.0（ESM 入口重组，`esm/vs/...` 深路径迁移到新 exports 入口）+ 根 `overrides` 钉 dompurify ^3.4.14（消除 dompurify XSS 系列与 monaco 告警）。剩余 4 项均需 Electron / Vite 主版本升级（运行时/开发期大改，单独开轮，见迭代计划 Next）。
+- **CLI 推荐版本 2.135.0 → 2.138.0**：`electron/cli-compat.cjs` RECOMMENDED_VERSION 提升（最低支持版本维持 2.125.0 不变；高于推荐版本仍仅警告不阻断）。
+- **R11 拆分首步**：`sessions-chat.js` 的 prompt 内容块构造纯函数抽取为 `src/lib/prompt-content.js`（行为保持不变，新增单测覆盖）。
+- **代码签名文档补全**：`docs/release-checklist.md` 新增 Windows 证书导出 → base64 → GitHub secrets → 重跑 release workflow 的逐步操作指引。
+
+### R12 加固迭代（PR #2）
 
 - **合并/PR 门禁 CI 上线**：`.github/workflows/ci.yml` 在每次 push 到 master 与每个 PR 上跑 `npm ci` + `npm run test:gate`（ubuntu-latest + windows-latest 矩阵）；第三方 action 钉死 commit SHA（供应链加固）。
 - **IPC 信任边界第二轮加固**：所有 `ipcMain.on` 通道（窗口控制、退出协商、rightBrowser 边界、productState:saveSync 等 15 个）统一 `requireTrustedMainSenderOn` 守卫（此前仅 `ipcMain.handle` 有统一守卫）；sender 校验新增 `senderFrame` 维度——iframe（子 frame）发起的特权 IPC 一律拒绝，frame 必须是主窗口自己的主 frame；契约测试扩展防回归。
