@@ -49,6 +49,14 @@ import {
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
 import { busySendModeFromSettings, shouldQueueBusyPrompt } from '../../lib/busy-send';
+import {
+  fetchGoalSnapshot,
+  pauseGoal,
+  resumeGoal,
+  clearGoal,
+  activeGoalFromSnapshot,
+  normalizeGoalRecap,
+} from '../../lib/goal-api';
 import { buildPromptContentBlocks } from '../../lib/prompt-content';
 import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
@@ -74,6 +82,7 @@ const KNOWN_PRIVATE_METADATA_KEYS = new Set([
   'codebuddy.ai/goalProgress',
   'codebuddy.ai/goalStatus',
   'codebuddy.ai/goalMode',
+  'codebuddy.ai/goalRecap',
   'codebuddy.ai/workflowState',
   'codebuddy.ai/workflowUpdate',
   'codebuddy.ai/workflowEventKind',
@@ -390,6 +399,21 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtimePatch.progress = normalizedGoal.progress?.percent != null
         ? normalizedGoal.progress
         : runtime.progress;
+    }
+    // G2: codebuddy.ai/goalRecap → recap 卡片 + goal bar 同步（active → bar，latest 终态 → bar 清空）。
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/goalRecap')) {
+      const recap = normalizeGoalRecap(metadata['codebuddy.ai/goalRecap']);
+      runtimePatch.goalRecap = recap;
+      if (recap?.active) {
+        runtimePatch.goalBar = {
+          condition: recap.active.condition,
+          createdAt: recap.active.createdAt ?? runtime.goalBar?.createdAt ?? Date.now(),
+          ...(typeof recap.active.pausedAt === 'number' ? { pausedAt: recap.active.pausedAt } : {}),
+          paused: recap.active.paused === true || typeof recap.active.pausedAt === 'number',
+        };
+      } else if (recap?.latest) {
+        runtimePatch.goalBar = null;
+      }
     }
     const memberEvent = Boolean(memberName && contentEvent);
     const workflowActivity = Boolean(
@@ -3522,6 +3546,105 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
       return steerResult;
     });
+  },
+
+  // ===== G2: Goal Bar（WebUI /api/v1/goal REST 对齐）=====
+  // 快照 → runtime.goalBar；pause 先本地乐观置暂停并取消当前回合（与 WebUI Je 一致）。
+
+  async refreshGoalBar(threadId) {
+    const thread = get().threadsById[threadId];
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return null;
+    try {
+      const goalBar = activeGoalFromSnapshot(await fetchGoalSnapshot(sessionId));
+      if (get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar });
+      return goalBar;
+    } catch {
+      return null;
+    }
+  },
+
+  async pauseGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    if (!previous) return false;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    get().patchThreadRuntime(threadId, { goalBar: { ...previous, paused: true, pausedAt: Date.now() } });
+    if (get().activeThreadId === threadId && (runtime.activePromptRunId || runtime.isAwaitingResponse)) {
+      void get().cancelSession().catch(() => {});
+    }
+    try {
+      const goalBar = activeGoalFromSnapshot(await pauseGoal(sessionId));
+      if (get().threadsById[threadId] && goalBar) get().patchThreadRuntime(threadId, { goalBar });
+      return true;
+    } catch {
+      if (get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return false;
+    }
+  },
+
+  async resumeGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    if (!previous) return false;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    // WebUI ft：恢复时计时从暂停位置继续（createdAt 前移暂停时长）。
+    const pausedSpan = typeof previous.pausedAt === 'number' ? Math.max(0, previous.pausedAt - previous.createdAt) : 0;
+    const optimistic = { condition: previous.condition, createdAt: Date.now() - pausedSpan, paused: false };
+    get().patchThreadRuntime(threadId, { goalBar: optimistic });
+    try {
+      const goalBar = activeGoalFromSnapshot(await resumeGoal(sessionId));
+      if (get().threadsById[threadId] && goalBar) get().patchThreadRuntime(threadId, { goalBar });
+      return true;
+    } catch {
+      // WebUI 回退路径：REST 失败时重新以 /goal <条件> 设定目标。
+      const sent = await get()
+        .sendPrompt(`/goal ${previous.condition}`)
+        .catch(() => false);
+      if (!sent && get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return Boolean(sent);
+    }
+  },
+
+  async clearGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    get().patchThreadRuntime(threadId, { goalBar: null, goalRecap: null });
+    try {
+      await clearGoal(sessionId);
+      return true;
+    } catch {
+      // WebUI Ye 回退：REST 失败时走 /goal clear 斜杠命令。
+      const sent = await get()
+        .sendPrompt('/goal clear')
+        .catch(() => false);
+      if (!sent && previous && get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return Boolean(sent);
+    }
+  },
+
+  /** 编辑目标：发送 `/goal <条件>`（走正常 prompt/队列语义）。 */
+  async saveGoalEdit(threadId, condition) {
+    const trimmed = String(condition || '').trim();
+    if (!trimmed) return false;
+    return get().sendPrompt(`/goal ${trimmed}`);
+  },
+
+  dismissGoalRecap(threadId) {
+    if (!get().threadsById[threadId]) return;
+    get().patchThreadRuntime(threadId, { goalRecap: null });
   },
 
   // ===== 鉴权 action（对照源 viewState/login/logout）=====

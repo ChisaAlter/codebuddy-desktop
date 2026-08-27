@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
 import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
-import { ArrowUp, Square, Check, Ban } from 'lucide-react';
+import { ArrowUp, Square, Check, Ban, Target, Pencil, Pause, Play, X, CheckCircle2, XCircle } from 'lucide-react';
 import { useStore } from '../store';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -27,6 +27,7 @@ import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { busySendModeFromSettings } from '../lib/busy-send';
+import { goalElapsedMs, formatGoalElapsed, formatGoalRecapStats } from '../lib/goal-api';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -3687,6 +3688,197 @@ function readStoredComposerHeight() {
   }
 }
 
+// ===== G2: Goal Bar（对照 WebUI tG/nG/lS）=====
+
+function GoalBarRow({ goalBar, onEdit, onPause, onResume, onClear, t }) {
+  const [now, setNow] = useState(() => Date.now());
+  const running = !goalBar?.paused;
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (!goalBar) return null;
+  const elapsed = formatGoalElapsed(goalElapsedMs(goalBar, now));
+  const label = t(running ? 'goal.bar.active' : 'goal.bar.paused', { condition: goalBar.condition, elapsed });
+  const iconButton =
+    'flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]';
+  return (
+    <div
+      className="flex h-8 items-center gap-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-4 text-[12px] text-[var(--color-text-secondary)]"
+      data-testid="goal-bar"
+    >
+      <Target size={13} className="shrink-0 text-[var(--color-text-muted)]" />
+      <span className="min-w-0 flex-1 truncate" title={label}>
+        {label}
+      </span>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button type="button" onClick={onEdit} className={iconButton} title={t('goal.bar.edit')} aria-label={t('goal.bar.edit')}>
+          <Pencil size={12} />
+        </button>
+        {running ? (
+          <button type="button" onClick={onPause} className={iconButton} title={t('goal.bar.pause')} aria-label={t('goal.bar.pause')}>
+            <Pause size={12} />
+          </button>
+        ) : (
+          <button type="button" onClick={onResume} className={iconButton} title={t('goal.bar.resume')} aria-label={t('goal.bar.resume')}>
+            <Play size={12} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClear}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-accent-red)]"
+          title={t('goal.bar.clear')}
+          aria-label={t('goal.bar.clear')}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GoalEditDialog({ initialCondition, onSave, onCancel, t }) {
+  const [condition, setCondition] = useState(initialCondition || '');
+  const save = useCallback(() => {
+    const trimmed = condition.trim();
+    if (trimmed) onSave(trimmed);
+  }, [condition, onSave]);
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onCancel]);
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/30" onClick={onCancel} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="goal-edit-title"
+        className="relative mx-4 w-full max-w-[480px] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl"
+      >
+        <div className="px-5 pt-5 pb-3">
+          <h3 id="goal-edit-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t('goal.edit.title')}
+          </h3>
+          <textarea
+            autoFocus
+            value={condition}
+            onChange={(event) => setCondition(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                save();
+              }
+            }}
+            placeholder={t('goal.edit.placeholder')}
+            rows={4}
+            className="mt-3 w-full resize-none rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-2 text-[13px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+          />
+        </div>
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border-default)] px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-3 py-1.5 text-[13px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          >
+            {t('goal.edit.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!condition.trim()}
+            className="rounded-md bg-[var(--color-accent-blue)] px-3 py-1.5 text-[13px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t('goal.edit.save')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoalRecapCard({ recap, onDismiss, t }) {
+  useEffect(() => {
+    if (!recap) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onDismiss();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [recap, onDismiss]);
+  if (!recap) return null;
+  let body = null;
+  if (recap.active) {
+    body = (
+      <>
+        <div className="flex items-center gap-2">
+          <Target size={18} className="text-[var(--color-accent-blue)]" />
+          <h3 id="goal-recap-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t(recap.active.paused ? 'goal.recap.paused' : 'goal.recap.active')}
+          </h3>
+        </div>
+        <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+          {t('goal.progress.condition')}: {recap.active.condition}
+        </div>
+      </>
+    );
+  } else if (recap.latest) {
+    const ok = recap.latest.ok;
+    const Icon = ok ? CheckCircle2 : XCircle;
+    body = (
+      <>
+        <div className="flex items-center gap-2">
+          <Icon size={18} className={ok ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'} />
+          <h3 id="goal-recap-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t(ok ? 'goal.recap.achieved' : 'goal.recap.impossible')}
+          </h3>
+        </div>
+        <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+          {t('goal.progress.condition')}: {recap.latest.condition}
+        </div>
+        {recap.latest.reason ? (
+          <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+            {t('goal.progress.reason')}: {recap.latest.reason}
+          </div>
+        ) : null}
+        <div className="text-[12px] text-[var(--color-text-muted)]">{formatGoalRecapStats(recap.latest, t)}</div>
+      </>
+    );
+  } else {
+    return null;
+  }
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" data-testid="goal-recap">
+      <div className="absolute inset-0 bg-black/30" onClick={onDismiss} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="goal-recap-title"
+        className="relative mx-4 w-full max-w-[480px] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl"
+      >
+        <div className="flex flex-col gap-3 px-5 pt-5 pb-4">{body}</div>
+        <div className="border-t border-[var(--color-border-default)] px-5 pb-4 pt-2 text-[12px] text-[var(--color-text-muted)]">
+          <span className="text-[var(--color-text-secondary)]">{t('goal.recap.footer.setAnother')}</span>
+          <span>{t('goal.recap.footer.toSetAnother')}</span>
+          <span className="text-[var(--color-text-secondary)]">Esc</span>
+          <span> {t('goal.recap.footer.escDismiss')}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ChatComposer = React.memo(function ChatComposer({
   textareaRef,
   promptSuggestionEnabled,
@@ -3755,6 +3947,30 @@ const ChatComposer = React.memo(function ChatComposer({
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   // G3: busySendMode=immediate 时占位符提示「立即插入当前回合」。
   const busySendImmediate = useStore((s) => busySendModeFromSettings(s.settings) === 'immediate');
+  // G2: goal bar 状态与动作。
+  const activeThreadIdForGoal = useStore((s) => s.activeThreadId);
+  const goalSessionId = useStore(
+    (s) => s.threadsById?.[s.activeThreadId]?.sessionId || s.threadRuntimeById?.[s.activeThreadId]?.sessionId || s.sessionId,
+  );
+  const goalBar = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.goalBar || null);
+  const goalRecap = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.goalRecap || null);
+  const refreshGoalBar = useStore((s) => s.refreshGoalBar);
+  const pauseGoalBar = useStore((s) => s.pauseGoalBar);
+  const resumeGoalBar = useStore((s) => s.resumeGoalBar);
+  const clearGoalBar = useStore((s) => s.clearGoalBar);
+  const saveGoalEdit = useStore((s) => s.saveGoalEdit);
+  const dismissGoalRecap = useStore((s) => s.dismissGoalRecap);
+  const [goalEditOpen, setGoalEditOpen] = useState(false);
+  useEffect(() => {
+    if (activeThreadIdForGoal && goalSessionId) void refreshGoalBar(activeThreadIdForGoal);
+  }, [activeThreadIdForGoal, goalSessionId, refreshGoalBar]);
+  const handleGoalEditSave = useCallback(
+    (condition) => {
+      setGoalEditOpen(false);
+      void saveGoalEdit(activeThreadIdForGoal, condition);
+    },
+    [activeThreadIdForGoal, saveGoalEdit],
+  );
   const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || EMPTY_ARRAY);
   const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
   const workspaceDirsError = useStore((s) => s.workspaceDirsError);
@@ -3999,6 +4215,25 @@ const ChatComposer = React.memo(function ChatComposer({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+          {goalBar ? (
+            <GoalBarRow
+              goalBar={goalBar}
+              onEdit={() => setGoalEditOpen(true)}
+              onPause={() => void pauseGoalBar(activeThreadIdForGoal)}
+              onResume={() => void resumeGoalBar(activeThreadIdForGoal)}
+              onClear={() => void clearGoalBar(activeThreadIdForGoal)}
+              t={t}
+            />
+          ) : null}
+          {goalEditOpen ? (
+            <GoalEditDialog
+              initialCondition={goalBar?.condition || ''}
+              onSave={handleGoalEditSave}
+              onCancel={() => setGoalEditOpen(false)}
+              t={t}
+            />
+          ) : null}
+          <GoalRecapCard recap={goalRecap} onDismiss={() => dismissGoalRecap(activeThreadIdForGoal)} t={t} />
           <div
             className="chat-composer-resize-handle"
             role="separator"
