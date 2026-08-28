@@ -25,6 +25,7 @@ import {
 } from '../lib/chat-scroll';
 import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
+import { modelMenuMeta } from '../lib/model-meta';
 import { requestSettingsSection } from '../lib/settings-nav';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
@@ -4266,13 +4267,16 @@ const ChatComposer = React.memo(function ChatComposer({
                     {models.length > 0 ? (
                       models.map((m) => {
                         const modelId = m.id || m.modelId || m.name;
+                        // 对照 WebUI：右侧 meta 列显示计费倍率（credits，如 0.5x），
+                        // 无倍率时回落到上下文窗口容量（如 200K）。
+                        const meta = modelMenuMeta(m);
                         return (
                           <button
                             key={modelId}
                             type="button"
                             role="menuitem"
                             disabled={sessionResponseBusy}
-                            className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
+                            className="composer-menu-item flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs disabled:opacity-50"
                             style={{
                               color:
                                 modelId === currentModel
@@ -4281,7 +4285,12 @@ const ChatComposer = React.memo(function ChatComposer({
                             }}
                             onClick={() => changeSessionSetting('model', modelId)}
                           >
-                            {m.name || m.id || m.modelId}
+                            <span className="min-w-0 flex-1 truncate">{m.name || m.id || m.modelId}</span>
+                            {meta ? (
+                              <span className="shrink-0 text-right text-[11px] tabular-nums text-[var(--color-text-muted)]">
+                                {meta}
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })

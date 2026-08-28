@@ -257,12 +257,16 @@ export function createSessionsChatSlice(set, get, ctx) {
     return true;
   },
 
-  applySessionConfigUpdate(configOptions = [], { preserveModel = false, preserveMode = false, preserveThoughtLevel = false } = {}) {
+  applySessionConfigUpdate(
+    configOptions = [],
+    { preserveModel = false, preserveMode = false, preserveThoughtLevel = false, previousModels = [] } = {},
+  ) {
     const next = {};
     for (const option of configOptions) {
       if (option.id === 'model') {
         if (!preserveModel) next.currentModel = option.currentValue;
-        const models = normalizeModels(configOptionChoices(option));
+        // config_option 的 choices 不带 _meta（倍率/上下文窗口），从已知模型列表回填。
+        const models = normalizeModels(configOptionChoices(option), previousModels);
         if (models.length) next.models = models;
       }
       if (option.id === 'mode') {
@@ -292,7 +296,10 @@ export function createSessionsChatSlice(set, get, ctx) {
 
     if (su === 'config_option_update') {
       const selectionProtection = threadSelectionProtection(get(), get().activeThreadId);
-      const patch = get().applySessionConfigUpdate(update.configOptions || [], selectionProtection);
+      const patch = get().applySessionConfigUpdate(update.configOptions || [], {
+        ...selectionProtection,
+        previousModels: get().models,
+      });
       set(patch);
       get().updateActiveThread({
         ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
@@ -603,7 +610,10 @@ export function createSessionsChatSlice(set, get, ctx) {
 
     if (su === 'config_option_update') {
       const selectionProtection = threadSelectionProtection(get(), threadId);
-      const patch = get().applySessionConfigUpdate(update.configOptions || [], selectionProtection);
+      const patch = get().applySessionConfigUpdate(update.configOptions || [], {
+        ...selectionProtection,
+        previousModels: get().threadRuntimeById[threadId]?.models,
+      });
       get().patchThreadRuntime(threadId, patch);
       get().updateThreadRecord(threadId, {
         ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
@@ -1196,7 +1206,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       const { preserveModel } = threadSelectionProtection(get(), threadId);
       const currentModel = preserveModel ? runtime.currentModel : detail?.currentModelId || runtime.currentModel;
       get().patchThreadRuntime(threadId, {
-        models: normalizeModels(detail?.availableModels || runtime.models),
+        models: normalizeModels(detail?.availableModels || runtime.models, runtime.models),
         currentModel,
       });
       if (!preserveModel) get().updateThreadRecord(threadId, { modelId: currentModel });
@@ -1369,6 +1379,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       const threadRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
       const configPatch = get().applySessionConfigUpdate(
         loaded?.configOptions || init?.configOptions || init?.agentCapabilities?.configOptions || [],
+        { previousModels: threadRuntime.models },
       );
       const availableModels =
         loaded?.models?.availableModels ||
@@ -1376,7 +1387,7 @@ export function createSessionsChatSlice(set, get, ctx) {
         init?.agentCapabilities?.availableModels ||
         configPatch.models ||
         threadRuntime.models;
-      const normalizedModels = normalizeModels(availableModels);
+      const normalizedModels = normalizeModels(availableModels, threadRuntime.models);
       const persistedModel = thread.modelId || threadRuntime.currentModel;
       const cliCurrentModel =
         loaded?.models?.currentModelId || init?.models?.currentModelId || configPatch.currentModel || null;
