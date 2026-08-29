@@ -467,12 +467,41 @@ function normalizePlugins(payload) {
   return [];
 }
 
-function normalizeModels(models = []) {
+// 对照 WebUI 2.138：模型 meta（credits 计费倍率 / maxInputTokens 上下文窗口）来自
+// ACP availableModels 的 _meta；config_option 通道的 choices 不携带 _meta，因此
+// 归一化时允许从 previousModels（已知模型列表）按 id 回填，避免倍率被覆盖丢失。
+function normalizeModels(models = [], previousModels = []) {
+  const previousById = new Map();
+  for (const prev of Array.isArray(previousModels) ? previousModels : []) {
+    const prevId = prev?.id || prev?.modelId;
+    if (prevId) previousById.set(prevId, prev);
+  }
   return (Array.isArray(models) ? models : [])
     .map((model) => {
-      if (typeof model === 'string') return { id: model, name: model };
+      if (typeof model === 'string') {
+        const previous = previousById.get(model);
+        return {
+          id: model,
+          name: model,
+          credits: previous?.credits ?? null,
+          contextWindow: previous?.contextWindow ?? null,
+        };
+      }
       const id = model?.modelId || model?.id || model?.value;
-      return id ? { id, name: model?.name || model?.label || id } : null;
+      if (!id) return null;
+      const meta = model?._meta && typeof model._meta === 'object' ? model._meta : {};
+      const previous = previousById.get(id);
+      return {
+        id,
+        name: model?.name || model?.label || id,
+        credits: meta.credits ?? model?.credits ?? previous?.credits ?? null,
+        contextWindow:
+          meta.maxInputTokens ??
+          model?.contextWindow ??
+          model?.maxInputTokens ??
+          previous?.contextWindow ??
+          null,
+      };
     })
     .filter(Boolean);
 }
@@ -1782,8 +1811,10 @@ export const useStore = create((set, get) => {
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== normalizedSessionId) return true;
         const currentRuntime = get().threadRuntimeById[threadId] || resetRuntime;
-        const configPatch = get().applySessionConfigUpdate(loaded?.configOptions || []);
-        const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models);
+        const configPatch = get().applySessionConfigUpdate(loaded?.configOptions || [], {
+          previousModels: currentRuntime.models,
+        });
+        const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models, currentRuntime.models);
         const modes = normalizeModes(loaded?.modes?.availableModes || currentRuntime.modes);
         const persistedModel = currentRuntime.currentModel || currentThread.modelId;
         const cliCurrentModel = loaded?.models?.currentModelId || configPatch.currentModel || null;
