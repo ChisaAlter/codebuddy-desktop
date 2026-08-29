@@ -48,6 +48,19 @@
    - 旧版本客户端「检查更新」能发现新版本，下载地址通过 `electron/update-urls.cjs` 白名单（`codebuddy-desktop` 与 `codebuddy-gui` 均放行，见 `tests/unit/update-urls.test.js`）；
    - 安装包安装后关于页版本号正确。
 
+## CLI 推荐版本 bump 检查清单（parity 审计后新增）
+
+> 每次提升 `electron/cli-compat.cjs` 的推荐（或最低）CLI 版本时逐项执行。
+> 背景：1.1.3 之前 schema 钉在 WebUI 2.124 而推荐 CLI 已提到 2.138，漂移由 parity 审计（G1）才发现。
+
+1. **解包新版 WebUI bundle**：`npm pack @tencent-ai/codebuddy-code@<版本>` → 解包检查 `dist/web-ui/`（必要时 `js-beautify` 美化）。
+2. **设置 schema diff**：对照 bundle 内 SettingsView chunk 的分组数组与 `src/lib/codebuddy-schema.js`（`SETTINGS_GROUPS`），逐组逐键 diff；新增/删除/改类型的键同步进 schema + `ReplicaSettingsView` 渲染 + `webui-settings-schema.test.js`。
+3. **API 面 diff**：提取 bundle 中 `/api/v1/*` 字面量，与 `src/lib/*.js` 调用面对比，新端点记入 parity 审计文档（缺口分级，不强制立即实现）。
+4. **视图/路由 diff**：bundle 视图集合（`Kx` 类 Set）与 `src/lib/routes.js` 对比，新视图记录缺口。
+5. **CHANGELOG 双源核对**：npm 包根 `CHANGELOG.md` 与 `dist/web-ui/docs` release-notes 索引口径可能不同（后者滞后），以包根 CHANGELOG 为准列出行为变更。
+6. **四处同步**：`electron/cli-compat.cjs` + README + CODEBUDDY.md + 设置页/引导对话框回退值（`cli-compat.test.js` 有文档同步守卫）。
+7. **真机验证后才 bump**：`test:gate` + packaged E2E + 手动会话/工作流/PTY 冒烟。
+
 ## 代码签名操作指引（R13 补全）
 
 > 目标：让 release workflow 产出正式 Authenticode 签名的安装包，消除 SmartScreen「未知发布者」提示。以下操作需要仓库 admin 权限（写 Actions secrets），无法由代码/PR 配置。

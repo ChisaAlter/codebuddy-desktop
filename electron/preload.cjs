@@ -41,6 +41,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('rightBrowser:state', listener);
     return () => ipcRenderer.removeListener('rightBrowser:state', listener);
   },
+  // G6: MCP Apps（ui:// 交互界面，隔离 WebContentsView）
+  mcpAppOpen: (payload) => ipcRenderer.invoke('mcpApp:open', payload),
+  mcpAppSetBounds: (id, bounds) => ipcRenderer.send('mcpApp:setBounds', { id, bounds }),
+  mcpAppClose: (id) => ipcRenderer.invoke('mcpApp:close', id),
   listMcpConfigs: (cwd) => ipcRenderer.invoke('mcp:listConfigs', cwd),
   listSandboxes: () => ipcRenderer.invoke('sandbox:list'),
   killSandbox: (sandboxId) => ipcRenderer.invoke('sandbox:kill', sandboxId),

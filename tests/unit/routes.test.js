@@ -58,6 +58,8 @@ describe('ROUTES 常量', () => {
     expect(ROUTES).toContain('instances');
     expect(ROUTES).toContain('remote-control');
     expect(ROUTES).toContain('terminal');
+    expect(ROUTES).toContain('canvas');
+    expect(ROUTES).toContain('agent-home');
     expect(ROUTES).toContain('tasks');
     expect(ROUTES).toContain('archived');
     expect(ROUTES).toContain('plugins');

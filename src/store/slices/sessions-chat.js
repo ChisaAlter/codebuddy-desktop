@@ -48,6 +48,16 @@ import {
   seedGoalStateFromPrompt,
 } from '../../lib/goal-state';
 import { collectSubagentReports } from '../../lib/subagent-report';
+import { busySendModeFromSettings, shouldQueueBusyPrompt } from '../../lib/busy-send';
+import {
+  fetchGoalSnapshot,
+  pauseGoal,
+  resumeGoal,
+  clearGoal,
+  activeGoalFromSnapshot,
+  normalizeGoalRecap,
+} from '../../lib/goal-api';
+import { appendTurnMetrics, showTurnDurationFromSettings } from '../../lib/turn-metrics';
 import { buildPromptContentBlocks } from '../../lib/prompt-content';
 import { deriveWorkflowView, DISMISS_WINDOW_MS, shouldWorkflowAutoOpen } from '../../lib/workflow-status';
 import { resetProjectRuntimeViews } from '../helpers/terminal-workspace-state';
@@ -73,6 +83,7 @@ const KNOWN_PRIVATE_METADATA_KEYS = new Set([
   'codebuddy.ai/goalProgress',
   'codebuddy.ai/goalStatus',
   'codebuddy.ai/goalMode',
+  'codebuddy.ai/goalRecap',
   'codebuddy.ai/workflowState',
   'codebuddy.ai/workflowUpdate',
   'codebuddy.ai/workflowEventKind',
@@ -389,6 +400,21 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtimePatch.progress = normalizedGoal.progress?.percent != null
         ? normalizedGoal.progress
         : runtime.progress;
+    }
+    // G2: codebuddy.ai/goalRecap → recap 卡片 + goal bar 同步（active → bar，latest 终态 → bar 清空）。
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/goalRecap')) {
+      const recap = normalizeGoalRecap(metadata['codebuddy.ai/goalRecap']);
+      runtimePatch.goalRecap = recap;
+      if (recap?.active) {
+        runtimePatch.goalBar = {
+          condition: recap.active.condition,
+          createdAt: recap.active.createdAt ?? runtime.goalBar?.createdAt ?? Date.now(),
+          ...(typeof recap.active.pausedAt === 'number' ? { pausedAt: recap.active.pausedAt } : {}),
+          paused: recap.active.paused === true || typeof recap.active.pausedAt === 'number',
+        };
+      } else if (recap?.latest) {
+        runtimePatch.goalBar = null;
+      }
     }
     const memberEvent = Boolean(memberName && contentEvent);
     const workflowActivity = Boolean(
@@ -2642,6 +2668,17 @@ export function createSessionsChatSlice(set, get, ctx) {
       runtime.promptDispatchInFlight ||
       runtime.promptQueue.length > 0
     ) {
+      // G3: busySendMode=immediate（WebUI Hk）——非斜杠命令直接注入当前回合；
+      // steer 被 CLI 拒绝或失败时回退到原有排队路径。
+      const busyMode = busySendModeFromSettings(get().settings);
+      if (!shouldQueueBusyPrompt(busyMode, content) && runtime.promptQueue.length === 0) {
+        const steerResult = await get().steerPromptIntoCurrentTurn(threadId, content, attachments);
+        if (steerResult.steered) {
+          get().patchThreadRuntime(threadId, { pendingAttachments: [], promptSuggestion: null });
+          await get().updateThreadRecord(threadId, { draft: '' });
+          return { steered: true };
+        }
+      }
       return queuePromptQueueOperation(threadId, async () => {
         const latestThread = get().threadsById[threadId];
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -3111,7 +3148,13 @@ export function createSessionsChatSlice(set, get, ctx) {
       // with `idle`/`success`.
       if (!runIsCurrent()) return { ok: false, reason: 'cancelled' };
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const completedTimeline = cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline));
+      // G7: 回合成功终态补 turn-metrics（CLI showTurnDuration，默认开）。
+      const completedTimeline = showTurnDurationFromSettings(get().settings)
+        ? appendTurnMetrics(
+            cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline)),
+            promptStartedAt,
+          )
+        : cancelPendingTimelineActions(closeAssistantStream(completedRuntime.timeline));
       const completedReports = collectSubagentReports({
         timeline: completedTimeline,
         teamState: completedRuntime.teamState,
@@ -3444,6 +3487,239 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
       return persisted;
     });
+  },
+
+  // G3: WebUI session/steer — 忙碌时把消息注入当前回合而非排队。
+  // 只有存在活跃 prompt run 时才尝试；CLI 拒绝（steered!==true）由调用方回退排队。
+  async steerPromptIntoCurrentTurn(threadId, content, attachments = []) {
+    const thread = get().threadsById[threadId];
+    const client = get().getThreadClient(threadId);
+    if (!thread || !client) return { steered: false, reason: 'no-client' };
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const sessionId =
+      thread.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    const liveTurn =
+      Boolean(runtime.activePromptRunId) &&
+      (Boolean(runtime.isAwaitingResponse) || Boolean(sessionId && client.hasActivePrompt?.(sessionId)));
+    if (!sessionId || !liveTurn) return { steered: false, reason: 'no-live-turn' };
+    let result;
+    try {
+      result = await client.request('session/steer', {
+        sessionId,
+        contentBlocks: buildPromptContentBlocks(content, attachments),
+      });
+    } catch (error) {
+      return { steered: false, reason: error?.message || 'steer-failed' };
+    }
+    if (result?.steered !== true) return { steered: false, reason: result?.reason || 'rejected' };
+    // 展示与 WebUI addQueuedUserMessage 一致：注入的消息以用户气泡追加到当前时间线。
+    get().flushThreadTimelineCoalesce?.(threadId);
+    const latest = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const timelineAttachments = (attachments || []).map((attachment) => ({
+      name: attachment.name || attachment.path,
+      path: attachment.path || null,
+      kind: attachment.kind === 'image' ? 'image' : 'text',
+      mimeType: attachment.mimeType || null,
+      data: attachment.data || null,
+    }));
+    const timeline = pushUserMessage(latest.timeline, content, Date.now(), timelineAttachments);
+    get().patchThreadRuntime(threadId, { timeline });
+    await get().updateThreadRecord(threadId, { timeline: timeline.slice(-300) });
+    return { steered: true };
+  },
+
+  // G3: 队列条目「立即发送」。有活跃回合 → steer 注入并移出队列；
+  // 空闲（no-live-turn）→ 提到队首并触发正常派发。
+  async sendQueuedPromptNow(threadId, promptId) {
+    if (!threadId || !promptId) return { steered: false, reason: 'invalid' };
+    return queuePromptQueueOperation(threadId, async () => {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const item = runtime.promptQueue.find((entry) => entry.id === promptId);
+      if (!item) return { steered: false, reason: 'not-found' };
+      const steerResult = await get().steerPromptIntoCurrentTurn(threadId, item.text, item.attachments || []);
+      if (steerResult.steered) {
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const promptQueue = latestRuntime.promptQueue.filter((entry) => entry.id !== promptId);
+        get().patchThreadRuntime(threadId, { promptQueue });
+        await get().persistThreadPromptQueue(threadId, promptQueue);
+        return { steered: true };
+      }
+      if (steerResult.reason === 'no-live-turn') {
+        const promptQueue = [item, ...runtime.promptQueue.filter((entry) => entry.id !== promptId)];
+        get().patchThreadRuntime(threadId, { promptQueue });
+        await get().persistThreadPromptQueue(threadId, promptQueue);
+        setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+        return { steered: false, queued: true, reason: 'no-live-turn' };
+      }
+      return steerResult;
+    });
+  },
+
+  // ===== G2: Goal Bar（WebUI /api/v1/goal REST 对齐）=====
+  // 快照 → runtime.goalBar；pause 先本地乐观置暂停并取消当前回合（与 WebUI Je 一致）。
+
+  async refreshGoalBar(threadId) {
+    const thread = get().threadsById[threadId];
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return null;
+    try {
+      const goalBar = activeGoalFromSnapshot(await fetchGoalSnapshot(sessionId));
+      if (get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar });
+      return goalBar;
+    } catch {
+      return null;
+    }
+  },
+
+  async pauseGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    if (!previous) return false;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    get().patchThreadRuntime(threadId, { goalBar: { ...previous, paused: true, pausedAt: Date.now() } });
+    if (get().activeThreadId === threadId && (runtime.activePromptRunId || runtime.isAwaitingResponse)) {
+      void get().cancelSession().catch(() => {});
+    }
+    try {
+      const goalBar = activeGoalFromSnapshot(await pauseGoal(sessionId));
+      if (get().threadsById[threadId] && goalBar) get().patchThreadRuntime(threadId, { goalBar });
+      return true;
+    } catch {
+      if (get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return false;
+    }
+  },
+
+  async resumeGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    if (!previous) return false;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    // WebUI ft：恢复时计时从暂停位置继续（createdAt 前移暂停时长）。
+    const pausedSpan = typeof previous.pausedAt === 'number' ? Math.max(0, previous.pausedAt - previous.createdAt) : 0;
+    const optimistic = { condition: previous.condition, createdAt: Date.now() - pausedSpan, paused: false };
+    get().patchThreadRuntime(threadId, { goalBar: optimistic });
+    try {
+      const goalBar = activeGoalFromSnapshot(await resumeGoal(sessionId));
+      if (get().threadsById[threadId] && goalBar) get().patchThreadRuntime(threadId, { goalBar });
+      return true;
+    } catch {
+      // WebUI 回退路径：REST 失败时重新以 /goal <条件> 设定目标。
+      const sent = await get()
+        .sendPrompt(`/goal ${previous.condition}`)
+        .catch(() => false);
+      if (!sent && get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return Boolean(sent);
+    }
+  },
+
+  async clearGoalBar(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const previous = runtime.goalBar;
+    const thread = get().threadsById[threadId];
+    const sessionId =
+      thread?.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!sessionId) return false;
+    get().patchThreadRuntime(threadId, { goalBar: null, goalRecap: null });
+    try {
+      await clearGoal(sessionId);
+      return true;
+    } catch {
+      // WebUI Ye 回退：REST 失败时走 /goal clear 斜杠命令。
+      const sent = await get()
+        .sendPrompt('/goal clear')
+        .catch(() => false);
+      if (!sent && previous && get().threadsById[threadId]) get().patchThreadRuntime(threadId, { goalBar: previous });
+      return Boolean(sent);
+    }
+  },
+
+  /** 编辑目标：发送 `/goal <条件>`（走正常 prompt/队列语义）。 */
+  async saveGoalEdit(threadId, condition) {
+    const trimmed = String(condition || '').trim();
+    if (!trimmed) return false;
+    return get().sendPrompt(`/goal ${trimmed}`);
+  },
+
+  dismissGoalRecap(threadId) {
+    if (!get().threadsById[threadId]) return;
+    get().patchThreadRuntime(threadId, { goalRecap: null });
+  },
+
+  // ===== G9: 会话历史浏览器 =====
+
+  setSessionHistoryOpen(open) {
+    set({ sessionHistoryOpen: Boolean(open) });
+  },
+
+  /**
+   * 把一段 CLI 历史会话恢复为当前项目的新线程（session/load 回放历史）。
+   * 已有绑定同 sessionId 的线程时直接切换过去，避免重复线程。
+   */
+  async restoreHistorySession(sessionId, label = '') {
+    const normalized = String(sessionId || '').trim();
+    if (!normalized) return false;
+    const projectId = get().activeProjectId;
+    if (!projectId) return false;
+    const existing = (get().threadOrderByProject[projectId] || [])
+      .map((id) => get().threadsById[id])
+      .find((thread) => thread?.sessionId === normalized && !thread?.archivedAt);
+    if (existing) {
+      return get().activateThread(existing.id);
+    }
+    if (get().newSessionBusy || get().projectNavigationBusy) return false;
+    const previousThreadId = get().activeThreadId;
+    set({ newSessionBusy: true, newSessionProjectId: projectId, newSessionError: null, error: null });
+    try {
+      const thread = createThreadRecord(projectId, {
+        sessionId: normalized,
+        title: String(label || '').trim() || '历史会话',
+      });
+      try {
+        get().closeWorkflowPanel?.();
+      } catch (_) {}
+      set((state) => ({
+        threadsById: { ...state.threadsById, [thread.id]: thread },
+        threadOrderByProject: {
+          ...state.threadOrderByProject,
+          [projectId]: [thread.id, ...(state.threadOrderByProject[projectId] || [])],
+        },
+        activeThreadId: thread.id,
+        workflowFloatingPanel: null,
+        workflowPanelDismissed: null,
+      }));
+      const persisted = await get().persistProductState();
+      if (!persisted) {
+        set((state) => {
+          const threadsById = { ...state.threadsById };
+          delete threadsById[thread.id];
+          return {
+            threadsById,
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: (state.threadOrderByProject[projectId] || []).filter((id) => id !== thread.id),
+            },
+            activeThreadId: state.activeThreadId === thread.id ? previousThreadId : state.activeThreadId,
+          };
+        });
+        return false;
+      }
+      if (get().activeProjectId !== projectId || get().activeThreadId !== thread.id) return true;
+      return await get().initializeActiveThread(normalized);
+    } catch (error) {
+      set({ newSessionError: error?.message || '恢复历史会话失败' });
+      return false;
+    } finally {
+      set({ newSessionBusy: false });
+    }
   },
 
   // ===== 鉴权 action（对照源 viewState/login/logout）=====

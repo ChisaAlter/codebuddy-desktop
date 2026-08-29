@@ -42,7 +42,6 @@ scripts/test/test_all.py
 .codeartsdoer/
 .zcode/
 .omc/state/
-docs/
 
 # Accidental empty junk files
 /nul

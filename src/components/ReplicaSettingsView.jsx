@@ -21,6 +21,7 @@ import {
   CODEBUDDY_CLI_BOOTSTRAP_COMMAND,
   consumePendingSettingsSection,
 } from '../lib/settings-nav';
+import { envFlagEnabled, REPL_ENV_KEY, setEnvFlag } from '../lib/env-flags';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import CustomModelsModal from './CustomModelsModal';
 import MobileRemoteSettingsCard from './MobileRemoteSettingsCard';
@@ -105,6 +106,7 @@ function buildSettingsTocSections(t, { isDesktop = true } = {}) {
     { id: 'settings-section-settings-group-behavior', label: t('settings.group.behavior') },
     { id: 'settings-section-settings-group-memory', label: t('settings.group.memory') },
     { id: 'settings-section-settings-group-language', label: t('settings.group.language') },
+    { id: 'settings-section-settings-group-mainAgent', label: t('settings.group.mainAgent') },
     { id: 'settings-section-settings-group-advanced', label: t('settings.group.advanced') },
     { id: 'settings-section-settings-group-sandbox', label: t('settings.group.sandbox') },
     { id: 'settings-section-system', label: t('settings.systemInfo') },
@@ -1380,6 +1382,9 @@ export default function ReplicaSettingsView() {
           <h2 className="settings-group-title">{t('settings.group.behavior')}</h2>
           <div className="settings-card">
             <SettingRow t={t} label={t('settings.item.autoCompactEnabled')} feedback={rowFeedback.autoCompactEnabled} control={<Toggle value={!!settings?.autoCompactEnabled} onChange={(v) => updateSetting('autoCompactEnabled', v)} />} />
+            <SettingRow t={t} label={t('settings.item.autoCompactWindow')} desc={t('settings.item.autoCompactWindow.desc')} feedback={rowFeedback.autoCompactWindow} control={
+              <NumberInput scopeKey={activeProjectId} value={settings?.autoCompactWindow} onChange={(v) => updateSetting('autoCompactWindow', v)} />
+            } />
             <SettingRow t={t} label={t('settings.item.includeCoAuthoredBy')} feedback={rowFeedback.includeCoAuthoredBy} control={<Toggle value={!!settings?.includeCoAuthoredBy} onChange={(v) => updateSetting('includeCoAuthoredBy', v)} />} />
             <SettingRow t={t} label={t('settings.item.fileCheckpointingEnabled')} desc={t('settings.item.fileCheckpointingEnabled.desc')} feedback={rowFeedback.fileCheckpointingEnabled} control={<Toggle value={!!settings?.fileCheckpointingEnabled} onChange={(v) => updateSetting('fileCheckpointingEnabled', v)} />} />
             <SettingRow
@@ -1393,6 +1398,22 @@ export default function ReplicaSettingsView() {
                     await updateGuiSetting('promptSuggestionEnabled', v);
                     return updateSetting('promptSuggestionEnabled', v);
                   }}
+                />
+              }
+            />
+            <SettingRow
+              t={t}
+              label={t('settings.item.busySendMode')}
+              desc={t('settings.item.busySendMode.desc')}
+              feedback={rowFeedback['codebuddy.composer.busySendMode']}
+              control={
+                <Select
+                  value={settings?.codebuddy?.composer?.busySendMode || 'queue'}
+                  options={[
+                    { value: 'queue', label: t('settings.item.busySendMode.queue') },
+                    { value: 'immediate', label: t('settings.item.busySendMode.immediate') },
+                  ]}
+                  onChange={(value) => updateSetting('codebuddy.composer.busySendMode', value)}
                 />
               }
             />
@@ -1433,6 +1454,37 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
+        {/* Agent 预设 — WebUI 2.138 mainAgent group（settings.group.mainAgent） */}
+        <div id="settings-section-settings-group-mainAgent" className="settings-group">
+          <h2 className="settings-group-title">{t('settings.group.mainAgent')}</h2>
+          <div className="settings-card">
+            <SettingRow
+              t={t}
+              label={t('settings.item.mainAgent.enabled')}
+              desc={t('settings.item.mainAgent.enabled.desc')}
+              feedback={rowFeedback['codebuddy.mainAgent.enabled']}
+              control={
+                <Toggle
+                  value={settings?.codebuddy?.mainAgent?.enabled !== false}
+                  onChange={(v) => updateSetting('codebuddy.mainAgent.enabled', v)}
+                />
+              }
+            />
+            <SettingRow
+              t={t}
+              label={t('settings.item.mainAgent.allowUnopted')}
+              desc={t('settings.item.mainAgent.allowUnopted.desc')}
+              feedback={rowFeedback['codebuddy.mainAgent.allowUnopted']}
+              control={
+                <Toggle
+                  value={settings?.codebuddy?.mainAgent?.allowUnopted === true}
+                  onChange={(v) => updateSetting('codebuddy.mainAgent.allowUnopted', v)}
+                />
+              }
+            />
+          </div>
+        </div>
+
         {/* 高级 — WebUI Mk: cleanupPeriodDays, imageHistoryRetainRounds, env */}
         <div id="settings-section-settings-group-advanced" className="settings-group">
           <h2 className="settings-group-title">{t('settings.group.advanced')}</h2>
@@ -1446,6 +1498,19 @@ export default function ReplicaSettingsView() {
             <SettingRow t={t} label={t('settings.item.env')} desc={t('settings.item.env.desc')} feedback={rowFeedback.env} control={
               <JsonObjectEditor scopeKey={activeProjectId} value={settings?.env} onSave={(value) => updateSetting('env', value)} />
             } />
+            {/* G13: REPL 代码执行模式（CODEBUDDY_REPL_ENABLED）——独立开关而非裸 env JSON */}
+            <SettingRow
+              t={t}
+              label={t('settings.item.replEnabled')}
+              desc={t('settings.item.replEnabled.desc')}
+              feedback={rowFeedback.env}
+              control={
+                <Toggle
+                  value={envFlagEnabled(settings?.env, REPL_ENV_KEY)}
+                  onChange={(v) => updateSetting('env', setEnvFlag(settings?.env, REPL_ENV_KEY, v))}
+                />
+              }
+            />
           </div>
         </div>
 

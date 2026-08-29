@@ -51,6 +51,27 @@
 | R11-STEP1 (P3) | 巨型模块拆分首步：`sessions-chat.js` `runThreadPrompt` 内的 prompt 内容块构造抽出为纯函数 `buildPromptContentBlocks`（`src/lib/prompt-content.js`，行为不变：首块用户文本 / image 透传 / text 附件包装 + 50 万字符截断标记），新增 5 个单测锁定行为 | `src/lib/prompt-content.js`、`src/store/slices/sessions-chat.js`、`tests/unit/prompt-content.test.js` |
 | R13-DOCS (P2) | 代码签名操作指引补全：证书选型（OV 可导 pfx / EV 硬件 token 不适配现管线）、pfx 导出、base64 转换（Windows/Linux 双命令）、secrets 写入与安全纪律、签名构建验证（`Get-AuthenticodeSignature` / `signtool verify`）、证书到期轮换 | `docs/release-checklist.md` |
 
+### Done（第五轮：G1–G13 WebUI 对齐迭代，2026-08-27，1.1.4）
+
+> 依据 `docs/cli-webui-parity-audit.md`（CLI 2.138.0）逐项落地；审计文档状态已同步更新。
+
+| 条目 | 内容 | 落点 |
+| --- | --- | --- |
+| G1 (P1) | 设置 schema 对齐 WebUI 2.138（18 → 22 键）：behavior 组补 `autoCompactWindow`（number）与 `codebuddy.composer.busySendMode`（queue/immediate 选择），新增 mainAgent 组（`codebuddy.mainAgent.enabled` / `allowUnopted`）；settings-schema 守卫测试同步 | `src/lib/codebuddy-schema.js`、`src/components/ReplicaSettingsView.jsx`、`tests/unit/webui-settings-schema.test.js` |
+| G2 (P1) | 目标条：REST `/api/v1/goal(/pause\|resume\|clear)` 客户端 + composer 顶部 goal bar（暂停 / 恢复 / 清除 / 编辑对话框）+ 目标达成 recap 卡片；与右侧工作流面板共存 | `src/lib/goal-api.js`、`src/components/ReplicaChatView.jsx`、`tests/unit/goal-api.test.js` |
+| G3 (P1) | busySendMode=immediate：忙碌时经 ACP `session/steer` 立即插入当前回合（不支持时回落排队），队列条目新增「立即发送」按钮；设置键联动 | `src/lib/busy-send.js`、`src/store/slices/sessions-chat.js`、`tests/unit/busy-send.test.js`、`tests/unit/store-busy-send-steer.test.js` |
+| G4 (P2) | 后台智能体工作台：instances 视图新增「后台任务」页签（`/api/v1/jobs` 派发 shell / agent 任务：权限模式、worktree 隔离、startFrom 空白·当前会话，list / rename / stop / respawn / delete / transcript）；Agents 页新增 AI 代建（create-by-ai） | `src/lib/jobs-api.js`、`src/components/ReplicaJobsWorkbench.jsx`、`src/components/ReplicaInstancesView.jsx`、`src/components/ReplicaAgentsView.jsx`、`tests/unit/jobs-api.test.js` |
+| G5 (P2) | Agent Home：新视图（桌面扩展组）——成员名册 / 房间 / 频道侧栏、频道会话流、@提及 composer（`/api/v1/agent-home`、`/api/v1/channels`）；依赖 mainAgent.enabled，未开启时引导去设置 | `src/lib/agent-home-api.js`、`src/components/ReplicaAgentHomeView.jsx`、`tests/unit/agent-home-api.test.js` |
+| G6 (P2) | MCP Apps（`ui://` 资源）：主进程隔离 WebContentsView 宿主（sandbox + contextIsolation + 内存 session + 拒绝导航/弹窗，等价 WebUI sandbox_proxy 边界），聊天工具卡片「加载交互式界面」占位 + inline / fullscreen / pip 三模式；MCP-UI 双向 RPC 桥暂未实现（已在审计状态注明） | `electron/mcp-app-host.cjs`、`electron/main.cjs`、`electron/preload.cjs`、`src/lib/mcp-app.js`、`src/components/McpAppCard.jsx`、`tests/unit/mcp-app.test.js` |
+| G7 (P2) | 回合耗时：assistant 回合尾部「✔ 已工作 …」（从事件时间戳推导），GUI 设置 `showTurnDuration`（默认开） | `src/lib/turn-metrics.js`、`src/components/ReplicaChatView.jsx`、`tests/unit/turn-metrics.test.js` |
+| G8 (P2) | 命令面板：Ctrl/Cmd+Shift+H 全局模态（视图导航 + 动作 + 斜杠命令透传 + 主题 / 语言切换），注册进 GUI 快捷键表 | `src/lib/command-palette.js`、`src/components/CommandPalette.jsx`、`src/lib/gui-keybindings.js`、`tests/unit/command-palette.test.js` |
+| G9 (P2) | 会话历史浏览器：模态（非右侧抽屉，遵守 composer 决策文档）——按项目分组浏览 CLI 全量历史、restore / rename / delete、后台会话入口 | `src/lib/session-history.js`、`src/components/SessionHistoryModal.jsx`、`tests/unit/session-history.test.js` |
+| G10 (P3) | Canvas 恢复：`canvas` 路由 + PTY 终端磁贴画布（画布平移 / 缩放，磁贴拖拽 / 缩放 / 最小化 / 最大化，每磁贴真实 PTY；最大化保持同 DOM 树避免 PTY 重建）；CODEBUDDY.md Canvas 口径同步更新 | `src/lib/canvas-tiles.js`、`src/components/ReplicaCanvasView.jsx`、`tests/unit/canvas-tiles.test.js` |
+| G11 (P3) | 编辑器增强：多标签（pin / 关闭其它 / 关闭焦点迁移）、Quick Open 模糊打开、「加入对话」（addToChat）、markdown（可切预览）/ 图片 / SVG / PDF 预览（blob URL）；editor-page 独立窗未做（主窗内多标签已覆盖，独立窗涉及跨窗状态同步单独评估） | `src/lib/editor-tabs.js`、`src/lib/fs.js`（`fsReadBlob`）、`src/components/ReplicaWorkspaceView.jsx`、`tests/unit/editor-tabs.test.js` |
+| G12 (P3) | `/autocompact` 设置面板：behavior 组 autoCompactWindow 数值面板 + 上下文用量指示器联动展示 | `src/lib/autocompact.js`、`src/components/ContextUsageIndicator.jsx`、`tests/unit/autocompact.test.js` |
+| G13 (P3) | REPL 模式开关：设置页专属 toggle 读写 settings `env.CODEBUDDY_REPL_ENABLED`（不再要求手改 env JSON） | `src/lib/env-flags.js`、`src/components/ReplicaSettingsView.jsx`、`tests/unit/env-flags.test.js` |
+| 文档 (P2) | 审计 §6 修复：补回 `docs/composer-actions-decision.md`（§6-1）；`.gitignore` 停止忽略整个 `docs/`（§6-6）；CODEBUDDY.md Canvas 口径 + 路由清单更新（§6-3）；release-checklist 新增「CLI 推荐版本 bump 检查清单」（§6-4，settings schema diff 制度化）；审计文档标记 G1–G13 已实现 | `docs/composer-actions-decision.md`、`.gitignore`、`CODEBUDDY.md`、`docs/release-checklist.md`、`docs/cli-webui-parity-audit.md` |
+
 ### Next（下轮优先，按序）
 
 | 审查 ID | 内容 | 备注 / 证据 |
@@ -73,7 +94,7 @@
 ## CLI / WebUI 对齐调研（2026-08-25）
 
 - **npm 最新稳定版**：`@tencent-ai/codebuddy-code` **2.138.0**（2026-08-24 发布）；2.135.0 之后还有 2.136.0 / 2.137.0 / 2.137.1。仓库当前最低 2.125.0、推荐 2.135.0（`electron/cli-compat.cjs`）。
-- **CLI 自带文档滞后**：2.138.0 包内 `dist/web-ui/docs` 的 release-notes 索引只到 v2.132.0（2026-08-02），2.133–2.138 无公开 user-facing 说明；bump 推荐版本前需真机验证（`test:gate` + packaged E2E + 手动会话/工作流/PTY 冒烟），不能仅凭版本号。
+- **CLI 自带文档滞后**：2.138.0 包内 `dist/web-ui/docs` 的 release-notes 索引只到 v2.132.0（2026-08-02）；~~2.133–2.138 无公开 user-facing 说明~~ **更正（parity 审计 §6-2）**：npm 包根部 `CHANGELOG.md` 含 2.133–2.138 全量中文条目，两处口径不同，以包根 CHANGELOG 为准。bump 推荐版本前仍需真机验证（`test:gate` + packaged E2E + 手动会话/工作流/PTY 冒烟），不能仅凭版本号。
 - **WebUI 参照源**：CLI npm 包内嵌 `dist/web-ui/`（即 `src/lib/pty.js` 注释所称“对照源 bundle”）。已对齐项：
   - PTY WS 路由 `…/pty/{id}/ws?token=`（query token 鉴权）与 HTTP 输入 `POST …/input/send`；桌面端 Electron 下改走主进程 SSE 代理 + Bearer header，本轮补齐 `timeoutMs: 0` 后行为与 WebUI 常驻输出流一致。
   - AskUserQuestion 取消 / 跳过仅 `{ outcome: 'cancelled' }`，不整轮 `session/cancel`（CLI 2.125 中断语义）。
@@ -104,6 +125,15 @@
 - 新增/收紧测试：git-security senderFrame 7 个新用例；ipc-trusted-sender 契约扩展到 `ipcMain.on`（4 个新断言组）；version-consistency RELEASE_NOTES 标题行匹配；relay hub 控制 socket 离线用例。
 - `npm audit`：42（1 low/7 moderate/33 high/1 critical）→ 14（3 moderate/10 high/1 critical）；剩余全部需破坏性 major 升级（见 Next）。
 - 未跑（需 Windows / 构建产物）：同第二轮 —— windows-latest 侧由本轮新增的 `ci` workflow 在每次 PR/push 上补跑 `test:gate`。
+
+### 第五轮（G1–G13 WebUI 对齐，2026-08-27，1.1.4）
+
+- `npm run test:gate`（Linux）：lint 零告警；vitest 140 files / 1136 passed / 17 skipped / 0 failed；mobile-remote 全部通过（protocol / crypto / relay + bridge node:test）。
+- 新增单测 12 个文件：webui-settings-schema 扩展（G1）、goal-api（G2）、busy-send + store-busy-send-steer（G3）、jobs-api（G4）、agent-home-api（G5）、mcp-app（G6）、turn-metrics（G7）、command-palette（G8）、session-history（G9）、canvas-tiles（G10）、editor-tabs（G11）、autocompact（G12）、env-flags（G13）。
+- `npm run build:dir`（Linux）：vite build + linux-unpacked 打包成功。
+- 真机 QA（Linux X11 1920×1200，`dist/linux-unpacked` 打包产物 + 全局安装 CLI 2.138.0）：CLI 检测对话框识别 v2.138.0 兼容 → 设置页逐项确认 G1 四键（Auto-Compact Window、Send while busy 下拉含「排队 / 立即插入当前回合」、Agent 预设组两键）与 G13 REPL 开关 → Ctrl+Shift+H 命令面板（视图过滤、主题亮/暗切换即时生效）→ 打开 /workspace 项目、真实 runtime 启动 → Canvas 添加终端磁贴（真实 PTY 执行命令）、最大化后同一 PTY 会话存活（继续执行命令验证）→ 编辑器多标签（Quick Open 模糊打开、右键固定/关闭其它、markdown 预览、PNG 图片预览、addToChat 插入 composer）。录屏与截图存档 `/opt/cursor/artifacts/`。
+- 真机 QA 逮到并修复 1 个缺陷：二进制预览（图片/PDF）最初走 `fs/read`（文本语义端点，二进制读取失败导致预览卡「加载中」）；修为 WebUI 同款 `/api/v1/files/download`，并把主进程请求代理的 base64 透传从仅 `image/*` 扩展到 pdf / octet-stream / 字体 / 音视频（否则 UTF-8 文本解码破坏字节流）。修复后打包复测：PNG 预览正常渲染。
+- 未覆盖（需 CodeBuddy 账号登录，QA 机不可用）：G2 目标条 / G5 Agent Home / G7 回合耗时的**实数据**链路（代码路径有单测锁定；聊天链路依赖账号会话）。Windows 侧由 `ci` workflow 补跑 `test:gate`。
 
 ### 第四轮（R13 发版准备，2026-08-27）
 

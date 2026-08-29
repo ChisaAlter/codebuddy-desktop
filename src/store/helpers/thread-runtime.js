@@ -34,6 +34,9 @@ export function emptyThreadRuntime() {
     lastWorkflowState: null,
     goalState: null,
     lastGoalState: null,
+    // G2: goal bar 状态（REST /api/v1/goal 快照 + goalRecap 元数据驱动），跨回合保留。
+    goalBar: null,
+    goalRecap: null,
     subagentReports: [],
     lastSubagentReports: [],
     rawExtensionEvents: [],
@@ -170,6 +173,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'lastWorkflowState',
   'goalState',
   'lastGoalState',
+  'goalBar',
+  'goalRecap',
   'subagentReports',
   'lastSubagentReports',
   'rawExtensionEvents',

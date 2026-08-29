@@ -209,12 +209,13 @@ Hash 路由定义在 `src/lib/routes.js`，侧边栏分组定义在 `src/lib/cod
 
 当前真实路由：
 
-- Primary：`chat`、`instances`、`remote-control`
-- 工作区：`tasks`、`terminal`、`editor`、`changes`、`plugins`、`mcp`
-- 可观测：`stats`、`traces`、`monitor`、`metrics`、`logs`、`workers`
-- 配置：`settings`
+- Primary：`chat`、`remote-control`
+- 工作区：`tasks`、`terminal`、`canvas`、`editor`、`changes`、`plugins`
+- 可观测：`stats`、`traces`、`metrics`、`logs`（另有 `monitor`）
+- 桌面扩展：`archived`、`instances`、`skills`、`agents`、`agent-home`、`mcp`、`sandboxes`、`workers`
+- 配置：`settings`、`keybindings`、`docs`
 
-Docs 路由是真实功能（通过 ACP `/docs/*` 接口渲染 CLI 文档侧栏与正文）。Canvas 无真实后端能力，已从产品中移除；不要重新添加没有真实后端能力或完整交互的路由。Keybindings 保留为真实配置页面，同时管理 GUI 本地快捷键和当前 CodeBuddy CLI 运行时提供的绑定。
+Docs 路由是真实功能（通过 ACP `/docs/*` 接口渲染 CLI 文档侧栏与正文）。Canvas 在 1.1.1 曾以「无真实后端能力」移除；CLI 2.138 起 WebUI Canvas 是真实 PTY 终端磁贴画布，Desktop 1.1.4 已恢复 `canvas` 路由（`ReplicaCanvasView`：可平移/缩放画布 + 可拖拽/缩放/最小化/最大化的真实 PTY 终端磁贴，复用 `/api/v1/pty` 基础设施）。仍然不要添加没有真实后端能力或完整交互的路由。Keybindings 保留为真实配置页面，同时管理 GUI 本地快捷键和当前 CodeBuddy CLI 运行时提供的绑定。
 
 ## IPC
 

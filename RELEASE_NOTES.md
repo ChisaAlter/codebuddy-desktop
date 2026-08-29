@@ -2,6 +2,42 @@
 
 1.1.0 将工作流、团队/子代理状态和 `/goal` 目标进度从聊天顶部移到可持续查看的右侧面板，并强化流式取消与消息渲染安全边界。
 
+## 1.1.4（G1–G13 WebUI 对齐迭代）
+
+1.1.4 依据 CLI/WebUI 功能对齐审计（`docs/cli-webui-parity-audit.md`，参照 `@tencent-ai/codebuddy-code@2.138.0`）实现全部 13 项缺口，并修复审计发现的文档问题。
+
+### P1：设置与 composer 核心对齐
+
+- **设置 schema 对齐 WebUI 2.138（G1，18 → 22 键）**：behavior 组新增 `autoCompactWindow`（自动压缩窗口 token 基准）与 `codebuddy.composer.busySendMode`（忙碌时排队 / 立即插入）；新增「Agent 预设」组（`codebuddy.mainAgent.enabled` / `codebuddy.mainAgent.allowUnopted`）。
+- **目标条（G2）**：composer 顶部 goal bar 展示进行中目标，支持暂停 / 恢复 / 清除 / 编辑（REST `/api/v1/goal` + `/goal/pause|resume|clear`），目标达成显示 recap 卡片；与右侧工作流面板共存。
+- **忙碌时立即插入（G3）**：`busySendMode=immediate` 时经 ACP `session/steer` 把新消息注入当前回合（runtime 不支持时自动回落排队）；排队条目新增「立即发送」按钮。
+
+### P2：智能体与全局能力
+
+- **后台智能体工作台（G4）**：实例列表新增「后台任务」页签，经 `/api/v1/jobs` 派发 shell / agent 后台任务（权限模式、worktree 隔离、startFrom 空白·当前会话），支持列表 / 重命名 / 停止 / 重跑 / 删除 / 查看 transcript；Agents 页新增 AI 代建（create-by-ai）。
+- **Agent Home（G5）**：新视图——成员名册 / 房间 / 频道侧栏 + 频道会话流 + @提及 composer（`/api/v1/agent-home`、`/api/v1/channels`）；依赖主 Agent 开关，未开启时页面引导前往设置。
+- **MCP Apps（G6）**：聊天工具卡片检测 `ui://` 交互式资源后可点击加载，渲染在主进程管理的**隔离 WebContentsView**（sandbox + contextIsolation + 内存 session + 禁止导航/弹窗，等价 WebUI sandbox_proxy 安全边界，绝不在主 renderer 用 iframe），支持 inline / 全屏 / 画中画三种显示模式。
+- **回合耗时（G7）**：assistant 回合尾部显示「✔ 已工作 …」（GUI 设置 `showTurnDuration` 可关，默认开）。
+- **命令面板（G8）**：Ctrl/Cmd+Shift+H 全局面板——视图导航、常用动作、斜杠命令透传、主题 / 语言切换；已注册进 GUI 快捷键表。
+- **会话历史浏览器（G9）**：新模态按项目分组浏览 CLI 全量会话历史，支持恢复为新线程 / 重命名 / 删除，含后台会话入口（形态遵守 composer 决策：不做右侧抽屉）。
+
+### P3：工作区增强
+
+- **Canvas 恢复（G10）**：2.138 起 WebUI Canvas 为真实 PTY 终端磁贴画布，Desktop 恢复 `canvas` 路由——画布平移 / 缩放，磁贴拖拽 / 缩放 / 最小化 / 最大化，每磁贴一个真实 PTY 终端（复用 `/api/v1/pty` 基础设施；最大化保持同 DOM 树，不重建终端会话）。
+- **编辑器增强（G11）**：多标签（固定 / 关闭其它 / 关闭后焦点迁移）、Quick Open 模糊打开（Ctrl/Cmd+P 风格模态）、「加入对话」把当前文件引用插入 composer、markdown 预览切换 + 图片 / SVG / PDF 预览。
+- **`/autocompact` 面板（G12）**：设置页 autoCompactWindow 数值配置 + 上下文用量指示器联动。
+- **REPL 开关（G13）**：设置页专属 toggle 读写 `env.CODEBUDDY_REPL_ENABLED`，不再要求手改 env JSON。
+
+### 文档与仓库卫生（审计 §6）
+
+- 补回 `CODEBUDDY.md` 引用但缺失的 `docs/composer-actions-decision.md`；`.gitignore` 停止忽略整个 `docs/` 目录（新文档不再被静默忽略）；CODEBUDDY.md Canvas 口径与路由清单更新；`docs/release-checklist.md` 新增「CLI 推荐版本 bump 检查清单」（settings schema diff 制度化）；parity 审计文档标记 G1–G13 已实现。
+
+### 已知边界
+
+- G4 worktree / startFrom / shell job 依赖目标 CLI runtime 提供 `/api/v1/jobs` 端点。
+- G6 为 `ui://` 资源的隔离渲染宿主，MCP-UI 双向 RPC 桥（宿主 ↔ App 消息）暂未实现。
+- G11 未做 editor-page 独立窗口（主窗内多标签已覆盖场景，跨窗状态同步单独评估）。
+
 ## 1.1.3（R12 加固 + R13 发版准备迭代）
 
 1.1.3 包含 R12 加固迭代（PR #2）与 R13 发版准备迭代的全部内容。

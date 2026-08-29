@@ -2,6 +2,7 @@ import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { loadAgentsInventory } from '../lib/agents';
+import { createAgentByAI } from '../lib/jobs-api';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 
 export default function ReplicaAgentsView() {
@@ -15,6 +16,11 @@ export default function ReplicaAgentsView() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [expandedId, setExpandedId] = React.useState(null);
+  // G4: create-by-ai（WebUI「用 AI 快速创建智能体」，POST /api/v1/agents/create-by-ai）。
+  const [aiDescription, setAiDescription] = React.useState('');
+  const [aiBusy, setAiBusy] = React.useState(false);
+  const [aiError, setAiError] = React.useState('');
+  const [aiSuccess, setAiSuccess] = React.useState('');
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -34,6 +40,24 @@ export default function ReplicaAgentsView() {
     refresh();
   }, [activeProjectId, refresh]);
 
+  const createByAI = React.useCallback(async () => {
+    if (aiBusy) return;
+    setAiBusy(true);
+    setAiError('');
+    setAiSuccess('');
+    try {
+      const result = await createAgentByAI(aiDescription);
+      const name = result?.agent?.name || result?.name || '';
+      setAiSuccess(name ? t('agents.createByAi.successNamed', { name }) : t('agents.createByAi.success'));
+      setAiDescription('');
+      await refresh();
+    } catch (err) {
+      setAiError(err?.message || t('agents.createByAi.failed'));
+    } finally {
+      setAiBusy(false);
+    }
+  }, [aiBusy, aiDescription, refresh, t]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-auto">
       <div className="page-header">
@@ -49,6 +73,30 @@ export default function ReplicaAgentsView() {
         <div className="rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
           {t('agents.readonlyHint')}
         </div>
+        {/* G4: create-by-ai —— 描述需求，由 CLI 生成智能体定义（需活跃运行时）。 */}
+        <section className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4" data-testid="agents-create-by-ai">
+          <h2 className="text-sm font-medium text-[var(--color-text-primary)]">{t('agents.createByAi.title')}</h2>
+          <p className="mt-1 text-xs text-[var(--color-text-muted)]">{t('agents.createByAi.desc')}</p>
+          <div className="mt-2 flex items-start gap-2">
+            <textarea
+              value={aiDescription}
+              onChange={(event) => setAiDescription(event.target.value)}
+              rows={2}
+              placeholder={t('agents.createByAi.placeholder')}
+              className="min-w-0 flex-1 resize-none rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+            />
+            <button
+              type="button"
+              className="btn-primary shrink-0 px-3 py-1.5 text-xs disabled:opacity-50"
+              disabled={aiBusy || !aiDescription.trim()}
+              onClick={() => void createByAI()}
+            >
+              {aiBusy ? t('agents.createByAi.busy') : t('agents.createByAi.submit')}
+            </button>
+          </div>
+          {aiError ? <div className="mt-2 text-xs text-[var(--color-error)]">{aiError}</div> : null}
+          {aiSuccess ? <div className="mt-2 text-xs text-[var(--color-accent-green)]">{aiSuccess}</div> : null}
+        </section>
         {error ? <div className="text-xs text-[var(--color-error)]">{error}</div> : null}
         {loading && agents.length === 0 ? (
           <div className="text-sm text-[var(--color-text-muted)]">{t('agents.loading')}</div>

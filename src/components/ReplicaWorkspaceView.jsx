@@ -12,8 +12,21 @@ import 'monaco-editor/languages/definitions/python/register.js';
 import 'monaco-editor/languages/definitions/shell/register.js';
 import 'monaco-editor/languages/definitions/typescript/register.js';
 import 'monaco-editor/languages/definitions/yaml/register.js';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Pin, X, Search, MessageSquarePlus, Eye, Code2 } from 'lucide-react';
 import { useStore } from '../store';
-import { joinPath, normalizePathParts } from '../lib/fs';
+import { joinPath, normalizePathParts, fsSearchFiles, fsReadBlob } from '../lib/fs';
+import {
+  addEditorTab,
+  closeEditorTab,
+  closeOtherEditorTabs,
+  editorFileKind,
+  nextActiveAfterClose,
+  tabBasename,
+  toggleEditorTabPin,
+} from '../lib/editor-tabs';
+import { requestComposerInsert } from '../lib/command-palette';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 globalThis.MonacoEnvironment = {
@@ -293,6 +306,9 @@ const EDITOR_PANE_OPTIONS = {
   scrollBeyondLastLine: false,
 };
 
+// G11: 二进制预览的 MIME 提示（fs/read 返回 text/plain，需按扩展名纠正）。
+const PREVIEW_MIME = { svg: 'image/svg+xml', pdf: 'application/pdf' };
+
 export function EditorPane() {
   const selectedFile = useStore((s) => s.selectedFile);
   const filePreview = useStore((s) => s.filePreview);
@@ -306,16 +322,133 @@ export function EditorPane() {
   const checkSelectedFileForExternalChanges = useStore((s) => s.checkSelectedFileForExternalChanges);
   const reloadExternalFileContent = useStore((s) => s.reloadExternalFileContent);
   const keepCurrentFileContent = useStore((s) => s.keepCurrentFileContent);
+  const openFile = useStore((s) => s.openFile);
+  const setSelectedFile = useStore((s) => s.setSelectedFile);
+  const setRoute = useStore((s) => s.setRoute);
+  const editorViewActive = useViewActive('editor');
   const [saveStatus, setSaveStatus] = useState(null);
   const [systemPrefersLight, setSystemPrefersLight] = useState(() => window.matchMedia('(prefers-color-scheme: light)').matches);
+  // G11: 多标签 / Quick Open / markdown 预览 / 二进制预览
+  const [tabs, setTabs] = useState([]);
+  const [tabMenu, setTabMenu] = useState(null);
+  const [quickOpenVisible, setQuickOpenVisible] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
+  const [quickOpenResults, setQuickOpenResults] = useState([]);
+  const [quickOpenIndex, setQuickOpenIndex] = useState(0);
+  const [markdownPreview, setMarkdownPreview] = useState(false);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState(null);
+  const quickOpenRequestRef = useRef(0);
 
   const language = useMemo(() => detectLanguage(selectedFile || ''), [selectedFile]);
+  const fileKind = useMemo(() => editorFileKind(selectedFile || ''), [selectedFile]);
   const resolvedTheme = settingsTheme || document.documentElement.dataset.theme || 'dark';
   const editorTheme = resolvedTheme === 'light' || (resolvedTheme === 'system' && systemPrefersLight) ? 'vs' : 'vs-dark';
 
   useEffect(() => {
     setSaveStatus(null);
+    setMarkdownPreview(false);
+    if (selectedFile) setTabs((current) => addEditorTab(current, selectedFile));
   }, [selectedFile]);
+
+  // G11: 图片 / SVG / PDF 以 Blob URL 预览（同 fs/read 权限模型）。
+  useEffect(() => {
+    if (!selectedFile || !['image', 'svg', 'pdf'].includes(fileKind)) {
+      setPreviewBlobUrl(null);
+      return undefined;
+    }
+    let cancelled = false;
+    let objectUrl = null;
+    fsReadBlob(selectedFile)
+      .then((blob) => {
+        if (cancelled) return;
+        const ext = selectedFile.split('.').pop()?.toLowerCase() || '';
+        const type = PREVIEW_MIME[ext] || (blob.type?.startsWith('image/') ? blob.type : `image/${ext === 'jpg' ? 'jpeg' : ext}`);
+        objectUrl = URL.createObjectURL(new Blob([blob], { type }));
+        setPreviewBlobUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewBlobUrl(null);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setPreviewBlobUrl(null);
+    };
+  }, [selectedFile, fileKind]);
+
+  const activateTab = useCallback(
+    (path) => {
+      if (path !== selectedFile) void openFile(path);
+    },
+    [selectedFile, openFile],
+  );
+
+  const closeTab = useCallback(
+    (path) => {
+      const next = nextActiveAfterClose(tabs, path, selectedFile);
+      setTabs((current) => closeEditorTab(current, path));
+      setTabMenu(null);
+      if (next !== selectedFile) {
+        if (next) void openFile(next);
+        else setSelectedFile(null);
+      }
+    },
+    [tabs, selectedFile, openFile, setSelectedFile],
+  );
+
+  const addToChat = useCallback(() => {
+    if (!selectedFile) return;
+    requestComposerInsert(`@${selectedFile} `);
+    setRoute('chat');
+  }, [selectedFile, setRoute]);
+
+  // G11: Quick Open（Ctrl/Cmd+P，编辑器视图可见时）。
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!editorViewActive) return;
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'p') {
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+        event.preventDefault();
+        setQuickOpenVisible(true);
+        setQuickOpenQuery('');
+        setQuickOpenResults([]);
+        setQuickOpenIndex(0);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [editorViewActive]);
+
+  useEffect(() => {
+    if (!quickOpenVisible) return undefined;
+    const query = quickOpenQuery.trim();
+    if (!query) {
+      setQuickOpenResults([]);
+      return undefined;
+    }
+    const requestId = ++quickOpenRequestRef.current;
+    const timer = setTimeout(() => {
+      fsSearchFiles(query, { limit: 20 })
+        .then((items) => {
+          if (requestId !== quickOpenRequestRef.current) return;
+          setQuickOpenResults((items || []).filter((item) => item?.path && item.type !== 'directory'));
+          setQuickOpenIndex(0);
+        })
+        .catch(() => {
+          if (requestId === quickOpenRequestRef.current) setQuickOpenResults([]);
+        });
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [quickOpenVisible, quickOpenQuery]);
+
+  const quickOpenPick = useCallback(
+    (item) => {
+      if (!item?.path) return;
+      setQuickOpenVisible(false);
+      void openFile(item.path);
+    },
+    [openFile],
+  );
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: light)');
@@ -361,6 +494,51 @@ export function EditorPane() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-primary)]">
+      {/* G11: 多标签条（pin 靠前 / 中键或 × 关闭 / 右键菜单，横向滚动）。 */}
+      {tabs.length > 0 ? (
+        <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]" data-testid="editor-tabs">
+          {tabs.map((tab) => {
+            const isActive = tab.path === selectedFile;
+            return (
+              <div
+                key={tab.path}
+                className={`group flex shrink-0 cursor-pointer items-center gap-1.5 border-r border-[var(--color-border-muted)] px-3 text-xs ${
+                  isActive
+                    ? 'bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]'
+                    : 'text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]'
+                }`}
+                title={tab.path}
+                onClick={() => activateTab(tab.path)}
+                onAuxClick={(event) => {
+                  if (event.button === 1) {
+                    event.preventDefault();
+                    closeTab(tab.path);
+                  }
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setTabMenu({ x: event.clientX, y: event.clientY, path: tab.path, pinned: tab.pinned });
+                }}
+              >
+                {tab.pinned ? <Pin size={10} className="shrink-0 text-[var(--color-accent-blue)]" /> : null}
+                <span className="max-w-[160px] truncate">{tabBasename(tab.path)}</span>
+                {isActive && fileDirty ? <span className="text-[var(--color-accent-yellow)]">•</span> : null}
+                <button
+                  type="button"
+                  className="flex h-4 w-4 items-center justify-center rounded opacity-0 hover:bg-[var(--color-bg-hover)] group-hover:opacity-100"
+                  aria-label={`关闭 ${tabBasename(tab.path)}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeTab(tab.path);
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       <div className="flex h-12 items-center justify-between border-b border-[var(--color-border-default)] px-4">
         <div className="min-w-0">
           <div className="truncate text-sm text-[var(--color-text-primary)]">
@@ -368,15 +546,49 @@ export function EditorPane() {
           </div>
           <div className="text-xs" style={{ color: saveStatusColor }}>{saveStatus?.message || language}</div>
         </div>
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={!selectedFile || !fileDirty || fileSaving}
-          className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-40"
-          title="保存文件 (Ctrl+S)"
-        >
-          {fileSaving ? '保存中...' : '保存'}
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+            title="快速打开 (Ctrl+P)"
+            onClick={() => {
+              setQuickOpenVisible(true);
+              setQuickOpenQuery('');
+              setQuickOpenResults([]);
+              setQuickOpenIndex(0);
+            }}
+          >
+            <Search size={13} />
+          </button>
+          {fileKind === 'markdown' && selectedFile ? (
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+              title={markdownPreview ? '返回编辑' : 'Markdown 预览'}
+              onClick={() => setMarkdownPreview((value) => !value)}
+            >
+              {markdownPreview ? <Code2 size={13} /> : <Eye size={13} />}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-40"
+            disabled={!selectedFile}
+            title="把当前文件引用插入对话输入框"
+            onClick={addToChat}
+          >
+            <MessageSquarePlus size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={!selectedFile || !fileDirty || fileSaving}
+            className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-40"
+            title="保存文件 (Ctrl+S)"
+          >
+            {fileSaving ? '保存中...' : '保存'}
+          </button>
+        </div>
       </div>
       {fileExternalChange && (
         <div
@@ -410,8 +622,31 @@ export function EditorPane() {
       )}
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedFile ? (
-          filePreviewLoading ? (
+          ['image', 'svg'].includes(fileKind) ? (
+            // G11: 图片 / SVG 预览
+            <div className="flex h-full items-center justify-center overflow-auto bg-[var(--color-bg-secondary)] p-6">
+              {previewBlobUrl ? (
+                <img src={previewBlobUrl} alt={selectedFile} className="max-h-full max-w-full object-contain" />
+              ) : (
+                <div className="text-sm text-[var(--color-text-muted)]">加载预览中...</div>
+              )}
+            </div>
+          ) : fileKind === 'pdf' ? (
+            // G11: PDF 预览
+            previewBlobUrl ? (
+              <object data={previewBlobUrl} type="application/pdf" className="h-full w-full">
+                <div className="p-4 text-sm text-[var(--color-text-muted)]">当前环境不支持内嵌 PDF 预览</div>
+              </object>
+            ) : (
+              <div className="p-4 text-sm text-[var(--color-text-muted)]">加载预览中...</div>
+            )
+          ) : filePreviewLoading ? (
             <div className="p-4 text-sm text-[var(--color-text-muted)]">读取文件中...</div>
+          ) : fileKind === 'markdown' && markdownPreview ? (
+            // G11: Markdown 渲染预览
+            <div className="markdown-body h-full overflow-y-auto px-6 py-4 text-sm leading-6 text-[var(--color-text-primary)]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{filePreview || ''}</ReactMarkdown>
+            </div>
           ) : (
             <Editor
               theme={editorTheme}
@@ -428,6 +663,110 @@ export function EditorPane() {
           <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-muted)]">从左侧选择文件以预览</div>
         )}
       </div>
+
+      {/* G11: 标签右键菜单（固定 / 关闭其它 / 关闭）。 */}
+      {tabMenu ? (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setTabMenu(null)} />
+          <div
+            className="fixed z-50 min-w-[140px] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
+            style={{ left: tabMenu.x, top: tabMenu.y }}
+          >
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+              onClick={() => {
+                setTabs((current) => toggleEditorTabPin(current, tabMenu.path));
+                setTabMenu(null);
+              }}
+            >
+              {tabMenu.pinned ? '取消固定' : '固定标签'}
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+              onClick={() => {
+                setTabs((current) => closeOtherEditorTabs(current, tabMenu.path));
+                setTabMenu(null);
+                if (selectedFile !== tabMenu.path) void openFile(tabMenu.path);
+              }}
+            >
+              关闭其它标签
+            </button>
+            <div className="my-1 h-px bg-[var(--color-border-muted)]" />
+            <button
+              className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+              onClick={() => closeTab(tabMenu.path)}
+            >
+              关闭标签
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {/* G11: Quick Open（Ctrl+P 文件名模糊查找，走 /api/v1/fs/search）。 */}
+      {quickOpenVisible ? (
+        <div className="fixed inset-0 z-[210] flex items-start justify-center pt-[14vh]" data-testid="quick-open">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setQuickOpenVisible(false)} />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="快速打开文件"
+            className="relative mx-4 flex w-full max-w-[520px] flex-col overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setQuickOpenVisible(false);
+              } else if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setQuickOpenIndex((index) => Math.min(index + 1, quickOpenResults.length - 1));
+              } else if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setQuickOpenIndex((index) => Math.max(index - 1, 0));
+              } else if (event.key === 'Enter') {
+                event.preventDefault();
+                quickOpenPick(quickOpenResults[quickOpenIndex]);
+              }
+            }}
+          >
+            <div className="flex items-center gap-2 border-b border-[var(--color-border-default)] px-4 py-3">
+              <Search size={14} className="shrink-0 text-[var(--color-text-muted)]" />
+              <input
+                autoFocus
+                value={quickOpenQuery}
+                onChange={(event) => setQuickOpenQuery(event.target.value)}
+                placeholder="输入文件名..."
+                className="w-full bg-transparent text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+              />
+              <kbd className="shrink-0 rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">Esc</kbd>
+            </div>
+            <div className="max-h-[40vh] overflow-y-auto py-1" role="listbox">
+              {quickOpenResults.length === 0 ? (
+                <div className="px-4 py-4 text-center text-sm text-[var(--color-text-muted)]">
+                  {quickOpenQuery.trim() ? '没有匹配的文件' : '输入文件名开始查找'}
+                </div>
+              ) : (
+                quickOpenResults.map((item, index) => (
+                  <button
+                    key={item.path}
+                    type="button"
+                    role="option"
+                    aria-selected={index === quickOpenIndex}
+                    className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm ${
+                      index === quickOpenIndex
+                        ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                        : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
+                    }`}
+                    onMouseEnter={() => setQuickOpenIndex(index)}
+                    onClick={() => quickOpenPick(item)}
+                  >
+                    <span className="shrink-0 font-medium">{item.name || tabBasename(item.path)}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-text-muted)]">{item.path}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

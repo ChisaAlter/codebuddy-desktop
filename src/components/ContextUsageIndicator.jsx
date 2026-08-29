@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { X, Shrink } from 'lucide-react';
+import { X, Shrink, Settings2 } from 'lucide-react';
 import { useStore } from '../store';
 import { resolveLocaleMode, translate } from '../lib/i18n';
+import { effectiveAutoCompactWindow } from '../lib/autocompact';
+import { requestSettingsSection } from '../lib/settings-nav';
 
 // 对齐 CodeBuddy CLI 2.128 WebUI 的输入框上下文用量功能：
 // 环形百分比指示器 + 五类用量明细面板 + 一键压缩当前会话按钮。
@@ -60,6 +62,10 @@ export default function ContextUsageIndicator({ usage, onCompact, disabled, comp
   const t = useT();
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
+  // G12: autocompact panel — mirror CLI settings state next to the usage ring.
+  const autoCompactEnabled = useStore((s) => Boolean(s.settings?.autoCompactEnabled));
+  const autoCompactWindow = useStore((s) => s.settings?.autoCompactWindow ?? null);
+  const setRoute = useStore((s) => s.setRoute);
 
   // 外部点击关闭面板。
   useEffect(() => {
@@ -194,6 +200,38 @@ export default function ContextUsageIndicator({ usage, onCompact, disabled, comp
               </div>
             </>
           ) : null}
+
+          {/* G12: /autocompact 面板 — 展示自动压缩开关、窗口基准与生效值 */}
+          <div className="mt-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2 py-1.5" data-testid="autocompact-panel">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                {t('composer.autocompact.title')}
+              </span>
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded px-1 py-0.5 text-[10px] text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                onClick={() => {
+                  setOpen(false);
+                  requestSettingsSection('settings-section-settings-group-behavior');
+                  setRoute('settings');
+                }}
+                title={t('composer.autocompact.configure')}
+              >
+                <Settings2 size={11} aria-hidden="true" />
+                {t('composer.autocompact.configure')}
+              </button>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-[var(--color-text-muted)]">
+              <span>{autoCompactEnabled ? t('composer.autocompact.enabled') : t('composer.autocompact.disabled')}</span>
+              <span className="tabular-nums">
+                {t('composer.autocompact.window')}{' '}
+                {(() => {
+                  const effective = effectiveAutoCompactWindow(autoCompactWindow, usage.size);
+                  return effective ? formatTokenCount(effective) : t('composer.autocompact.followModel');
+                })()}
+              </span>
+            </div>
+          </div>
 
           <button
             type="button"

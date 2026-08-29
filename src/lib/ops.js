@@ -65,9 +65,11 @@ export async function fetchWorkerLogs(workerPid, type = 'stdout', tail = 200) {
 // ===== Sessions 管理 =====
 
 /** 删除会话（对照源 DELETE /api/v1/sessions/{id}） */
-export async function deleteSession(sessionId) {
+export async function deleteSession(sessionId, cwd = null) {
   if (!sessionId) return;
-  return requestOptionalJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  // 2.138 history 面板契约：删除历史会话时带 ?cwd= 以便 CLI 定位项目会话存储。
+  const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
+  return requestOptionalJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}${query}`, {
     method: 'DELETE',
     timeoutMs: 10000,
   });

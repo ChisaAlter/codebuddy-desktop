@@ -4,6 +4,8 @@
 > 参照源：`@tencent-ai/codebuddy-code@2.138.0` npm 包（`npm pack` 解包，检查 `dist/web-ui/` bundle、`dist/web-ui/docs/`、包根 `CHANGELOG.md`）。
 > Desktop 侧：master（1.1.2，推荐 CLI 2.135.0）+ PR #3 草稿分支 `cursor/release-1-1-3-r13-2173`（1.1.3，推荐 CLI 2.138.0）。
 > 性质：**只读分析**，不实现功能。结论供维护者排期。
+>
+> **状态更新（2026-08-27，1.1.4）：G1–G13 已全部实现**（分支 `cursor/webui-parity-g1-g13-2173`），§6 文档问题已修复。逐项落点见 `docs/iteration-plan-1.1.x.md` 第五轮（G 系列）表；已知边界：G4 的 worktree/startFrom/shell job 依赖 CLI `/api/v1/jobs` 端点在目标 runtime 可用；G5 需在设置开启 `codebuddy.mainAgent.enabled`；G6 为隔离 WebContentsView 宿主（渲染 `ui://` 资源，MCP-UI 双向 RPC 桥暂未实现）；G11 未做 editor-page 独立窗（多标签在主窗内）。下表「Desktop 状态」列保留审计时点原文不改写。
 
 ## 1. 对照方法
 

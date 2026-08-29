@@ -68,6 +68,7 @@ describe('ReplicaSidebar layout', () => {
       items: [
         { id: 'tasks', label: '任务' },
         { id: 'terminal', label: '终端' },
+        { id: 'canvas', label: 'Canvas' },
         { id: 'editor', label: '编辑器' },
         { id: 'changes', label: '变更' },
         { id: 'plugins', label: '插件' },
@@ -93,6 +94,7 @@ describe('ReplicaSidebar layout', () => {
         { id: 'instances', label: '实例列表' },
         { id: 'skills', label: '技能' },
         { id: 'agents', label: 'Agents' },
+        { id: 'agent-home', label: 'Agent Home' },
         { id: 'mcp', label: 'MCP' },
         { id: 'sandboxes', label: 'Sandboxes' },
         { id: 'workers', label: 'Agent 实例管理' },

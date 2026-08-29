@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
 import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
-import { ArrowUp, Square, Check, Ban } from 'lucide-react';
+import { ArrowUp, Square, Check, Ban, Target, Pencil, Pause, Play, X, CheckCircle2, XCircle } from 'lucide-react';
 import { useStore } from '../store';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import { copyTextToClipboard } from '../lib/clipboard';
@@ -26,6 +26,12 @@ import {
 import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 import { requestSettingsSection } from '../lib/settings-nav';
+import { busySendModeFromSettings } from '../lib/busy-send';
+import { goalElapsedMs, formatGoalElapsed, formatGoalRecapStats } from '../lib/goal-api';
+import { formatTurnDuration } from '../lib/turn-metrics';
+import { consumePendingComposerInsert } from '../lib/command-palette';
+import { extractMcpAppResource } from '../lib/mcp-app';
+import McpAppCard from './McpAppCard';
 import { resolveThreadTimeline } from '../store/helpers/thread-runtime';
 import {
   deriveWorkflowViewCached,
@@ -987,6 +993,11 @@ function ToolCallBlock({ item, nested = false }) {
     () => (structured && expanded ? formatToolExpandedView(item, { full: showFull }) : null),
     [structured, expanded, showFull, item],
   );
+  // G6: MCP App（ui:// 交互界面）——完成态工具结果里带 profile=mcp-app 资源时显示加载卡。
+  const mcpAppResource = useMemo(
+    () => extractMcpAppResource(item.raw) || extractMcpAppResource(item.meta),
+    [item.raw, item.meta],
+  );
 
   return (
     <div className={`tool-call-row mb-0.5 ${nested ? 'tool-call-row--nested' : ''}`} data-testid={nested ? 'tool-call-nested' : 'tool-call-row'}>
@@ -1034,6 +1045,11 @@ function ToolCallBlock({ item, nested = false }) {
           </svg>
         ) : null}
       </button>
+      {mcpAppResource ? (
+        <div className="pl-5">
+          <McpAppCard appResource={mcpAppResource} t={t} />
+        </div>
+      ) : null}
       {canToggle && expanded ? (
         <div className="tool-call-detail pl-5">
           <div className="mb-1 mt-0.5 space-y-1.5">
@@ -2130,6 +2146,16 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <CompactTimelineCard item={item} />;
   }
 
+  // G7: 回合耗时页脚（CLI TUI `✔ Worked for …` 同款，showTurnDuration 默认开）。
+  if (item.type === 'turn-metrics') {
+    return (
+      <div className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]" data-testid="turn-metrics">
+        <Check size={12} className="text-[var(--color-accent-green)]" />
+        <span>{t('chat.workedFor', { duration: formatTurnDuration(item.durationMs) })}</span>
+      </div>
+    );
+  }
+
   if (['checkpoint', 'taskCreated', 'taskStatus', 'question_answered'].includes(item.type)) {
     return null;
   }
@@ -2374,6 +2400,7 @@ export default function ReplicaChatView() {
   }, [timelineFingerprint, subagentInputsFingerprint]);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
+  const sendQueuedPromptNow = useStore((s) => s.sendQueuedPromptNow);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || EMPTY_ARRAY);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
@@ -2433,6 +2460,18 @@ export default function ReplicaChatView() {
     }
     syncDraftToStore(threadId, inputRef.current);
   }, [syncDraftToStore]);
+  // G8: 命令面板选择斜杠命令 → 预填 composer 并聚焦（挂载时也消费跨视图 pending）。
+  useEffect(() => {
+    const applyInsert = (text) => {
+      if (!text) return;
+      setInput(text);
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+    applyInsert(consumePendingComposerInsert());
+    const onInsert = (event) => applyInsert(consumePendingComposerInsert() ?? event?.detail);
+    window.addEventListener('codebuddy:composer-insert', onInsert);
+    return () => window.removeEventListener('codebuddy:composer-insert', onInsert);
+  }, [setInput]);
   // Thread switch: persist the previous thread's local draft (its debounce may
   // not have fired yet), then restore the incoming thread's persisted draft.
   useEffect(() => {
@@ -3219,6 +3258,38 @@ export default function ReplicaChatView() {
     [activeProjectId, activeThreadId, removeQueuedPrompt, t],
   );
 
+  // G3: 队列条目「立即发送」——活跃回合时 steer 注入，空闲时提前派发。
+  const sendPromptFromQueueNow = useCallback(
+    async (promptId) => {
+      if (queueActionInFlightRef.current || !activeThreadId) return;
+      const operation = {};
+      queueActionInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const requestId = ++queueActionRequestRef.current;
+      const isCurrent = () =>
+        requestId === queueActionRequestRef.current &&
+        projectId === useStore.getState().activeProjectId &&
+        threadId === useStore.getState().activeThreadId;
+      setQueueActionBusy(true);
+      setChatError(null);
+      try {
+        const result = await sendQueuedPromptNow(threadId, promptId);
+        if (isCurrent() && !result?.steered && !result?.queued) {
+          setChatError(consumeStoreError(t('error.queueSendNowFailed')));
+        }
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || t('error.queueSendNowFailed'));
+      } finally {
+        if (queueActionInFlightRef.current === operation) {
+          queueActionInFlightRef.current = null;
+          if (isCurrent()) setQueueActionBusy(false);
+        }
+      }
+    },
+    [activeProjectId, activeThreadId, sendQueuedPromptNow, t],
+  );
+
   const handlePaste = useCallback(
     async (event) => {
       if (!pasteImageEnabled) return;
@@ -3584,6 +3655,7 @@ export default function ReplicaChatView() {
         resumePromptQueue={resumePromptQueue}
         movePromptInQueue={movePromptInQueue}
         removePromptFromQueue={removePromptFromQueue}
+        sendPromptFromQueueNow={sendPromptFromQueueNow}
         draggingAttachments={draggingAttachments}
         droppingAttachments={droppingAttachments}
         handleDragEnter={handleDragEnter}
@@ -3652,6 +3724,197 @@ function readStoredComposerHeight() {
   }
 }
 
+// ===== G2: Goal Bar（对照 WebUI tG/nG/lS）=====
+
+function GoalBarRow({ goalBar, onEdit, onPause, onResume, onClear, t }) {
+  const [now, setNow] = useState(() => Date.now());
+  const running = !goalBar?.paused;
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (!goalBar) return null;
+  const elapsed = formatGoalElapsed(goalElapsedMs(goalBar, now));
+  const label = t(running ? 'goal.bar.active' : 'goal.bar.paused', { condition: goalBar.condition, elapsed });
+  const iconButton =
+    'flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]';
+  return (
+    <div
+      className="flex h-8 items-center gap-2 border-b border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-4 text-[12px] text-[var(--color-text-secondary)]"
+      data-testid="goal-bar"
+    >
+      <Target size={13} className="shrink-0 text-[var(--color-text-muted)]" />
+      <span className="min-w-0 flex-1 truncate" title={label}>
+        {label}
+      </span>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button type="button" onClick={onEdit} className={iconButton} title={t('goal.bar.edit')} aria-label={t('goal.bar.edit')}>
+          <Pencil size={12} />
+        </button>
+        {running ? (
+          <button type="button" onClick={onPause} className={iconButton} title={t('goal.bar.pause')} aria-label={t('goal.bar.pause')}>
+            <Pause size={12} />
+          </button>
+        ) : (
+          <button type="button" onClick={onResume} className={iconButton} title={t('goal.bar.resume')} aria-label={t('goal.bar.resume')}>
+            <Play size={12} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClear}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-accent-red)]"
+          title={t('goal.bar.clear')}
+          aria-label={t('goal.bar.clear')}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GoalEditDialog({ initialCondition, onSave, onCancel, t }) {
+  const [condition, setCondition] = useState(initialCondition || '');
+  const save = useCallback(() => {
+    const trimmed = condition.trim();
+    if (trimmed) onSave(trimmed);
+  }, [condition, onSave]);
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onCancel]);
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/30" onClick={onCancel} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="goal-edit-title"
+        className="relative mx-4 w-full max-w-[480px] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl"
+      >
+        <div className="px-5 pt-5 pb-3">
+          <h3 id="goal-edit-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t('goal.edit.title')}
+          </h3>
+          <textarea
+            autoFocus
+            value={condition}
+            onChange={(event) => setCondition(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                save();
+              }
+            }}
+            placeholder={t('goal.edit.placeholder')}
+            rows={4}
+            className="mt-3 w-full resize-none rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-2 text-[13px] text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+          />
+        </div>
+        <div className="flex justify-end gap-2 border-t border-[var(--color-border-default)] px-5 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-3 py-1.5 text-[13px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+          >
+            {t('goal.edit.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!condition.trim()}
+            className="rounded-md bg-[var(--color-accent-blue)] px-3 py-1.5 text-[13px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t('goal.edit.save')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GoalRecapCard({ recap, onDismiss, t }) {
+  useEffect(() => {
+    if (!recap) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onDismiss();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [recap, onDismiss]);
+  if (!recap) return null;
+  let body = null;
+  if (recap.active) {
+    body = (
+      <>
+        <div className="flex items-center gap-2">
+          <Target size={18} className="text-[var(--color-accent-blue)]" />
+          <h3 id="goal-recap-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t(recap.active.paused ? 'goal.recap.paused' : 'goal.recap.active')}
+          </h3>
+        </div>
+        <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+          {t('goal.progress.condition')}: {recap.active.condition}
+        </div>
+      </>
+    );
+  } else if (recap.latest) {
+    const ok = recap.latest.ok;
+    const Icon = ok ? CheckCircle2 : XCircle;
+    body = (
+      <>
+        <div className="flex items-center gap-2">
+          <Icon size={18} className={ok ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'} />
+          <h3 id="goal-recap-title" className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {t(ok ? 'goal.recap.achieved' : 'goal.recap.impossible')}
+          </h3>
+        </div>
+        <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+          {t('goal.progress.condition')}: {recap.latest.condition}
+        </div>
+        {recap.latest.reason ? (
+          <div className="break-words text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+            {t('goal.progress.reason')}: {recap.latest.reason}
+          </div>
+        ) : null}
+        <div className="text-[12px] text-[var(--color-text-muted)]">{formatGoalRecapStats(recap.latest, t)}</div>
+      </>
+    );
+  } else {
+    return null;
+  }
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" data-testid="goal-recap">
+      <div className="absolute inset-0 bg-black/30" onClick={onDismiss} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="goal-recap-title"
+        className="relative mx-4 w-full max-w-[480px] overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] shadow-2xl"
+      >
+        <div className="flex flex-col gap-3 px-5 pt-5 pb-4">{body}</div>
+        <div className="border-t border-[var(--color-border-default)] px-5 pb-4 pt-2 text-[12px] text-[var(--color-text-muted)]">
+          <span className="text-[var(--color-text-secondary)]">{t('goal.recap.footer.setAnother')}</span>
+          <span>{t('goal.recap.footer.toSetAnother')}</span>
+          <span className="text-[var(--color-text-secondary)]">Esc</span>
+          <span> {t('goal.recap.footer.escDismiss')}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ChatComposer = React.memo(function ChatComposer({
   textareaRef,
   promptSuggestionEnabled,
@@ -3668,6 +3931,7 @@ const ChatComposer = React.memo(function ChatComposer({
   resumePromptQueue,
   movePromptInQueue,
   removePromptFromQueue,
+  sendPromptFromQueueNow,
   draggingAttachments,
   droppingAttachments,
   handleDragEnter,
@@ -3717,6 +3981,32 @@ const ChatComposer = React.memo(function ChatComposer({
   const [showWorkspaceDirsMenu, setShowWorkspaceDirsMenu] = useState(false);
   // P1-6: overlays must start after the actual (possibly collapsed) sidebar.
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  // G3: busySendMode=immediate 时占位符提示「立即插入当前回合」。
+  const busySendImmediate = useStore((s) => busySendModeFromSettings(s.settings) === 'immediate');
+  // G2: goal bar 状态与动作。
+  const activeThreadIdForGoal = useStore((s) => s.activeThreadId);
+  const goalSessionId = useStore(
+    (s) => s.threadsById?.[s.activeThreadId]?.sessionId || s.threadRuntimeById?.[s.activeThreadId]?.sessionId || s.sessionId,
+  );
+  const goalBar = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.goalBar || null);
+  const goalRecap = useStore((s) => s.threadRuntimeById?.[s.activeThreadId]?.goalRecap || null);
+  const refreshGoalBar = useStore((s) => s.refreshGoalBar);
+  const pauseGoalBar = useStore((s) => s.pauseGoalBar);
+  const resumeGoalBar = useStore((s) => s.resumeGoalBar);
+  const clearGoalBar = useStore((s) => s.clearGoalBar);
+  const saveGoalEdit = useStore((s) => s.saveGoalEdit);
+  const dismissGoalRecap = useStore((s) => s.dismissGoalRecap);
+  const [goalEditOpen, setGoalEditOpen] = useState(false);
+  useEffect(() => {
+    if (activeThreadIdForGoal && goalSessionId) void refreshGoalBar(activeThreadIdForGoal);
+  }, [activeThreadIdForGoal, goalSessionId, refreshGoalBar]);
+  const handleGoalEditSave = useCallback(
+    (condition) => {
+      setGoalEditOpen(false);
+      void saveGoalEdit(activeThreadIdForGoal, condition);
+    },
+    [activeThreadIdForGoal, saveGoalEdit],
+  );
   const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || EMPTY_ARRAY);
   const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
   const workspaceDirsError = useStore((s) => s.workspaceDirsError);
@@ -3906,6 +4196,17 @@ const ChatComposer = React.memo(function ChatComposer({
                     {item.text}
                   </span>
                   <button
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-accent-blue)] disabled:cursor-wait disabled:opacity-50"
+                    disabled={queueActionBusy}
+                    onClick={() => sendPromptFromQueueNow(item.id)}
+                    title={t('queue.sendNow')}
+                    aria-label={t('queue.sendNow')}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2 8h11M9 4l4 4-4 4" />
+                    </svg>
+                  </button>
+                  <button
                     className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
                     disabled={queueActionBusy || index === 0}
                     onClick={() => movePromptInQueue(item.id, 'up')}
@@ -3950,6 +4251,25 @@ const ChatComposer = React.memo(function ChatComposer({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+          {goalBar ? (
+            <GoalBarRow
+              goalBar={goalBar}
+              onEdit={() => setGoalEditOpen(true)}
+              onPause={() => void pauseGoalBar(activeThreadIdForGoal)}
+              onResume={() => void resumeGoalBar(activeThreadIdForGoal)}
+              onClear={() => void clearGoalBar(activeThreadIdForGoal)}
+              t={t}
+            />
+          ) : null}
+          {goalEditOpen ? (
+            <GoalEditDialog
+              initialCondition={goalBar?.condition || ''}
+              onSave={handleGoalEditSave}
+              onCancel={() => setGoalEditOpen(false)}
+              t={t}
+            />
+          ) : null}
+          <GoalRecapCard recap={goalRecap} onDismiss={() => dismissGoalRecap(activeThreadIdForGoal)} t={t} />
           <div
             className="chat-composer-resize-handle"
             role="separator"
@@ -4009,7 +4329,7 @@ const ChatComposer = React.memo(function ChatComposer({
             placeholder={
               canSend
                 ? isStreaming
-                  ? t('input.placeholderRunning')
+                  ? t(busySendImmediate ? 'input.placeholderRunningImmediate' : 'input.placeholderRunning')
                   : t('input.placeholder')
                 : t('input.placeholderDisconnected')
             }
